@@ -39,7 +39,7 @@ agent:
   # LLM 模型配置
   llm:
     provider: deepseek          # 支持: deepseek / openai
-    model: deepseek-chat        # DeepSeek 模型: deepseek-chat (V3) / deepseek-reasoner (R1)
+    model: deepseek-v4-flash        # DeepSeek 模型: deepseek-v4-flash / deepseek-v4-pro
     api_key: ""               # 请通过环境变量 LLM_API_KEY 设置
     base_url: "https://api.deepseek.com"  # DeepSeek API 地址
     max_tokens: 4096

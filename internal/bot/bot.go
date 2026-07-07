@@ -8,6 +8,7 @@ package bot
 import (
 	"context"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,15 @@ type Bot struct {
 	dedup      *msgDedup
 	ctx        context.Context
 	cancel     context.CancelFunc
+}
+
+// mentionRegex 匹配 QQ 消息中的 @ 提及，格式 <@openid> 或 <@!openid>。
+var mentionRegex = regexp.MustCompile(`<@!?[0-9A-Za-z]+>`)
+
+// stripMention 剥除消息中的 @ 提及标记并修剪空白。
+// 群全量消息中 @机器人 的内容为 "<@xxx> .help"，需清理后才能匹配指令。
+func stripMention(s string) string {
+	return strings.TrimSpace(mentionRegex.ReplaceAllString(s, ""))
 }
 
 // NewBot 创建 Bot 实例。
@@ -117,19 +127,21 @@ func (b *Bot) registerQQHandlers() {
 		if b.dedup.isDuplicate(msg.ID) {
 			return
 		}
-		content := strings.TrimSpace(msg.Content)
+		// 剥除 @机器人 等提及标记，使指令能正确匹配
+		content := stripMention(msg.Content)
 		log.Printf("[Bot] 群聊全量消息 group=%s user=%s content=%q", msg.GroupOpenid, msg.Author.MemberOpenid, content)
 
 		mc := &core.MessageContext{
-			Ctx:       context.Background(),
-			Source:    core.SourceGroup,
-			SessionID: "group:" + msg.GroupOpenid,
-			UserID:    msg.Author.MemberOpenid,
-			OpenID:    msg.GroupOpenid,
-			MsgID:     msg.ID,
-			Content:   content,
-			IsGroup:   true,
-			Extra:     make(map[string]interface{}),
+			Ctx:           context.Background(),
+			Source:        core.SourceGroup,
+			SessionID:     "group:" + msg.GroupOpenid,
+			UserID:        msg.Author.MemberOpenid,
+			OpenID:        msg.GroupOpenid,
+			MsgID:         msg.ID,
+			Content:       content,
+			IsGroup:       true,
+			MentionUserID: msg.Author.MemberOpenid, // 群全量消息回复时需 @发送者
+			Extra:         make(map[string]interface{}),
 		}
 		b.route(mc)
 	})
@@ -228,7 +240,7 @@ func (b *Bot) route(mc *core.MessageContext) {
 			if b.gameLogger.IsRecording(mc.SessionID) {
 				b.gameLogger.RecordAssistantMessage(mc.SessionID, text)
 			}
-			return b.sendReply(mc.Source, openid, msgID, text)
+			return b.sendReply(mc.Source, openid, msgID, text, mc.MentionUserID)
 		})
 
 	default:
@@ -239,20 +251,34 @@ func (b *Bot) route(mc *core.MessageContext) {
 // makeReplyFunc 创建标准的回复函数，根据消息来源选择回复方式。
 func (b *Bot) makeReplyFunc(mc *core.MessageContext) core.ReplyFunc {
 	source := mc.Source
+	mentionID := mc.MentionUserID
 	return func(ctx context.Context, openid, msgID, text string, isGroup bool) error {
-		return b.sendReply(source, openid, msgID, text)
+		return b.sendReply(source, openid, msgID, text, mentionID)
 	}
 }
 
 // sendReply 发送回复消息到 QQ，根据消息来源选择对应的 API。
-func (b *Bot) sendReply(source core.MessageSource, openid, msgID, text string) error {
+// mentionUserID 非空时（群全量消息），通过 message_reference 引用原消息实现 @回复效果。
+func (b *Bot) sendReply(source core.MessageSource, openid, msgID, text, mentionUserID string) error {
 	api := b.qqBot.API()
 	var err error
 	switch source {
 	case core.SourceChannel:
 		_, err = api.ReplyChannelText(context.Background(), openid, msgID, text)
 	case core.SourceGroup:
-		_, err = api.ReplyGroupText(context.Background(), openid, msgID, text)
+		if mentionUserID != "" {
+			// 群全量消息：用 message_reference 引用原消息，实现"回复"效果
+			_, err = api.SendGroupMessage(context.Background(), openid, &qqbot.MessageReq{
+				Content: text,
+				MsgType: qqbot.MsgTypeText,
+				MsgID:   msgID,
+				MessageReference: &qqbot.MessageRef{
+					MessageID: msgID,
+				},
+			})
+		} else {
+			_, err = api.ReplyGroupText(context.Background(), openid, msgID, text)
+		}
 	default:
 		_, err = api.ReplyC2CText(context.Background(), openid, msgID, text)
 	}

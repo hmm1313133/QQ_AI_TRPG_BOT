@@ -52,6 +52,10 @@ type MessageContext struct {
 	Content   string          // 消息文本内容
 	IsGroup   bool            // 是否群聊
 
+	// MentionUserID 回复时需要 @提及 的用户 openid。
+	// 群全量消息模式下需要 @发送者，GROUP_AT_MESSAGE_CREATE 不需要（系统自动@）。
+	MentionUserID string
+
 	// 共享数据区，Handler 和 Agent 可通过它传递信息
 	Extra map[string]interface{}
 }

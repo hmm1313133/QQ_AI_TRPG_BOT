@@ -5,6 +5,7 @@ package core
 
 import (
 	"context"
+	"strings"
 	"sync"
 )
 
@@ -40,6 +41,16 @@ const (
 	SourceChannel                       // 频道
 )
 
+// Attachment 表示消息中的文件附件。
+type Attachment struct {
+	ContentType string // "image/jpeg", "file", "video/mp4", "voice" 等
+	Filename    string // 文件名
+	URL         string // 文件下载链接
+	Size        int    // 文件大小（字节）
+	Height      int    // 图片高度
+	Width       int    // 图片宽度
+}
+
 // MessageContext 是贯穿整个消息处理流程的统一上下文。
 // Handler 和 Agent 都通过它获取消息信息、访问 API、操作会话状态。
 type MessageContext struct {
@@ -52,12 +63,40 @@ type MessageContext struct {
 	Content   string          // 消息文本内容
 	IsGroup   bool            // 是否群聊
 
+	// Attachments 消息中的文件附件（图片/文件/视频/语音）。
+	Attachments []Attachment
+
 	// MentionUserID 回复时需要 @提及 的用户 openid。
 	// 群全量消息模式下需要 @发送者，GROUP_AT_MESSAGE_CREATE 不需要（系统自动@）。
 	MentionUserID string
 
 	// 共享数据区，Handler 和 Agent 可通过它传递信息
 	Extra map[string]interface{}
+}
+
+// HasFileAttachment 检查是否有文件类型的附件（非图片/视频/语音）。
+func (mc *MessageContext) HasFileAttachment() bool {
+	for _, a := range mc.Attachments {
+		if a.ContentType == "file" || (!strings.HasPrefix(a.ContentType, "image/") &&
+			!strings.HasPrefix(a.ContentType, "video/") &&
+			a.ContentType != "voice") {
+			return true
+		}
+	}
+	return false
+}
+
+// GetFileAttachment 获取第一个文件类型附件。
+func (mc *MessageContext) GetFileAttachment() *Attachment {
+	for i := range mc.Attachments {
+		a := &mc.Attachments[i]
+		if a.ContentType == "file" || (!strings.HasPrefix(a.ContentType, "image/") &&
+			!strings.HasPrefix(a.ContentType, "video/") &&
+			a.ContentType != "voice") {
+			return a
+		}
+	}
+	return nil
 }
 
 // Reply 回复消息。由 Bot 层注入实际的发送函数。

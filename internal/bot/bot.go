@@ -7,6 +7,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"regexp"
 	"strings"
@@ -60,6 +61,8 @@ type Bot struct {
 	sessions   *core.SessionManager
 	gameLogger *gamelog.GameLogger
 	dedup      *msgDedup
+	replySeqMu sync.Mutex
+	replySeq   map[string]int // msgID → 已回复次数（用于生成递增 msg_seq）
 	ctx        context.Context
 	cancel     context.CancelFunc
 }
@@ -71,6 +74,25 @@ var mentionRegex = regexp.MustCompile(`<@!?[0-9A-Za-z]+>`)
 // 群全量消息中 @机器人 的内容为 "<@xxx> .help"，需清理后才能匹配指令。
 func stripMention(s string) string {
 	return strings.TrimSpace(mentionRegex.ReplaceAllString(s, ""))
+}
+
+// convertAttachments 将 qqbot.Attachment 转为 core.Attachment。
+func convertAttachments(qqAtts []qqbot.Attachment) []core.Attachment {
+	if len(qqAtts) == 0 {
+		return nil
+	}
+	atts := make([]core.Attachment, len(qqAtts))
+	for i, a := range qqAtts {
+		atts[i] = core.Attachment{
+			ContentType: a.ContentType,
+			Filename:    a.Filename,
+			URL:         a.URL,
+			Size:        a.Size,
+			Height:      a.Height,
+			Width:       a.Width,
+		}
+	}
+	return atts
 }
 
 // NewBot 创建 Bot 实例。
@@ -88,6 +110,7 @@ func NewBot(cfg *Config, plugins *core.PluginManager, sessions *core.SessionMana
 		sessions:   sessions,
 		gameLogger: gameLogger,
 		dedup:      newMsgDedup(),
+		replySeq:   make(map[string]int),
 	}
 
 	b.registerQQHandlers()
@@ -105,15 +128,16 @@ func (b *Bot) registerQQHandlers() {
 		log.Printf("[Bot] 群聊@消息 group=%s user=%s content=%q", msg.GroupOpenid, msg.Author.MemberOpenid, content)
 
 		mc := &core.MessageContext{
-			Ctx:       context.Background(),
-			Source:    core.SourceGroup,
-			SessionID: "group:" + msg.GroupOpenid,
-			UserID:    msg.Author.MemberOpenid,
-			OpenID:    msg.GroupOpenid,
-			MsgID:     msg.ID,
-			Content:   content,
-			IsGroup:   true,
-			Extra:     make(map[string]interface{}),
+			Ctx:         context.Background(),
+			Source:      core.SourceGroup,
+			SessionID:   "group:" + msg.GroupOpenid,
+			UserID:      msg.Author.MemberOpenid,
+			OpenID:      msg.GroupOpenid,
+			MsgID:       msg.ID,
+			Content:     content,
+			IsGroup:     true,
+			Attachments: convertAttachments(msg.Attachments),
+			Extra:       make(map[string]interface{}),
 		}
 		b.route(mc)
 	})
@@ -140,6 +164,7 @@ func (b *Bot) registerQQHandlers() {
 			MsgID:         msg.ID,
 			Content:       content,
 			IsGroup:       true,
+			Attachments:   convertAttachments(msg.Attachments),
 			MentionUserID: msg.Author.MemberOpenid, // 群全量消息回复时需 @发送者
 			Extra:         make(map[string]interface{}),
 		}
@@ -152,15 +177,16 @@ func (b *Bot) registerQQHandlers() {
 		log.Printf("[Bot] 单聊消息 user=%s content=%q", msg.Author.UserOpenid, content)
 
 		mc := &core.MessageContext{
-			Ctx:       context.Background(),
-			Source:    core.SourceC2C,
-			SessionID: "c2c:" + msg.Author.UserOpenid,
-			UserID:    msg.Author.UserOpenid,
-			OpenID:    msg.Author.UserOpenid,
-			MsgID:     msg.ID,
-			Content:   content,
-			IsGroup:   false,
-			Extra:     make(map[string]interface{}),
+			Ctx:         context.Background(),
+			Source:      core.SourceC2C,
+			SessionID:   "c2c:" + msg.Author.UserOpenid,
+			UserID:      msg.Author.UserOpenid,
+			OpenID:      msg.Author.UserOpenid,
+			MsgID:       msg.ID,
+			Content:     content,
+			IsGroup:     false,
+			Attachments: convertAttachments(msg.Attachments),
+			Extra:       make(map[string]interface{}),
 		}
 		b.route(mc)
 	})
@@ -212,6 +238,38 @@ func (b *Bot) route(mc *core.MessageContext) {
 		b.gameLogger.RecordUserMessage(mc.SessionID, mc.UserID, mc.Content)
 	}
 
+	// 文件附件处理：缓存到会话，支持文件和指令分条发送的场景
+	if mc.HasFileAttachment() {
+		fileAtt := mc.GetFileAttachment()
+		session := b.sessions.GetSession(mc.SessionID)
+		session.Set("last_file_attachment", fileAtt)
+		session.Set("last_file_time", time.Now().Unix())
+
+		log.Printf("[Bot] 收到文件附件: %s (%s) session=%s",
+			fileAtt.Filename, fileAtt.ContentType, mc.SessionID)
+
+		// 场景2: 用户先发 .script upload，再发文件 → 等待状态触发
+		if waiting, ok := session.Get("waiting_script_upload"); ok && waiting.(bool) {
+			session.Set("waiting_script_upload", false)
+			mc.Content = ".script upload"
+			if handler := b.plugins.MatchHandler(mc); handler != nil {
+				if err := handler.Execute(mc, reply); err != nil {
+					log.Printf("[Bot] Handler %s 执行失败: %v", handler.Name(), err)
+				}
+			}
+			return
+		}
+
+		// 文件已缓存，但没有指令文本 → 提示用户
+		if mc.Content == "" {
+			reply(mc.Ctx, mc.OpenID, mc.MsgID,
+				fmt.Sprintf("收到文件: %s\n如需上传剧本，请发送 .script upload", fileAtt.Filename),
+				mc.IsGroup)
+			return
+		}
+		// 文件 + 指令同时发送 → 走正常指令路由（ScriptHandler 会处理附件）
+	}
+
 	// 1. 尝试匹配指令 Handler (以 . 开头的消息)
 	if strings.HasPrefix(mc.Content, ".") {
 		handler := b.plugins.MatchHandler(mc)
@@ -259,12 +317,21 @@ func (b *Bot) makeReplyFunc(mc *core.MessageContext) core.ReplyFunc {
 
 // sendReply 发送回复消息到 QQ，根据消息来源选择对应的 API。
 // mentionUserID 非空时（群全量消息），通过 message_reference 引用原消息实现 @回复效果。
+// 同一条消息多次回复时自动递增 msg_seq 避免被 QQ 去重；
+// 若仍被去重，则降级为直接发送（不带 msg_id 的主动消息）。
 func (b *Bot) sendReply(source core.MessageSource, openid, msgID, text, mentionUserID string) error {
 	api := b.qqBot.API()
+	seq := b.nextMsgSeq(msgID)
+
 	var err error
 	switch source {
 	case core.SourceChannel:
-		_, err = api.ReplyChannelText(context.Background(), openid, msgID, text)
+		_, err = api.SendChannelMessage(context.Background(), openid, &qqbot.MessageReq{
+			Content: text,
+			MsgType: qqbot.MsgTypeText,
+			MsgID:   msgID,
+			MsgSeq:  seq,
+		})
 	case core.SourceGroup:
 		if mentionUserID != "" {
 			// 群全量消息：用 message_reference 引用原消息，实现"回复"效果
@@ -272,20 +339,87 @@ func (b *Bot) sendReply(source core.MessageSource, openid, msgID, text, mentionU
 				Content: text,
 				MsgType: qqbot.MsgTypeText,
 				MsgID:   msgID,
+				MsgSeq:  seq,
 				MessageReference: &qqbot.MessageRef{
 					MessageID: msgID,
 				},
 			})
 		} else {
-			_, err = api.ReplyGroupText(context.Background(), openid, msgID, text)
+			_, err = api.SendGroupMessage(context.Background(), openid, &qqbot.MessageReq{
+				Content: text,
+				MsgType: qqbot.MsgTypeText,
+				MsgID:   msgID,
+				MsgSeq:  seq,
+			})
 		}
 	default:
-		_, err = api.ReplyC2CText(context.Background(), openid, msgID, text)
+		_, err = api.SendC2CMessage(context.Background(), openid, &qqbot.MessageReq{
+			Content: text,
+			MsgType: qqbot.MsgTypeText,
+			MsgID:   msgID,
+			MsgSeq:  seq,
+		})
 	}
+
 	if err != nil {
+		// 检查是否为去重错误，降级为直接发送（不带 msg_id）
+		if isDedupError(err) {
+			log.Printf("[Bot] 消息被去重 (msgID=%s seq=%d)，降级为直接发送", msgID, seq)
+			return b.sendDirect(source, openid, text)
+		}
 		log.Printf("[Bot] 发送回复失败: %v", err)
 	}
 	return err
+}
+
+// sendDirect 不带 msg_id 直接发送消息（主动消息），用于去重降级。
+func (b *Bot) sendDirect(source core.MessageSource, openid, text string) error {
+	api := b.qqBot.API()
+	var err error
+	switch source {
+	case core.SourceChannel:
+		_, err = api.SendChannelMessage(context.Background(), openid, &qqbot.MessageReq{
+			Content: text,
+			MsgType: qqbot.MsgTypeText,
+		})
+	case core.SourceGroup:
+		_, err = api.SendGroupMessage(context.Background(), openid, &qqbot.MessageReq{
+			Content: text,
+			MsgType: qqbot.MsgTypeText,
+		})
+	default:
+		_, err = api.SendC2CMessage(context.Background(), openid, &qqbot.MessageReq{
+			Content: text,
+			MsgType: qqbot.MsgTypeText,
+		})
+	}
+	if err != nil {
+		log.Printf("[Bot] 直接发送失败: %v", err)
+	}
+	return err
+}
+
+// nextMsgSeq 返回指定 msgID 的下一个回复序号（递增，避免 QQ 去重）。
+func (b *Bot) nextMsgSeq(msgID string) int {
+	b.replySeqMu.Lock()
+	defer b.replySeqMu.Unlock()
+	b.replySeq[msgID]++
+	seq := b.replySeq[msgID]
+	// 清理过期记录（超过100条时清理最早的）
+	if len(b.replySeq) > 100 {
+		for k := range b.replySeq {
+			delete(b.replySeq, k)
+			if len(b.replySeq) <= 50 {
+				break
+			}
+		}
+	}
+	return seq
+}
+
+// isDedupError 检查是否为 QQ API 消息去重错误。
+func isDedupError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "去重")
 }
 
 // Start 启动 Bot。

@@ -20,6 +20,7 @@ import (
 // KPAgent is the KP/DM AI Agent.
 // It uses trpc-agent-go's LLMAgent with DeepSeek model.
 // Game state is accessed through Service and shared via core.Session.
+// Script context (timeline, NPCs, progress) is injected for AI-driven KP/DM mode.
 type KPAgent struct {
 	config     *Config
 	agent      agent.Agent
@@ -27,10 +28,12 @@ type KPAgent struct {
 	tools      []tool.Tool
 	sessionMgr *core.SessionManager
 	svc        *trpg.Service
+	scriptDeps *ScriptDeps // 剧本相关依赖（可选，nil 表示无剧本模式）
 }
 
 // NewKPAgent creates a KP/DM agent.
-func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service) (*KPAgent, error) {
+// scriptDeps is optional — pass nil for free-form KP mode without script constraints.
+func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service, scriptDeps *ScriptDeps) (*KPAgent, error) {
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = DefaultKPPrompt()
 	}
@@ -61,6 +64,11 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service)
 	// 2. Create TRPG tools (KP-relevant only)
 	tools := NewKPTools(sessionMgr, svc)
 
+	// 2b. Add script-related tools if script deps are available
+	if scriptDeps != nil {
+		tools = append(tools, NewScriptTools(scriptDeps)...)
+	}
+
 	// 3. Create LLMAgent
 	genConfig := model.GenerationConfig{
 		MaxTokens:   &cfg.MaxTokens,
@@ -85,6 +93,7 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service)
 		tools:      tools,
 		sessionMgr: sessionMgr,
 		svc:        svc,
+		scriptDeps: scriptDeps,
 	}
 
 	log.Printf("[KPAgent] 初始化完成, provider=%s, model=%s, base_url=%s, tools=%d",
@@ -242,6 +251,24 @@ func (a *KPAgent) buildGameContext(sessionID, userID string) string {
 		}
 		sb.WriteString("\n")
 		hasContext = true
+	}
+
+	// Script context (AI KP/DM mode)
+	if a.scriptDeps != nil && a.scriptDeps.ProgressTracker != nil {
+		scriptCtx := a.scriptDeps.ProgressTracker.GetContextForKP(sessionID)
+		if scriptCtx != "" {
+			sb.WriteString(scriptCtx)
+			hasContext = true
+		}
+
+		// Check for timeline idle prompt
+		if a.sessionMgr != nil {
+			session := a.sessionMgr.GetSession(sessionID)
+			if prompt, ok := session.Get("timeline_prompt"); ok {
+				sb.WriteString(fmt.Sprintf("\n【时间轴提示】%v\n", prompt))
+				session.Set("timeline_prompt", nil) // 清除已读提示
+			}
+		}
 	}
 
 	if !hasContext {

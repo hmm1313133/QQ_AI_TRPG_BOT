@@ -10,6 +10,11 @@ bin/
 *.test
 *.out
 coverage.html
+test_*.txt
+
+# Test fixtures (large files)
+*.docx
+*.pdf
 
 # IDE
 .idea/

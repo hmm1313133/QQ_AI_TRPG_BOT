@@ -65,6 +65,30 @@ trpg:
   enable_dice_log: true
   character_dir: ./data/characters    # 角色卡存储目录
   module_dir: ./data/modules          # 模组存储目录
+  script_dir: ./data/scripts          # 剧本存档目录
+  progress_dir: ./data/scripts/progress  # 进度存档目录
+
+# 剧本识别 Agent 配置
+script:
+  analyzer:
+    temperature: 0.3              # 识别温度（低温保证一致性）
+    max_tokens: 8192              # 最大 token 数
+
+# OpenViking 上下文数据库配置
+# 本地部署: http://localhost:1933
+# 云上版本: 火山引擎 OpenViking endpoint（见 https://www.volcengine.com/docs/84313/2381937）
+openviking:
+  enabled: false                  # 是否启用 OpenViking
+  base_url: "http://localhost:1933"  # OpenViking 服务地址
+  api_key: ""                     # API Key（云上版本必填，本地可选）
+  account: ""                     # 多租户账号（可选）
+  user: ""                        # 多租户用户（可选）
+  timeout: 10                     # HTTP 超时（秒）
+
+# 时间轴推进引擎配置
+timeline:
+  idle_interval: 15               # 无进展定时器间隔（分钟）
+  max_idle_count: 3               # 最大无进展次数后触发提示
 
 # 数据存储配置
 storage:

@@ -133,7 +133,19 @@ func (h *HelpHandler) Execute(ctx *core.MessageContext, reply core.ReplyFunc) er
   .ds                            死亡豁免
   .longrest                      长休
 
-跑团模式 (.mode trpg) 下，非指令消息将交给 AI KP 主持。`
+跑团模式 (.mode trpg) 下，非指令消息将交给 AI KP 主持。
+
+【剧本管理】
+  .script upload <路径/URL>  上传并分析剧本 (PDF/Word/文本)
+  .script upload + 发送文件  直接发送文件附件+此指令
+  .script text <内容>        直接粘贴剧本文本识别
+  .script list           列出所有剧本
+  .script load <名称>    加载剧本到当前会话
+  .script info [名称]    查看剧本详情
+  .script remove <名称>  删除剧本
+  .script unload         卸载当前剧本
+  .progress              查看跑团进度
+  .timeline              查看时间轴状态`
 	return reply(ctx.Ctx, ctx.OpenID, ctx.MsgID, help, ctx.IsGroup)
 }
 

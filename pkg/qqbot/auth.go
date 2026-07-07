@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -20,7 +21,34 @@ type tokenRequest struct {
 // tokenResponse 是获取 AccessToken 的响应体。
 type tokenResponse struct {
 	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"` // 有效期，秒
+	ExpiresIn   intOrString `json:"expires_in"` // 有效期，秒
+}
+
+// intOrString 能兼容 JSON 中以数字或字符串表示的整数值。
+// QQ Bot API 的 expires_in 字段在不同实现中可能返回 int 或 string。
+type intOrString int
+
+// UnmarshalJSON 实现 json.Unmarshaler 接口，兼容数字和字符串两种 JSON 表示。
+func (n *intOrString) UnmarshalJSON(data []byte) error {
+	s := string(data)
+	// 尝试直接解析为数字
+	i, err := strconv.ParseInt(s, 10, 64)
+	if err == nil {
+		*n = intOrString(i)
+		return nil
+	}
+
+	// 尝试解析为带引号的字符串
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return fmt.Errorf("无法将 %s 解析为整数: %w", s, err)
+	}
+	i, err = strconv.ParseInt(str, 10, 64)
+	if err != nil {
+		return fmt.Errorf("无法将字符串 %q 解析为整数: %w", str, err)
+	}
+	*n = intOrString(i)
+	return nil
 }
 
 // tokenManager 管理 AccessToken 的获取和自动刷新。

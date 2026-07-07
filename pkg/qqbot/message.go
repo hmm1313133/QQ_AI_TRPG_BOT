@@ -8,17 +8,17 @@ import (
 // MessageReq 是发送消息的请求体。
 // 文档: https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/send-receive/send.html
 type MessageReq struct {
-	Content          string           `json:"content,omitempty"`           // 文本消息内容
-	MsgType          MsgType          `json:"msg_type"`                    // 消息类型
-	Markdown         *Markdown        `json:"markdown,omitempty"`          // Markdown 对象
-	Keyboard         interface{}      `json:"keyboard,omitempty"`          // Keyboard 对象
-	Ark              interface{}      `json:"ark,omitempty"`               // Ark 对象
-	Media            *Media           `json:"media,omitempty"`             // 富媒体
-	MessageReference *MessageRef      `json:"message_reference,omitempty"` // 消息引用
-	EventID          string           `json:"event_id,omitempty"`          // 事件ID（被动消息）
-	MsgID            string           `json:"msg_id,omitempty"`            // 消息ID（被动回复）
-	MsgSeq           int              `json:"msg_seq,omitempty"`           // 回复序号，与 msg_id 联合使用
-	IsWakeup         bool             `json:"is_wakeup,omitempty"`         // 互动召回消息
+	Content          string      `json:"content,omitempty"`           // 文本消息内容
+	MsgType          MsgType     `json:"msg_type"`                    // 消息类型
+	Markdown         *Markdown   `json:"markdown,omitempty"`          // Markdown 对象
+	Keyboard         interface{} `json:"keyboard,omitempty"`          // Keyboard 对象
+	Ark              interface{} `json:"ark,omitempty"`               // Ark 对象
+	Media            *Media      `json:"media,omitempty"`             // 富媒体
+	MessageReference *MessageRef `json:"message_reference,omitempty"` // 消息引用
+	EventID          string      `json:"event_id,omitempty"`          // 事件ID（被动消息）
+	MsgID            string      `json:"msg_id,omitempty"`            // 消息ID（被动回复）
+	MsgSeq           int         `json:"msg_seq,omitempty"`           // 回复序号，与 msg_id 联合使用
+	IsWakeup         bool        `json:"is_wakeup,omitempty"`         // 互动召回消息
 }
 
 // Markdown 是 Markdown 消息对象。
@@ -34,17 +34,17 @@ type Media struct {
 
 // MessageRef 是消息引用对象。
 type MessageRef struct {
-	MessageID string `json:"message_id"` // 引用的消息 ID
-	IgnoreGetError bool `json:"ignore_get_error,omitempty"`
+	MessageID      string `json:"message_id"` // 引用的消息 ID
+	IgnoreGetError bool   `json:"ignore_get_error,omitempty"`
 }
 
 // MessageResp 是发送消息的响应。
 type MessageResp struct {
 	ID        string `json:"id"`        // 消息唯一 ID
-	Timestamp int    `json:"timestamp"` // 发送时间戳
+	Timestamp string `json:"timestamp"` // 发送时间戳
 }
 
-// SendC2CMessage 发送单聊消息。
+// SendC2CMessage 发送单聊消息。string
 // 接口: POST /v2/users/{openid}/messages
 func (a *OpenAPI) SendC2CMessage(ctx context.Context, openid string, req *MessageReq) (*MessageResp, error) {
 	if req.MsgSeq == 0 {
@@ -106,6 +106,15 @@ func (a *OpenAPI) ReplyC2CText(ctx context.Context, openid, msgID, content strin
 // ReplyGroupText 快捷发送群聊文本回复。
 func (a *OpenAPI) ReplyGroupText(ctx context.Context, groupOpenid, msgID, content string) (*MessageResp, error) {
 	return a.SendGroupMessage(ctx, groupOpenid, &MessageReq{
+		Content: content,
+		MsgType: MsgTypeText,
+		MsgID:   msgID,
+	})
+}
+
+// ReplyChannelText 快捷发送频道文本回复。
+func (a *OpenAPI) ReplyChannelText(ctx context.Context, channelID, msgID, content string) (*MessageResp, error) {
+	return a.SendChannelMessage(ctx, channelID, &MessageReq{
 		Content: content,
 		MsgType: MsgTypeText,
 		MsgID:   msgID,

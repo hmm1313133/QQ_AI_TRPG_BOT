@@ -9,6 +9,8 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/gamelog"
@@ -21,6 +23,34 @@ type Config struct {
 	ClientSecret string
 }
 
+// msgDedup 用于消息去重，避免 GROUP_AT_MESSAGE_CREATE 和 GROUP_MESSAGE_CREATE 重复处理同一条消息。
+type msgDedup struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+func newMsgDedup() *msgDedup {
+	return &msgDedup{seen: make(map[string]time.Time)}
+}
+
+// isDuplicate 检查消息 ID 是否在近期已处理过，同时清理过期记录。
+func (d *msgDedup) isDuplicate(id string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	now := time.Now()
+	// 清理超过 60 秒的记录
+	for k, t := range d.seen {
+		if now.Sub(t) > 60*time.Second {
+			delete(d.seen, k)
+		}
+	}
+	if _, ok := d.seen[id]; ok {
+		return true
+	}
+	d.seen[id] = now
+	return false
+}
+
 // Bot 是 QQ 机器人实例，负责消息路由和组件编排。
 type Bot struct {
 	config     *Config
@@ -28,6 +58,7 @@ type Bot struct {
 	plugins    *core.PluginManager
 	sessions   *core.SessionManager
 	gameLogger *gamelog.GameLogger
+	dedup      *msgDedup
 	ctx        context.Context
 	cancel     context.CancelFunc
 }
@@ -46,6 +77,7 @@ func NewBot(cfg *Config, plugins *core.PluginManager, sessions *core.SessionMana
 		plugins:    plugins,
 		sessions:   sessions,
 		gameLogger: gameLogger,
+		dedup:      newMsgDedup(),
 	}
 
 	b.registerQQHandlers()
@@ -56,8 +88,37 @@ func NewBot(cfg *Config, plugins *core.PluginManager, sessions *core.SessionMana
 func (b *Bot) registerQQHandlers() {
 	// 群聊@机器人消息
 	b.qqBot.OnGroupAtMessage(func(ctx *qqbot.EventContext, msg *qqbot.GroupMessageEvent) {
+		if b.dedup.isDuplicate(msg.ID) {
+			return
+		}
 		content := strings.TrimSpace(msg.Content)
-		log.Printf("[Bot] 群聊消息 group=%s user=%s content=%q", msg.GroupOpenid, msg.Author.MemberOpenid, content)
+		log.Printf("[Bot] 群聊@消息 group=%s user=%s content=%q", msg.GroupOpenid, msg.Author.MemberOpenid, content)
+
+		mc := &core.MessageContext{
+			Ctx:       context.Background(),
+			Source:    core.SourceGroup,
+			SessionID: "group:" + msg.GroupOpenid,
+			UserID:    msg.Author.MemberOpenid,
+			OpenID:    msg.GroupOpenid,
+			MsgID:     msg.ID,
+			Content:   content,
+			IsGroup:   true,
+			Extra:     make(map[string]interface{}),
+		}
+		b.route(mc)
+	})
+
+	// 群聊全量消息（群主开启后可收到群内所有消息，不限于@机器人）
+	b.qqBot.OnGroupMessage(func(ctx *qqbot.EventContext, msg *qqbot.GroupMessageEvent) {
+		// 跳过机器人自身消息
+		if msg.Author.Bot {
+			return
+		}
+		if b.dedup.isDuplicate(msg.ID) {
+			return
+		}
+		content := strings.TrimSpace(msg.Content)
+		log.Printf("[Bot] 群聊全量消息 group=%s user=%s content=%q", msg.GroupOpenid, msg.Author.MemberOpenid, content)
 
 		mc := &core.MessageContext{
 			Ctx:       context.Background(),
@@ -92,6 +153,28 @@ func (b *Bot) registerQQHandlers() {
 		b.route(mc)
 	})
 
+	// 频道消息（@机器人 / 私域全量 / 频道私信）
+	b.qqBot.OnChannelMessage(func(ctx *qqbot.EventContext, msg *qqbot.ChannelMessageEvent) {
+		if msg.Author.Bot {
+			return
+		}
+		content := strings.TrimSpace(msg.Content)
+		log.Printf("[Bot] 频道消息 channel=%s guild=%s user=%s content=%q", msg.ChannelID, msg.GuildID, msg.Author.ID, content)
+
+		mc := &core.MessageContext{
+			Ctx:       context.Background(),
+			Source:    core.SourceChannel,
+			SessionID: "channel:" + msg.ChannelID,
+			UserID:    msg.Author.ID,
+			OpenID:    msg.ChannelID,
+			MsgID:     msg.ID,
+			Content:   content,
+			IsGroup:   false,
+			Extra:     make(map[string]interface{}),
+		}
+		b.route(mc)
+	})
+
 	// 机器人加入/退出群聊
 	b.qqBot.OnGroupAddRobot(func(ctx *qqbot.EventContext, event *qqbot.GroupRobotEvent) {
 		log.Printf("[Bot] 被添加到群聊 group=%s", event.GroupOpenid)
@@ -110,7 +193,7 @@ func (b *Bot) registerQQHandlers() {
 //     - ModeTRPG: 交给 AI Agent (KP) + 自动记录日志
 //     - ModeFreeChat: 交给 AI Agent
 func (b *Bot) route(mc *core.MessageContext) {
-	reply := b.makeReplyFunc()
+	reply := b.makeReplyFunc(mc)
 
 	// TRPG/FreeChat 模式下，记录玩家消息到日志
 	if b.gameLogger.IsRecording(mc.SessionID) {
@@ -145,7 +228,7 @@ func (b *Bot) route(mc *core.MessageContext) {
 			if b.gameLogger.IsRecording(mc.SessionID) {
 				b.gameLogger.RecordAssistantMessage(mc.SessionID, text)
 			}
-			return b.sendReply(openid, msgID, text, isGroup)
+			return b.sendReply(mc.Source, openid, msgID, text)
 		})
 
 	default:
@@ -153,20 +236,24 @@ func (b *Bot) route(mc *core.MessageContext) {
 	}
 }
 
-// makeReplyFunc 创建标准的回复函数。
-func (b *Bot) makeReplyFunc() core.ReplyFunc {
+// makeReplyFunc 创建标准的回复函数，根据消息来源选择回复方式。
+func (b *Bot) makeReplyFunc(mc *core.MessageContext) core.ReplyFunc {
+	source := mc.Source
 	return func(ctx context.Context, openid, msgID, text string, isGroup bool) error {
-		return b.sendReply(openid, msgID, text, isGroup)
+		return b.sendReply(source, openid, msgID, text)
 	}
 }
 
-// sendReply 发送回复消息到 QQ。
-func (b *Bot) sendReply(openid, msgID, text string, isGroup bool) error {
+// sendReply 发送回复消息到 QQ，根据消息来源选择对应的 API。
+func (b *Bot) sendReply(source core.MessageSource, openid, msgID, text string) error {
 	api := b.qqBot.API()
 	var err error
-	if isGroup {
+	switch source {
+	case core.SourceChannel:
+		_, err = api.ReplyChannelText(context.Background(), openid, msgID, text)
+	case core.SourceGroup:
 		_, err = api.ReplyGroupText(context.Background(), openid, msgID, text)
-	} else {
+	default:
 		_, err = api.ReplyC2CText(context.Background(), openid, msgID, text)
 	}
 	if err != nil {

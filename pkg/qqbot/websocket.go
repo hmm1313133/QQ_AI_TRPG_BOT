@@ -309,13 +309,23 @@ func (w *WSClient) parseEventData(eventType string, raw interface{}) interface{}
 		if err := json.Unmarshal(data, &msg); err == nil {
 			return &msg
 		}
-	case EventAtMessageCreate, EventDirectMessageCreate:
+	case EventAtMessageCreate, EventMessageCreate, EventDirectMessageCreate:
 		var msg ChannelMessageEvent
 		if err := json.Unmarshal(data, &msg); err == nil {
 			return &msg
 		}
+	case EventMessageDelete, EventPublicMessageDelete, EventDirectMessageDelete:
+		var evt MessageDeleteEvent
+		if err := json.Unmarshal(data, &evt); err == nil {
+			return &evt
+		}
 	case EventInteractionCreate:
 		var evt InteractionEvent
+		if err := json.Unmarshal(data, &evt); err == nil {
+			return &evt
+		}
+	case EventMessageAuditPass, EventMessageAuditReject:
+		var evt MessageAuditEvent
 		if err := json.Unmarshal(data, &evt); err == nil {
 			return &evt
 		}

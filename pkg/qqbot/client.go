@@ -79,6 +79,17 @@ func (b *Bot) OnInteraction(handler func(ctx *EventContext, event *InteractionEv
 	b.dispatcher.OnInteraction(handler)
 }
 
+// OnChannelMessage 注册频道消息处理函数。
+// 适用于 AT_MESSAGE_CREATE、MESSAGE_CREATE、DIRECT_MESSAGE_CREATE。
+func (b *Bot) OnChannelMessage(handler func(ctx *EventContext, msg *ChannelMessageEvent)) {
+	b.dispatcher.OnChannelMessage(handler)
+}
+
+// OnMessageAudit 注册消息审核事件处理函数。
+func (b *Bot) OnMessageAudit(handler func(ctx *EventContext, event *MessageAuditEvent)) {
+	b.dispatcher.OnMessageAudit(handler)
+}
+
 // OnFriendAdd 注册添加好友事件处理函数。
 func (b *Bot) OnFriendAdd(handler func(ctx *EventContext, event *FriendEvent)) {
 	b.dispatcher.On(EventFriendAdd, func(ctx *EventContext) {

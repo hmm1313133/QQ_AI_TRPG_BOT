@@ -20,6 +20,10 @@ const (
 	// --- 交互事件 (Intent 1<<26) ---
 	EventInteractionCreate = "INTERACTION_CREATE" // 交互回调
 
+	// --- 消息审核事件 (Intent 1<<27) ---
+	EventMessageAuditPass   = "MESSAGE_AUDIT_PASS"    // 消息审核通过
+	EventMessageAuditReject = "MESSAGE_AUDIT_REJECT"  // 消息审核不通过
+
 	// --- 频道事件 (Intent 1<<0) ---
 	EventGuildCreate  = "GUILD_CREATE"   // 频道创建
 	EventGuildUpdate  = "GUILD_UPDATE"   // 频道更新
@@ -32,6 +36,10 @@ const (
 	EventGuildMemberAdd    = "GUILD_MEMBER_ADD"    // 成员加入
 	EventGuildMemberUpdate = "GUILD_MEMBER_UPDATE" // 成员更新
 	EventGuildMemberRemove = "GUILD_MEMBER_REMOVE" // 成员退出
+
+	// --- 频道消息事件 (Intent 1<<9, 仅私域) ---
+	EventMessageCreate = "MESSAGE_CREATE" // 频道全量消息（私域）
+	EventMessageDelete = "MESSAGE_DELETE" // 频道消息撤回（私域）
 
 	// --- 公域频道消息事件 (Intent 1<<30) ---
 	EventAtMessageCreate     = "AT_MESSAGE_CREATE"      // 频道@机器人
@@ -146,6 +154,21 @@ type MessageRejectEvent struct {
 	Timestamp string `json:"timestamp"`
 }
 
+// MessageDeleteEvent 是频道消息撤回事件 (MESSAGE_DELETE / PUBLIC_MESSAGE_DELETE / DIRECT_MESSAGE_DELETE)。
+type MessageDeleteEvent struct {
+	ID        string `json:"id"`         // 被撤回的消息 ID
+	ChannelID string `json:"channel_id"` // 子频道 ID
+	GuildID   string `json:"guild_id"`   // 频道 ID
+}
+
+// MessageAuditEvent 是消息审核事件 (MESSAGE_AUDIT_PASS / MESSAGE_AUDIT_REJECT)。
+type MessageAuditEvent struct {
+	AuditID   string `json:"audit_id"`   // 审核单 ID
+	MessageID string `json:"message_id"` // 消息 ID
+	ChannelID string `json:"channel_id"` // 子频道 ID
+	GuildID   string `json:"guild_id"`   // 频道 ID
+}
+
 // EventDispatcher 是事件分发器，管理各类型事件的回调。
 type EventDispatcher struct {
 	handlers map[string][]EventHandler
@@ -207,6 +230,41 @@ func (d *EventDispatcher) OnGroupMessage(handler func(ctx *EventContext, msg *Gr
 func (d *EventDispatcher) OnInteraction(handler func(ctx *EventContext, event *InteractionEvent)) {
 	d.On(EventInteractionCreate, func(ctx *EventContext) {
 		if evt, ok := ctx.RawData.(*InteractionEvent); ok {
+			handler(ctx, evt)
+		}
+	})
+}
+
+// OnChannelMessage 注册频道消息处理函数。
+// 适用于 AT_MESSAGE_CREATE（公域@机器人）、MESSAGE_CREATE（私域全量）、DIRECT_MESSAGE_CREATE（频道私信）。
+func (d *EventDispatcher) OnChannelMessage(handler func(ctx *EventContext, msg *ChannelMessageEvent)) {
+	d.On(EventAtMessageCreate, func(ctx *EventContext) {
+		if msg, ok := ctx.RawData.(*ChannelMessageEvent); ok {
+			handler(ctx, msg)
+		}
+	})
+	d.On(EventMessageCreate, func(ctx *EventContext) {
+		if msg, ok := ctx.RawData.(*ChannelMessageEvent); ok {
+			handler(ctx, msg)
+		}
+	})
+	d.On(EventDirectMessageCreate, func(ctx *EventContext) {
+		if msg, ok := ctx.RawData.(*ChannelMessageEvent); ok {
+			handler(ctx, msg)
+		}
+	})
+}
+
+// OnMessageAudit 注册消息审核事件处理函数。
+// 适用于 MESSAGE_AUDIT_PASS 和 MESSAGE_AUDIT_REJECT。
+func (d *EventDispatcher) OnMessageAudit(handler func(ctx *EventContext, event *MessageAuditEvent)) {
+	d.On(EventMessageAuditPass, func(ctx *EventContext) {
+		if evt, ok := ctx.RawData.(*MessageAuditEvent); ok {
+			handler(ctx, evt)
+		}
+	})
+	d.On(EventMessageAuditReject, func(ctx *EventContext) {
+		if evt, ok := ctx.RawData.(*MessageAuditEvent); ok {
 			handler(ctx, evt)
 		}
 	})

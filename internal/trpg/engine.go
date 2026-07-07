@@ -1,93 +1,159 @@
-// Package trpg 是 TRPG 游戏核心引擎，
-// 提供骰子、角色卡、规则集和模组管理功能。
+// Package trpg is the TRPG game core engine.
+// It manages game sessions, rulesets, and character bindings.
+// The Engine is thread-safe and isolates sessions by sessionID.
 package trpg
 
 import (
 	"fmt"
 	"sync"
+
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/character"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/dice"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/ruleset"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/ruleset/coc7"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/ruleset/dnd5e"
 )
 
-// Engine 是 TRPG 游戏引擎，管理游戏状态和规则。
+// Engine is the TRPG game engine, managing game state and rulesets.
+// It is thread-safe; all public methods acquire the internal mutex.
 type Engine struct {
-	mu        sync.RWMutex
-	ruleSets  map[string]RuleSet          // 注册的规则集
-	sessions  map[string]*Session         // 按 sessionID 隔离的游戏会话
+	mu             sync.RWMutex
+	ruleSets       map[string]ruleset.RuleSet // registered rulesets
+	sessions       map[string]*Session        // sessionID -> game session
+	defaultRuleSet string                     // default ruleset name for new sessions
 }
 
-// NewEngine 创建 TRPG 引擎实例并加载默认规则集。
+// NewEngine creates a TRPG engine with CoC7 and DnD5e rulesets registered.
 func NewEngine() *Engine {
 	e := &Engine{
-		ruleSets: make(map[string]RuleSet),
-		sessions: make(map[string]*Session),
+		ruleSets:       make(map[string]ruleset.RuleSet),
+		sessions:       make(map[string]*Session),
+		defaultRuleSet: "coc7",
 	}
-	// TODO: 注册默认规则集 (CoC7, DnD5e)
+	e.ruleSets["coc7"] = coc7.New()
+	e.ruleSets["dnd5e"] = dnd5e.New()
 	return e
 }
 
-// Session 表示一个独立的 TRPG 游戏会话（对应一个 QQ 群/私聊）。
+// Session represents an independent TRPG game session (one per QQ group/private chat).
 type Session struct {
 	ID         string
-	RuleSet    RuleSet
-	Characters map[string]*Character      // userID -> 角色
-	Module     string                      // 当前运行的模组名称
-	State      map[string]interface{}      // 游戏状态数据
+	RuleSet    ruleset.RuleSet              // active ruleset (coc7/dnd5e)
+	Characters map[string]*character.Card   // userID -> active character card (pointer, shared globally)
+	Module     string                        // current module name
+	State      map[string]interface{}        // arbitrary game state data
 }
 
-// GetSession 获取或创建指定 sessionID 的游戏会话。
+// GetSession retrieves or creates the game session for the given sessionID.
 func (e *Engine) GetSession(sessionID string) *Session {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.getSessionLocked(sessionID)
+}
+
+// getSessionLocked is the lock-free version; caller must hold e.mu.
+func (e *Engine) getSessionLocked(sessionID string) *Session {
 	if s, ok := e.sessions[sessionID]; ok {
 		return s
 	}
 	s := &Session{
 		ID:         sessionID,
-		Characters: make(map[string]*Character),
+		Characters: make(map[string]*character.Card),
 		State:      make(map[string]interface{}),
+	}
+	if e.defaultRuleSet != "" {
+		s.RuleSet = e.newRuleSetLocked(e.defaultRuleSet)
 	}
 	e.sessions[sessionID] = s
 	return s
 }
 
-// RollDice 执行骰子表达式投掷。
-func (e *Engine) RollDice(sessionID, expr string) (*RollResult, error) {
+// SetRuleSet switches the ruleset for a session.
+// A fresh instance is created so each session has independent settings (e.g. house rules).
+func (e *Engine) SetRuleSet(sessionID, name string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.ruleSets[name]; !ok {
+		return fmt.Errorf("未知规则集: %s (可用: %v)", name, e.listRuleSetsLocked())
+	}
+	session := e.getSessionLocked(sessionID)
+	session.RuleSet = e.newRuleSetLocked(name)
+	return nil
+}
+
+// newRuleSetLocked creates a fresh ruleset instance for known types.
+// For custom rulesets, returns the registered instance. Caller must hold e.mu.
+func (e *Engine) newRuleSetLocked(name string) ruleset.RuleSet {
+	switch name {
+	case "coc7":
+		return coc7.New()
+	case "dnd5e":
+		return dnd5e.New()
+	default:
+		return e.ruleSets[name]
+	}
+}
+
+// GetRuleSet returns the active ruleset for a session (may be nil if not set).
+func (e *Engine) GetRuleSet(sessionID string) ruleset.RuleSet {
+	session := e.GetSession(sessionID)
+	return session.RuleSet
+}
+
+// RollDice evaluates a dice expression using the session's ruleset.
+func (e *Engine) RollDice(sessionID, expr string) (*dice.RollResult, error) {
 	session := e.GetSession(sessionID)
 	if session.RuleSet == nil {
-		return nil, fmt.Errorf("未设置规则集")
+		return nil, fmt.Errorf("未设置规则集，请先使用 .set coc 或 .set dnd")
 	}
 	return session.RuleSet.Roll(expr)
 }
 
-// RuleSet 接口定义 TRPG 规则集需要实现的能力。
-type RuleSet interface {
-	Name() string
-	Roll(diceExpr string) (*RollResult, error)
-	Check(action string, char *Character) (*CheckResult, error)
+// RegisterRuleSet registers a custom ruleset.
+func (e *Engine) RegisterRuleSet(name string, rs ruleset.RuleSet) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ruleSets[name] = rs
 }
 
-// Character 表示玩家角色卡。
-type Character struct {
-	ID       string                 `json:"id"`
-	Name     string                 `json:"name"`
-	Player   string                 `json:"player"`    // QQ userID
-	Attrs    map[string]int         `json:"attrs"`     // 属性值
-	Skills   map[string]int         `json:"skills"`    // 技能值
-	Extra    map[string]interface{} `json:"extra"`     // 额外数据
+// ListRuleSets returns the names of all registered rulesets.
+func (e *Engine) ListRuleSets() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.listRuleSetsLocked()
 }
 
-// RollResult 骰子投掷结果。
-type RollResult struct {
-	Expr    string `json:"expr"`     // 骰子表达式，如 "3d6"
-	Rolls   []int  `json:"rolls"`    // 每个骰子的结果
-	Total   int    `json:"total"`    // 总计
-	Detail  string `json:"detail"`   // 可读描述
+func (e *Engine) listRuleSetsLocked() []string {
+	names := make([]string, 0, len(e.ruleSets))
+	for name := range e.ruleSets {
+		names = append(names, name)
+	}
+	return names
 }
 
-// CheckResult 技能检定结果。
-type CheckResult struct {
-	Skill     string `json:"skill"`
-	Value     int    `json:"value"`      // 角色技能值
-	Roll      int    `json:"roll"`       // 骰点结果
-	Success   bool   `json:"success"`    // 是否成功
-	Level     string `json:"level"`      // 成功等级: 大成功/困难成功/大失败 等
+// SetDefaultRuleSet sets the default ruleset for new sessions.
+func (e *Engine) SetDefaultRuleSet(name string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.defaultRuleSet = name
+}
+
+// GetActiveCharacter returns the character card currently bound to userID in this session.
+func (e *Engine) GetActiveCharacter(sessionID, userID string) *character.Card {
+	session := e.GetSession(sessionID)
+	return session.Characters[userID]
+}
+
+// SetActiveCharacter binds a character card to userID in this session.
+// The card is a pointer to the global character.Manager's card, so changes
+// propagate across all sessions that share the same card.
+func (e *Engine) SetActiveCharacter(sessionID, userID string, card *character.Card) {
+	session := e.GetSession(sessionID)
+	session.Characters[userID] = card
+}
+
+// UnsetActiveCharacter removes the character binding for userID in this session.
+func (e *Engine) UnsetActiveCharacter(sessionID, userID string) {
+	session := e.GetSession(sessionID)
+	delete(session.Characters, userID)
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -16,20 +17,20 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
-// KPAgent 是跑团主持 AI Agent。
-// 基于 trpc-agent-go 的 LLMAgent 实现，使用 DeepSeek 模型。
-// 通过 Session 获取游戏上下文，通过 FunctionTool 调用骰子等工具。
+// KPAgent is the KP/DM AI Agent.
+// It uses trpc-agent-go's LLMAgent with DeepSeek model.
+// Game state is accessed through Service and shared via core.Session.
 type KPAgent struct {
 	config     *Config
 	agent      agent.Agent
 	runner     runner.Runner
 	tools      []tool.Tool
 	sessionMgr *core.SessionManager
+	svc        *trpg.Service
 }
 
-// NewKPAgent 创建 KP/DM 主持 Agent。
-// 使用 trpc-agent-go 的 LLMAgent + DeepSeek 模型。
-func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager) (*KPAgent, error) {
+// NewKPAgent creates a KP/DM agent.
+func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service) (*KPAgent, error) {
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = DefaultKPPrompt()
 	}
@@ -43,7 +44,7 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager) (*KPAgent, error) 
 		cfg.MemoryWindow = 20
 	}
 
-	// 设置环境变量（trpc-agent-go 的 openai 模型通过环境变量读取密钥）
+	// Set environment variables for trpc-agent-go's openai model
 	if cfg.LLMAPIKey != "" {
 		os.Setenv("OPENAI_API_KEY", cfg.LLMAPIKey)
 	}
@@ -51,23 +52,20 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager) (*KPAgent, error) 
 		os.Setenv("OPENAI_BASE_URL", cfg.LLMBaseURL)
 	}
 
-	// 1. 创建 DeepSeek 模型实例
-	// trpc-agent-go 的 openai 模块通过 VariantDeepSeek 支持 DeepSeek API
+	// 1. Create DeepSeek model instance
 	modelOpts := []openai.Option{
 		openai.WithVariant(openai.VariantDeepSeek),
 	}
 	modelInstance := openai.New(cfg.LLMModel, modelOpts...)
 
-	// 2. 创建 TRPG 工具
-	tools := []tool.Tool{
-		NewRollDiceTool(sessionMgr),
-	}
+	// 2. Create TRPG tools (KP-relevant only)
+	tools := NewKPTools(sessionMgr, svc)
 
-	// 3. 创建 LLMAgent
+	// 3. Create LLMAgent
 	genConfig := model.GenerationConfig{
 		MaxTokens:   &cfg.MaxTokens,
 		Temperature: &cfg.Temperature,
-		Stream:      false, // 非流式，QQ 消息需要完整回复
+		Stream:      false,
 	}
 
 	a := llmagent.New("kp",
@@ -77,7 +75,7 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager) (*KPAgent, error) 
 		llmagent.WithGenerationConfig(genConfig),
 	)
 
-	// 4. 创建 Runner（管理会话和执行）
+	// 4. Create Runner
 	r := runner.NewRunner("qq-ai-trpg-bot", a)
 
 	kp := &KPAgent{
@@ -86,25 +84,24 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager) (*KPAgent, error) 
 		runner:     r,
 		tools:      tools,
 		sessionMgr: sessionMgr,
+		svc:        svc,
 	}
 
-	log.Printf("[KPAgent] 初始化完成, provider=%s, model=%s, base_url=%s",
-		cfg.LLMProvider, cfg.LLMModel, cfg.LLMBaseURL)
+	log.Printf("[KPAgent] 初始化完成, provider=%s, model=%s, base_url=%s, tools=%d",
+		cfg.LLMProvider, cfg.LLMModel, cfg.LLMBaseURL, len(tools))
 
 	return kp, nil
 }
 
-// AgentID 实现 core.AgentHandler 接口。
+// AgentID implements core.AgentHandler.
 func (a *KPAgent) AgentID() string {
 	return "kp"
 }
 
-// Chat 实现 core.AgentHandler 接口。
-// 处理玩家对话，通过 trpc-agent-go Runner 执行 AI 推理。
-// trpc-agent-go 内部维护 session 级别的对话历史，无需手动管理。
+// Chat implements core.AgentHandler.
 func (a *KPAgent) Chat(ctx *core.MessageContext, session *core.Session) (string, error) {
-	// 构建游戏上下文提示，拼接到用户消息前
-	gameContext := a.buildGameContext(session)
+	// Build game context prompt
+	gameContext := a.buildGameContext(ctx.SessionID, ctx.UserID)
 
 	var userMessage string
 	if gameContext != "" {
@@ -113,21 +110,21 @@ func (a *KPAgent) Chat(ctx *core.MessageContext, session *core.Session) (string,
 		userMessage = ctx.Content
 	}
 
-	// 注入 sessionID 到 context，供 FunctionTool 读取
+	// Inject sessionID and userID into context for FunctionTools
 	agentCtx := withSessionID(ctx.Ctx, ctx.SessionID)
+	agentCtx = withUserID(agentCtx, ctx.UserID)
 
-	// 调用 trpc-agent-go Runner 执行对话
-	// runner 内部通过 user-id + session-id 维护对话历史
+	// Run AI agent
 	events, err := a.runner.Run(agentCtx,
-		ctx.UserID,    // user-id
-		ctx.SessionID, // session-id
+		ctx.UserID,
+		ctx.SessionID,
 		model.NewUserMessage(userMessage),
 	)
 	if err != nil {
 		return "", fmt.Errorf("Agent 执行失败: %w", err)
 	}
 
-	// 收集事件流中的回复内容
+	// Collect reply from event stream
 	var replyBuilder strings.Builder
 	for event := range events {
 		if event.Object == "chat.completion.chunk" {
@@ -152,29 +149,98 @@ func (a *KPAgent) Chat(ctx *core.MessageContext, session *core.Session) (string,
 	return reply, nil
 }
 
-// buildGameContext 从 Session 构建游戏上下文描述，注入到 AI 的 prompt 中。
-// 这是 Agent 与 Handler 层联动的关键：Handler 层维护的游戏状态通过 Session 传递给 Agent。
-func (a *KPAgent) buildGameContext(session *core.Session) string {
-	session.RLock()
-	defer session.RUnlock()
-
+// buildGameContext builds a game context description from the engine and session.
+// This is injected into the AI's prompt to provide awareness of game state.
+func (a *KPAgent) buildGameContext(sessionID, userID string) string {
 	var sb strings.Builder
 	hasContext := false
 
-	if module, ok := session.Get("current_module"); ok {
-		sb.WriteString(fmt.Sprintf("当前模组: %v\n", module))
+	// Ruleset
+	rs := a.svc.GetRuleSet(sessionID)
+	if rs != nil {
+		rsLabel := "CoC 7版"
+		if rs.Name() == "dnd5e" {
+			rsLabel = "DnD 5e"
+		}
+		sb.WriteString(fmt.Sprintf("规则集: %s\n", rsLabel))
 		hasContext = true
 	}
-	if scene, ok := session.Get("current_scene"); ok {
-		sb.WriteString(fmt.Sprintf("当前场景: %v\n", scene))
+
+	// Active character
+	card := a.svc.GetActiveCharacter(sessionID, userID)
+	if card != nil {
+		sb.WriteString(fmt.Sprintf("玩家角色: %s (%s)\n", card.Name, card.System))
+		// Show key stats
+		if len(card.Attrs) > 0 {
+			sb.WriteString("属性: ")
+			first := true
+			for k, v := range card.Attrs {
+				if !first {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(fmt.Sprintf("%s=%d", k, v))
+				first = false
+			}
+			sb.WriteString("\n")
+		}
+		if len(card.Skills) > 0 && rs != nil && rs.Name() == "coc7" {
+			// Only show skills for CoC (too many to list otherwise)
+			sb.WriteString("技能(前10): ")
+			count := 0
+			for k, v := range card.Skills {
+				if count >= 10 {
+					sb.WriteString("...")
+					break
+				}
+				if count > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(fmt.Sprintf("%s=%d", k, v))
+				count++
+			}
+			sb.WriteString("\n")
+		}
+		if len(card.Status) > 0 {
+			sb.WriteString("状态: ")
+			first := true
+			for k, v := range card.Status {
+				if !first {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(fmt.Sprintf("%s=%d", k, v))
+				first = false
+			}
+			sb.WriteString("\n")
+		}
 		hasContext = true
 	}
-	if lastRoll, ok := session.Get("last_dice_result"); ok {
-		sb.WriteString(fmt.Sprintf("最近骰点: %v\n", lastRoll))
-		hasContext = true
+
+	// Last dice result from core.Session
+	if a.sessionMgr != nil {
+		session := a.sessionMgr.GetSession(sessionID)
+		if lastRoll, ok := session.Get("last_dice_result"); ok {
+			sb.WriteString(fmt.Sprintf("最近骰点: %v\n", lastRoll))
+			hasContext = true
+		}
+		if lastCheck, ok := session.Get("last_check_result"); ok {
+			sb.WriteString(fmt.Sprintf("最近检定: %v\n", lastCheck))
+			hasContext = true
+		}
 	}
-	if chars, ok := session.Get("characters"); ok {
-		sb.WriteString(fmt.Sprintf("角色信息: %v\n", chars))
+
+	// Initiative list (DnD)
+	initList := a.svc.GetInitList(sessionID)
+	if len(initList) > 0 {
+		sb.WriteString("先攻列表: ")
+		first := true
+		for name, val := range initList {
+			if !first {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(fmt.Sprintf("%s(%d)", name, val))
+			first = false
+		}
+		sb.WriteString("\n")
 		hasContext = true
 	}
 
@@ -185,7 +251,7 @@ func (a *KPAgent) buildGameContext(session *core.Session) string {
 	return "【游戏上下文】\n" + sb.String()
 }
 
-// truncate 截断字符串到指定长度。
+// truncate truncates a string to maxLen runes.
 func truncate(s string, maxLen int) string {
 	runes := []rune(s)
 	if len(runes) <= maxLen {

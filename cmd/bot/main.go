@@ -1,9 +1,10 @@
-// Package main 是 QQ AI TRPG Bot 的程序入口。
+// Package main is the entry point for QQ AI TRPG Bot.
 //
-// 架构分两层:
-//   - 功能层 (Handler): 基于 Go 代码的确定性功能 (骰子/模式切换/日志管理)
-//   - Agent 层 (trpc-agent-go): AI 能力 (KP/DM 主持)
-//   - 联动: 通过 Session 共享状态 + Hook 自动记录日志
+// Architecture:
+//   - Service Layer (trpg.Service): unified game operations, single source of truth
+//   - Function Layer (Handler): Go-based deterministic features (dice/mode/log/character/ruleset)
+//   - Agent Layer (trpc-agent-go): AI capabilities (KP/DM hosting)
+//   - Linkage: Service shared by both Handler and Agent; Session for cross-layer state
 package main
 
 import (
@@ -19,20 +20,30 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/handler"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/character"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/gamelog"
 )
 
 func main() {
-	// 1. 初始化核心组件
+	// 1. Initialize core components
 	plugins := core.NewPluginManager()
 	sessions := core.NewSessionManager()
 	gameLogger := gamelog.NewGameLogger()
 
-	// 2. 初始化 TRPG 引擎（功能层依赖）
+	// 2. Initialize TRPG engine (rulesets, sessions, character bindings)
 	trpgEngine := trpg.NewEngine()
-	_ = trpgEngine // 后续角色卡等 Handler 会使用
 
-	// 3. 初始化 AI Agent 层 (trpc-agent-go + DeepSeek)
+	// 3. Initialize character card manager (loads existing cards from disk)
+	charDir := getEnv("CHARACTER_DIR", "./data/characters")
+	charMgr, err := character.NewManager(charDir)
+	if err != nil {
+		log.Fatalf("初始化角色卡管理器失败: %v", err)
+	}
+
+	// 4. Create unified Service (shared by Handlers and AI Agent)
+	svc := trpg.NewService(trpgEngine, charMgr, sessions)
+
+	// 5. Initialize AI Agent (trpc-agent-go + DeepSeek)
 	kpAgent, err := agent.NewKPAgent(&agent.Config{
 		LLMProvider:  getEnv("LLM_PROVIDER", "deepseek"),
 		LLMModel:     getEnv("LLM_MODEL", "deepseek-chat"),
@@ -41,27 +52,36 @@ func main() {
 		MaxTokens:    4096,
 		Temperature:  0.8,
 		MemoryWindow: 20,
-	}, sessions)
+	}, sessions, svc)
 	if err != nil {
 		log.Fatalf("初始化 AI Agent 失败: %v", err)
 	}
 
-	// 4. 注册 AI Agent
+	// 6. Register AI Agent
 	if err := plugins.RegisterAgent(kpAgent); err != nil {
 		log.Fatalf("注册 Agent 失败: %v", err)
 	}
 
-	// 5. 注册功能层 Handler (指令处理器)
+	// 7. Register command handlers (order matters: specific before general)
+	handlerCount := 0
 	plugins.RegisterHandler(handler.NewHelpHandler())
-	plugins.RegisterHandler(handler.NewDiceHandler())
+	handlerCount++
+	plugins.RegisterHandler(handler.NewRulesetHandler(svc))
+	handlerCount++
+	plugins.RegisterHandler(handler.NewCharacterHandler(svc))
+	handlerCount++
+	plugins.RegisterHandler(handler.NewCoCHandler(svc))
+	handlerCount++
+	plugins.RegisterHandler(handler.NewDnDHandler(svc))
+	handlerCount++
+	plugins.RegisterHandler(handler.NewDiceHandler(svc))
+	handlerCount++
 	plugins.RegisterHandler(handler.NewModeHandler(sessions))
+	handlerCount++
 	plugins.RegisterHandler(handler.NewLogHandler(gameLogger))
+	handlerCount++
 
-	// 6. 注册 Hook (联动机制: 自动日志记录)
-	// 在 TRPG 模式下，GameLogger 会自动记录玩家发言和 AI 回复
-	// 注意: 日志记录已在 bot.route 中直接调用 gameLogger，无需额外 Hook
-
-	// 7. 初始化 QQ Bot，注入所有组件
+	// 8. Initialize QQ Bot
 	qqBot, err := bot.NewBot(&bot.Config{
 		AppID:        os.Getenv("QQ_BOT_APPID"),
 		ClientSecret: os.Getenv("QQ_BOT_SECRET"),
@@ -70,15 +90,16 @@ func main() {
 		log.Fatalf("初始化 QQ Bot 失败: %v", err)
 	}
 
-	// 8. 启动
+	// 9. Start
 	if err := qqBot.Start(); err != nil {
 		log.Fatalf("启动 Bot 失败: %v", err)
 	}
 	log.Infof("QQ AI TRPG Bot 已启动")
-	log.Infof("已注册 Handler: %d, Agent: %d", 4, 1)
-	log.Infof("架构: 功能层(Handler) + AI层(Agent) + 联动(Hook/Session)")
+	log.Infof("已注册 Handler: %d, Agent: 1", handlerCount)
+	log.Infof("架构: Service层 + 功能层(Handler) + AI层(Agent) + 联动(Session)")
+	log.Infof("规则集: CoC7 + DnD5e | 角色卡: %s", charDir)
 
-	// 9. 等待退出信号
+	// 10. Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh

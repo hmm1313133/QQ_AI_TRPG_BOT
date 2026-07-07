@@ -42,22 +42,35 @@ type GetScriptContextReq struct {
 }
 
 type GetScriptContextRsp struct {
-	Title        string             `json:"title"`
-	System       string             `json:"system"`
-	Setting      string             `json:"setting"`
-	Synopsis     string             `json:"synopsis"`
-	CurrentNode  string             `json:"current_node"`
-	NextNode     string             `json:"next_node,omitempty"`
-	Timeline     []TimelineNodeInfo `json:"timeline,omitempty"`
-	Found        bool               `json:"found"`
+	Title            string             `json:"title"`
+	System           string             `json:"system"`
+	Setting          string             `json:"setting"`
+	Synopsis         string             `json:"synopsis"`
+	Atmosphere       string             `json:"atmosphere,omitempty"`
+	Tone             string             `json:"tone,omitempty"`
+	Backstory        string             `json:"backstory,omitempty"`
+	CurrentNode      string             `json:"current_node"`
+	CurrentNodeDesc  string             `json:"current_node_desc,omitempty"`
+	NextNode         string             `json:"next_node,omitempty"`
+	Timeline         []TimelineNodeInfo `json:"timeline,omitempty"`
+	Found            bool               `json:"found"`
 }
 
 type TimelineNodeInfo struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Completed bool   `json:"completed"`
-	IsCurrent bool   `json:"is_current"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Type         string   `json:"type"`
+	Description  string   `json:"description,omitempty"`
+	Narrative    string   `json:"narrative,omitempty"`
+	Clues        []string `json:"clues,omitempty"`
+	Encounters   []string `json:"encounters,omitempty"`
+	Objectives   []string `json:"objectives,omitempty"`
+	Triggers     []string `json:"triggers,omitempty"`
+	Branches     []string `json:"branches,omitempty"`
+	KPNotes      string   `json:"kp_notes,omitempty"`
+	NPCs         []string `json:"npcs,omitempty"`
+	Completed    bool     `json:"completed"`
+	IsCurrent    bool     `json:"is_current"`
 }
 
 func NewGetScriptContextTool(deps *ScriptDeps) tool.Tool {
@@ -86,12 +99,20 @@ func NewGetScriptContextTool(deps *ScriptDeps) tool.Tool {
 		}
 
 		rsp := GetScriptContextRsp{
-			Title:    scr.Title,
-			System:   scr.System,
-			Setting:  scr.Background.Setting,
-			Synopsis: scr.Background.Synopsis,
+			Title:       scr.Title,
+			System:      scr.System,
+			Setting:     scr.Background.Setting,
+			Synopsis:    scr.Background.Synopsis,
+			Atmosphere:  scr.Background.Atmosphere,
+			Tone:        scr.Background.Tone,
+			Backstory:   scr.Background.Backstory,
 			CurrentNode: progress.CurrentNodeID,
-			Found:    true,
+			Found:       true,
+		}
+
+		// 当前节点详细信息
+		if curNode, err := scr.GetNodeByID(progress.CurrentNodeID); err == nil {
+			rsp.CurrentNodeDesc = curNode.Description
 		}
 
 		// 下一个节点
@@ -103,11 +124,20 @@ func NewGetScriptContextTool(deps *ScriptDeps) tool.Tool {
 		if req.IncludeTimeline {
 			for _, node := range scr.Timeline {
 				rsp.Timeline = append(rsp.Timeline, TimelineNodeInfo{
-					ID:        node.ID,
-					Name:      node.Name,
-					Type:      node.Type,
-					Completed: progress.IsNodeCompleted(node.ID),
-					IsCurrent: node.ID == progress.CurrentNodeID,
+					ID:          node.ID,
+					Name:        node.Name,
+					Type:        node.Type,
+					Description: node.Description,
+					Narrative:   node.Narrative,
+					Clues:       node.Clues,
+					Encounters:  node.Encounters,
+					Objectives:  node.Objectives,
+					Triggers:    node.Triggers,
+					Branches:    node.Branches,
+					KPNotes:     node.KPNotes,
+					NPCs:        node.NPCs,
+					Completed:   progress.IsNodeCompleted(node.ID),
+					IsCurrent:   node.ID == progress.CurrentNodeID,
 				})
 			}
 		}
@@ -118,7 +148,8 @@ func NewGetScriptContextTool(deps *ScriptDeps) tool.Tool {
 	return function.NewFunctionTool(fn,
 		function.WithName("get_script_context"),
 		function.WithDescription(
-			"获取当前剧本的上下文信息，包括故事背景、当前剧情节点和可选的完整时间轴。"+
+			"获取当前剧本的上下文信息，包括故事背景（含氛围、基调、详细背景）、当前剧情节点详情和可选的完整时间轴。"+
+				"时间轴包含每个节点的叙述文本、线索、遭遇、目标、分支和KP备注。"+
 				"用于了解当前跑团所处的剧情阶段和可推进的方向。"+
 				"参数 include_timeline 设为 true 可获取完整时间轴列表。"),
 	)
@@ -132,13 +163,21 @@ type AdvanceTimelineReq struct {
 }
 
 type AdvanceTimelineRsp struct {
-	Success      bool   `json:"success"`
-	OldNodeID    string `json:"old_node_id"`
-	NewNodeID    string `json:"new_node_id"`
-	NewNodeName  string `json:"new_node_name"`
-	NewNodeDesc  string `json:"new_node_desc"`
-	IsLastNode   bool   `json:"is_last_node"`
-	Message      string `json:"message"`
+	Success     bool     `json:"success"`
+	OldNodeID   string   `json:"old_node_id"`
+	NewNodeID   string   `json:"new_node_id"`
+	NewNodeName string   `json:"new_node_name"`
+	NewNodeDesc string   `json:"new_node_desc"`
+	Narrative   string   `json:"narrative,omitempty"`
+	Clues       []string `json:"clues,omitempty"`
+	Encounters  []string `json:"encounters,omitempty"`
+	Objectives  []string `json:"objectives,omitempty"`
+	Triggers    []string `json:"triggers,omitempty"`
+	Branches    []string `json:"branches,omitempty"`
+	KPNotes     string   `json:"kp_notes,omitempty"`
+	NPCs        []string `json:"npcs,omitempty"`
+	IsLastNode  bool     `json:"is_last_node"`
+	Message     string   `json:"message"`
 }
 
 func NewAdvanceTimelineTool(deps *ScriptDeps) tool.Tool {
@@ -194,10 +233,18 @@ func NewAdvanceTimelineTool(deps *ScriptDeps) tool.Tool {
 			OldNodeID: oldNodeID,
 			NewNodeID: targetNodeID,
 		}
-		if newNode != nil {
-			rsp.NewNodeName = newNode.Name
-			rsp.NewNodeDesc = newNode.Description
-		}
+	if newNode != nil {
+		rsp.NewNodeName = newNode.Name
+		rsp.NewNodeDesc = newNode.Description
+		rsp.Narrative = newNode.Narrative
+		rsp.Clues = newNode.Clues
+		rsp.Encounters = newNode.Encounters
+		rsp.Objectives = newNode.Objectives
+		rsp.Triggers = newNode.Triggers
+		rsp.Branches = newNode.Branches
+		rsp.KPNotes = newNode.KPNotes
+		rsp.NPCs = newNode.NPCs
+	}
 		rsp.IsLastNode = scr.IsLastNode(targetNodeID)
 		rsp.Message = fmt.Sprintf("剧情已从 %s 推进到 %s", oldNodeID, targetNodeID)
 
@@ -215,7 +262,7 @@ func NewAdvanceTimelineTool(deps *ScriptDeps) tool.Tool {
 			"推进剧情时间轴到下一节点或指定节点。"+
 				"当玩家完成当前节点的关键事件或达成触发条件时调用此工具。"+
 				"参数 node_id 留空则自动推进到下一节点；reason 描述推进原因。"+
-				"返回: 新节点信息、是否为最后一个节点。"),
+				"返回: 新节点的完整信息（描述、叙述文本、线索、遭遇、目标、分支、KP备注）和是否为最后一个节点。"),
 	)
 }
 
@@ -379,13 +426,19 @@ type GetNPCRsp struct {
 }
 
 type NPCInfo struct {
-	Name        string         `json:"name"`
-	Role        string         `json:"role"`
-	Personality string         `json:"personality"`
-	Background  string         `json:"background"`
-	Attrs       map[string]int `json:"attrs"`
-	Skills      map[string]int `json:"skills"`
-	Notes       string         `json:"notes"`
+	Name          string         `json:"name"`
+	Role          string         `json:"role"`
+	Personality   string         `json:"personality"`
+	Background    string         `json:"background"`
+	Attrs         map[string]int `json:"attrs"`
+	Skills        map[string]int `json:"skills"`
+	Notes         string         `json:"notes"`
+	Motivation    string         `json:"motivation,omitempty"`
+	Secrets       string         `json:"secrets,omitempty"`
+	DialogueStyle string         `json:"dialogue_style,omitempty"`
+	KeyDialogue   []string       `json:"key_dialogue,omitempty"`
+	Relationships string         `json:"relationships,omitempty"`
+	Appearance    string         `json:"appearance,omitempty"`
 }
 
 func NewGetNPCTool(deps *ScriptDeps) tool.Tool {
@@ -432,20 +485,26 @@ func NewGetNPCTool(deps *ScriptDeps) tool.Tool {
 	return function.NewFunctionTool(fn,
 		function.WithName("get_npc"),
 		function.WithDescription(
-			"获取剧本中的 NPC 角色信息，包括性格、背景、属性和技能。"+
+			"获取剧本中的 NPC 角色信息，包括性格、背景、属性、技能、动机、秘密、对话风格、关键台词、外貌等。"+
 				"参数 name 指定 NPC 名称获取详细信息；留空则返回所有 NPC 列表。"+
-				"用于扮演 NPC 时参考其性格和属性。"),
+				"用于扮演 NPC 时参考其性格、对话风格和关键台词，确保角色演绎一致。"),
 	)
 }
 
 func npcToInfo(char *script.ScriptCharacter) NPCInfo {
 	return NPCInfo{
-		Name:        char.Name,
-		Role:        char.Role,
-		Personality: char.Personality,
-		Background:  char.Background,
-		Attrs:       char.Attrs,
-		Skills:      char.Skills,
-		Notes:       char.Notes,
+		Name:          char.Name,
+		Role:          char.Role,
+		Personality:   char.Personality,
+		Background:    char.Background,
+		Attrs:         char.Attrs,
+		Skills:        char.Skills,
+		Notes:         char.Notes,
+		Motivation:    char.Motivation,
+		Secrets:       char.Secrets,
+		DialogueStyle: char.DialogueStyle,
+		KeyDialogue:   char.KeyDialogue,
+		Relationships: char.Relationships,
+		Appearance:    char.Appearance,
 	}
 }

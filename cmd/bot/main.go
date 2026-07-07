@@ -76,7 +76,7 @@ func main() {
 		LLMModel:    getEnv("LLM_MODEL", "deepseek-chat"),
 		LLMAPIKey:   os.Getenv("LLM_API_KEY"),
 		LLMBaseURL:  getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
-		MaxTokens:   8192,
+		MaxTokens:   16384,
 		Temperature: 0.3,
 	})
 	if err != nil {

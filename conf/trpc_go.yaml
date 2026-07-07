@@ -72,7 +72,7 @@ trpg:
 script:
   analyzer:
     temperature: 0.3              # 识别温度（低温保证一致性）
-    max_tokens: 8192              # 最大 token 数
+    max_tokens: 16384             # 最大 token 数
 
 # OpenViking 上下文数据库配置
 # 本地部署: http://localhost:1933

@@ -45,7 +45,7 @@ type ScriptAnalyzer struct {
 // NewScriptAnalyzer 创建剧本识别 Agent。
 func NewScriptAnalyzer(cfg *AnalyzerConfig) (*ScriptAnalyzer, error) {
 	if cfg.MaxTokens == 0 {
-		cfg.MaxTokens = 8192
+		cfg.MaxTokens = 16384
 	}
 	if cfg.Temperature == 0 {
 		cfg.Temperature = 0.3

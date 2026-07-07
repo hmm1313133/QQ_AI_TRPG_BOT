@@ -1,0 +1,40 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test
+*.test
+*.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config with secrets
+conf/local.yaml
+conf/*secret*.yaml
+.env
+
+# Logs
+logs/
+*.log
+
+# Dependencies
+vendor/
+
+# CodeBuddy project data
+.codebuddy/
+
+# Runtime data
+data/

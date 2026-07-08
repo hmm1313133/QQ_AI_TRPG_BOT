@@ -207,9 +207,11 @@ func (h *ScriptHandler) analyzeAndSave(ctx *core.MessageContext, reply core.Repl
 	// 进度回调：将进度消息推送给用户
 	progress := func(stage, message string) {
 		log.Printf("[ScriptHandler] 进度 [%s]: %s", stage, message)
-		// 解析完成和 AI 开始阶段推送消息；流式阶段不推送（太频繁）
+		// 各阶段关键节点推送消息；频繁的阶段（如单模块提取过程）不推送
 		switch stage {
-		case "parse_done", "ai_start", "parsing":
+		case "parse_done", "planning", "planning_done",
+			"extracting", "extracting_done",
+			"integrating", "parsing":
 			reply(context.Background(), ctx.OpenID, ctx.MsgID, message, ctx.IsGroup)
 		}
 	}

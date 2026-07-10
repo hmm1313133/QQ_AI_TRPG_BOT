@@ -271,10 +271,14 @@ func (a *ScriptAnalyzer) Analyze(ctx context.Context, text string, sourceFile st
 	a.notify(progress, "planning_done", fmt.Sprintf("提取计划完成：%s | 分段 %d | 关键内容 %d 项",
 		plan.Title, len(plan.SegmentMap), len(plan.KeyContentToPreserve)))
 
+	// === 程序化提取逐字内容（不依赖 AI，保证原文完整） ===
+	verbatimExcerpts := extractVerbatimContent(text, plan)
+	log.Printf("[ScriptAnalyzer] 逐字内容程序化提取完成: %d 项", len(verbatimExcerpts))
+
 	// === Phase 2: 并行模块提取 ===
 	a.notify(progress, "extracting", "Phase 2: 4 个 AI Agent 并行提取模块...")
 	extractStart := time.Now()
-	results, extractErrors := a.runParallelExtraction(ctx, plan, provider, progress)
+	results, extractErrors := a.runParallelExtraction(ctx, plan, provider, verbatimExcerpts, progress)
 	log.Printf("[ScriptAnalyzer] Phase 2 完成: 耗时 %s, 错误数 %d",
 		time.Since(extractStart).Round(time.Millisecond), len(extractErrors))
 	for module, err := range extractErrors {
@@ -286,7 +290,7 @@ func (a *ScriptAnalyzer) Analyze(ctx context.Context, text string, sourceFile st
 	// === Phase 3: Integrator ===
 	a.notify(progress, "integrating", "Phase 3: AI 正在整合各模块结果...")
 	integrateStart := time.Now()
-	result, err := a.runIntegrator(ctx, plan, results)
+	result, err := a.runIntegrator(ctx, plan, results, verbatimExcerpts)
 	if err != nil {
 		log.Printf("[ScriptAnalyzer] Phase 3 整合失败: %v", err)
 		return nil, fmt.Errorf("整合阶段失败: %w", err)
@@ -337,6 +341,12 @@ func (a *ScriptAnalyzer) Analyze(ctx context.Context, text string, sourceFile st
 	// 确保规则集有效
 	if scr.System != "coc7" && scr.System != "dnd5e" {
 		scr.System = "coc7"
+	}
+
+	// 强制合并未分配的逐字摘录（程序化保证关键内容不丢失）
+	mergedCount := mergeVerbatimExcerpts(scr, verbatimExcerpts)
+	if mergedCount > 0 {
+		log.Printf("[ScriptAnalyzer] 强制合并 %d 条未分配的逐字摘录", mergedCount)
 	}
 
 	totalDuration := time.Since(planStart).Round(time.Millisecond)
@@ -406,16 +416,18 @@ func (a *ScriptAnalyzer) runParallelExtraction(
 	ctx context.Context,
 	plan *ExtractionPlan,
 	provider *TextAccessProvider,
+	verbatimExcerpts []VerbatimExcerpt,
 	progress ProgressFunc,
 ) (*ExtractionResults, map[string]error) {
 
-	// 构建 segment_map + hints 的共享上下文文本
+	// 构建 segment_map + hints + 逐字摘录 的共享上下文文本
 	segmentMapJSON, _ := json.MarshalIndent(plan.SegmentMap, "", "  ")
 	hintsJSON, _ := json.MarshalIndent(plan.ExtractionHints, "", "  ")
 	keyContentJSON, _ := json.MarshalIndent(plan.KeyContentToPreserve, "", "  ")
+	verbatimJSON, _ := json.MarshalIndent(verbatimExcerpts, "", "  ")
 
-	sharedContext := fmt.Sprintf("## 文本分段索引（segment_map）\n%s\n\n## 提取要点（extraction_hints）\n%s\n\n## 需逐字保留的关键内容\n%s",
-		string(segmentMapJSON), string(hintsJSON), string(keyContentJSON))
+	sharedContext := fmt.Sprintf("## 文本分段索引（segment_map）\n%s\n\n## 提取要点（extraction_hints）\n%s\n\n## 需逐字保留的关键内容\n%s\n\n## 已提取的逐字原文摘录（必须原封不动放入 verbatim_excerpts 字段，不得修改一个字）\n%s",
+		string(segmentMapJSON), string(hintsJSON), string(keyContentJSON), string(verbatimJSON))
 
 	// 4 个模块的提取任务
 	modules := []extractModule{
@@ -526,13 +538,14 @@ func (a *ScriptAnalyzer) runParallelExtraction(
 // ============================================================
 
 // runIntegrator 执行 Phase 3，整合 4 个模块结果。
-func (a *ScriptAnalyzer) runIntegrator(ctx context.Context, plan *ExtractionPlan, results *ExtractionResults) (*analyzerResult, error) {
+func (a *ScriptAnalyzer) runIntegrator(ctx context.Context, plan *ExtractionPlan, results *ExtractionResults, verbatimExcerpts []VerbatimExcerpt) (*analyzerResult, error) {
 	// 构建整合输入
 	planJSON, _ := json.MarshalIndent(plan, "", "  ")
 	resultsJSON, _ := json.MarshalIndent(results, "", "  ")
+	verbatimJSON, _ := json.MarshalIndent(verbatimExcerpts, "", "  ")
 
-	userMessage := fmt.Sprintf("## 提取计划（ExtractionPlan）\n%s\n\n## 四个模块的提取结果\n%s\n\n请整合以上内容为最终的剧本 JSON。",
-		string(planJSON), string(resultsJSON))
+	userMessage := fmt.Sprintf("## 提取计划（ExtractionPlan）\n%s\n\n## 四个模块的提取结果\n%s\n\n## 已提取的逐字原文摘录（必须原封不动分配到各节点/背景的 verbatim_excerpts 字段中，不得丢弃、概括或修改任何一个字）\n%s\n\n请整合以上内容为最终的剧本 JSON。确保每一条逐字摘录都被分配到最合适的节点或背景的 verbatim_excerpts 字段中。",
+		string(planJSON), string(resultsJSON), string(verbatimJSON))
 
 	events, err := a.integratorRun.Run(ctx, "analyzer", "script-integration",
 		model.NewUserMessage(userMessage),
@@ -666,4 +679,126 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen]) + "..."
+}
+
+// ============================================================
+// 逐字内容提取与合并（程序化保证，不依赖 AI）
+// ============================================================
+
+// extractVerbatimContent 根据 Planner 的 key_content_to_preserve 行号范围，
+// 程序化提取原文中的逐字内容，确保不丢失。
+func extractVerbatimContent(text string, plan *ExtractionPlan) []VerbatimExcerpt {
+	lines := strings.Split(text, "\n")
+	var excerpts []VerbatimExcerpt
+	for _, kc := range plan.KeyContentToPreserve {
+		if kc.StartLine < 1 || kc.EndLine > len(lines) || kc.StartLine > kc.EndLine {
+			log.Printf("[ScriptAnalyzer] 跳过无效行号范围: %s [%d-%d]", kc.Description, kc.StartLine, kc.EndLine)
+			continue
+		}
+		content := strings.Join(lines[kc.StartLine-1:kc.EndLine], "\n")
+		excerpts = append(excerpts, VerbatimExcerpt{
+			Description: kc.Description,
+			Module:      kc.Module,
+			Content:     strings.TrimSpace(content),
+			SourceLine:  kc.StartLine,
+		})
+		log.Printf("[ScriptAnalyzer] 逐字提取: %s [%d-%d] (%d 字符)",
+			kc.Description, kc.StartLine, kc.EndLine, len([]rune(content)))
+	}
+	return excerpts
+}
+
+// mergeVerbatimExcerpts 检查逐字摘录是否已包含在 Script 中，未包含的强制添加。
+// 返回强制合并的条数。
+func mergeVerbatimExcerpts(scr *Script, excerpts []VerbatimExcerpt) int {
+	merged := 0
+	for _, excerpt := range excerpts {
+		if isExcerptIncluded(scr, excerpt) {
+			continue
+		}
+		// 未包含，强制添加到最合适的位置
+		switch excerpt.Module {
+		case "background":
+			scr.Background.VerbatimExcerpts = append(scr.Background.VerbatimExcerpts, excerpt)
+			merged++
+		case "timeline":
+			idx := findBestNodeIndex(scr, excerpt)
+			if idx >= 0 {
+				scr.Timeline[idx].VerbatimExcerpts = append(scr.Timeline[idx].VerbatimExcerpts, excerpt)
+			} else if len(scr.Timeline) > 0 {
+				scr.Timeline[0].VerbatimExcerpts = append(scr.Timeline[0].VerbatimExcerpts, excerpt)
+			} else {
+				scr.Background.VerbatimExcerpts = append(scr.Background.VerbatimExcerpts, excerpt)
+			}
+			merged++
+		default:
+			// characters/scenes 模块的摘录也放入 background 作为保底
+			scr.Background.VerbatimExcerpts = append(scr.Background.VerbatimExcerpts, excerpt)
+			merged++
+		}
+	}
+	return merged
+}
+
+// isExcerptIncluded 检查摘录内容是否已出现在 Script 的任何文本字段中。
+func isExcerptIncluded(scr *Script, excerpt VerbatimExcerpt) bool {
+	// 取内容前80字符作为指纹
+	fingerprint := excerpt.Content
+	if len([]rune(fingerprint)) > 80 {
+		fingerprint = string([]rune(fingerprint)[:80])
+	}
+	if len(strings.TrimSpace(fingerprint)) < 10 {
+		return true // 内容太短，视为已包含
+	}
+
+	// 检查 background 的 verbatim_excerpts
+	for _, ve := range scr.Background.VerbatimExcerpts {
+		if strings.Contains(ve.Content, fingerprint) {
+			return true
+		}
+	}
+	// 检查 background 文本字段
+	for _, field := range []string{scr.Background.Backstory, scr.Background.Synopsis, scr.Background.Setting} {
+		if strings.Contains(field, fingerprint) {
+			return true
+		}
+	}
+	// 检查 timeline 节点
+	for _, node := range scr.Timeline {
+		for _, ve := range node.VerbatimExcerpts {
+			if strings.Contains(ve.Content, fingerprint) {
+				return true
+			}
+		}
+		for _, field := range []string{node.Description, node.Narrative, node.KPNotes} {
+			if strings.Contains(field, fingerprint) {
+				return true
+			}
+		}
+		for _, clue := range node.Clues {
+			if strings.Contains(clue, fingerprint) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// findBestNodeIndex 通过描述关键词匹配找到最相关的节点索引。
+func findBestNodeIndex(scr *Script, excerpt VerbatimExcerpt) int {
+	bestIdx := -1
+	bestScore := 0
+	for i, node := range scr.Timeline {
+		score := 0
+		for _, keyword := range strings.Fields(excerpt.Description) {
+			if len(keyword) > 2 && strings.Contains(node.Name+node.Description, keyword) {
+				score++
+			}
+		}
+		if score > bestScore {
+			bestScore = score
+			bestIdx = i
+		}
+	}
+	return bestIdx
 }

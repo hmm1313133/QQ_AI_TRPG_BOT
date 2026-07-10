@@ -41,6 +41,7 @@ type StoryBackground struct {
 	KeyThemes    []string `json:"key_themes,omitempty"`    // 核心冲突/关键主题列表
 	Tone         string   `json:"tone,omitempty"`          // 叙事基调（如：压抑绝望、轻松冒险）
 	Backstory    string   `json:"backstory,omitempty"`     // 详细历史背景（可直接用于跑团开场叙述）
+	VerbatimExcerpts []VerbatimExcerpt `json:"verbatim_excerpts,omitempty"` // 需逐字保留的原文摘录（信件、日记、文献等）
 }
 
 // TimelineNode 剧情时间轴节点。
@@ -63,6 +64,7 @@ type TimelineNode struct {
 	Objectives   []string `json:"objectives,omitempty"`   // 玩家在此节点的目标/任务
 	Branches     []string `json:"branches,omitempty"`     // 分支路径描述（不同选择导致的不同走向）
 	KPNotes      string   `json:"kp_notes,omitempty"`     // KP 导演备注（节奏控制、重点提示、注意事项）
+	VerbatimExcerpts []VerbatimExcerpt `json:"verbatim_excerpts,omitempty"` // 需逐字保留的原文摘录（信件、日记、文献等）
 }
 
 // ScriptCharacter 剧本角色（半完整属性）。
@@ -126,6 +128,15 @@ type Decision struct {
 	Action     string `json:"action"`      // 玩家行动描述
 	Outcome    string `json:"outcome"`     // 结果描述
 	DiceRoll   string `json:"dice_roll,omitempty"`  // 相关骰点结果（如有）
+}
+
+// VerbatimExcerpt 是需逐字保留的原文摘录（信件、日记、文献、台词等）。
+// 由 Planner 识别关键内容后，程序化提取原文对应行号范围，确保内容完整不丢失。
+type VerbatimExcerpt struct {
+	Description string `json:"description"`          // 内容描述（如：宾夏的信件全文）
+	Module      string `json:"module"`               // 所属模块 background/timeline/characters/scenes
+	Content     string `json:"content"`              // 逐字保留的原文内容
+	SourceLine  int    `json:"source_line"`          // 起始行号
 }
 
 // --- 辅助方法 ---

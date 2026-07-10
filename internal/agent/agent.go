@@ -22,6 +22,12 @@ type Config struct {
 	Temperature  float64 // 温度
 	MemoryWindow int     // 上下文记忆窗口（消息条数）
 	SystemPrompt string  // 系统提示词
+
+	// 多层架构配置
+	DirectorTemperature float64 // Director 温度（默认 0.2，低温度保证决策一致性）
+	DirectorMaxTokens   int     // Director 最大 token 数（默认 2048）
+	NarratorTemperature float64 // Narrator 温度（默认 0.7，兼顾创造性和可控性）
+	NarratorMaxTokens   int     // Narrator 最大 token 数（默认 4096）
 }
 
 // DefaultKPPrompt 返回默认的 KP/DM 主持人提示词。

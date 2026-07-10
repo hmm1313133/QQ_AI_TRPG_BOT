@@ -11,6 +11,7 @@ bin/
 *.out
 coverage.html
 test_*.txt
+test_output/
 
 # Test fixtures (large files)
 *.docx

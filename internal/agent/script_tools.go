@@ -19,6 +19,7 @@ type ScriptDeps struct {
 	Archive         *script.Archive
 	ProgressTracker *trpg.ProgressTracker
 	TimelineEngine  *trpg.TimelineEngine
+	GameStateStore  *GameStateStore // 结构化运行态存储（多层架构）
 }
 
 // NewScriptTools 创建剧本相关的 FunctionTool 集合。
@@ -26,13 +27,18 @@ func NewScriptTools(deps *ScriptDeps) []tool.Tool {
 	if deps == nil {
 		return nil
 	}
-	return []tool.Tool{
+	tools := []tool.Tool{
 		NewGetScriptContextTool(deps),
 		NewAdvanceTimelineTool(deps),
 		NewGetProgressTool(deps),
 		NewSaveProgressTool(deps),
 		NewGetNPCTool(deps),
 	}
+	// 仅在 GameStateStore 可用时注册 update_game_state 工具
+	if deps.GameStateStore != nil {
+		tools = append(tools, NewUpdateGameStateTool(deps))
+	}
+	return tools
 }
 
 // --- get_script_context tool ---
@@ -253,6 +259,14 @@ func NewAdvanceTimelineTool(deps *ScriptDeps) tool.Tool {
 			deps.TimelineEngine.ResetIdleCount(sessionID)
 		}
 
+		// 联动 GameStateStore：刷新微观运行态（新场景/目标/隐藏信息/事件）
+		if deps.GameStateStore != nil {
+			if err := deps.GameStateStore.RefreshForNode(sessionID, scr, targetNodeID); err != nil {
+				// 刷新失败不影响主流程，仅记录日志
+				fmt.Printf("[ScriptTools] 刷新 GameState 失败: %v\n", err)
+			}
+		}
+
 		return rsp, nil
 	}
 
@@ -398,6 +412,16 @@ func NewSaveProgressTool(deps *ScriptDeps) tool.Tool {
 			deps.TimelineEngine.ResetIdleCount(sessionID)
 		}
 
+		// 联动 GameStateStore：更新故事上下文并持久化微观运行态
+		if deps.GameStateStore != nil {
+			if state := deps.GameStateStore.LoadOrDefault(sessionID); state != nil {
+				if req.StorySummary != "" {
+					state.StoryContext = req.StorySummary
+				}
+				_ = deps.GameStateStore.Save(state)
+			}
+		}
+
 		return SaveProgressRsp{
 			Success: true,
 			Message: "进度已保存",
@@ -507,4 +531,76 @@ func npcToInfo(char *script.ScriptCharacter) NPCInfo {
 		Relationships: char.Relationships,
 		Appearance:    char.Appearance,
 	}
+}
+
+// --- update_game_state tool ---
+
+type UpdateGameStateReq struct {
+	Updates []StateUpdateReq `json:"updates" jsonschema:"description=状态更新列表，required"`
+}
+
+type StateUpdateReq struct {
+	Type   string `json:"type" jsonschema:"description=更新类型: npc_disposition/hidden_discovered/event_triggered/objective_completed/scene_change,required"`
+	Target string `json:"target" jsonschema:"description=目标: NPC名称/线索描述/事件描述/目标描述"`
+	Value  string `json:"value,omitempty" jsonschema:"description=新值（如NPC新态度: friendly/neutral/suspicious/hostile/dead）"`
+}
+
+type UpdateGameStateRsp struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+// NewUpdateGameStateTool 创建更新游戏运行态的 FunctionTool。
+func NewUpdateGameStateTool(deps *ScriptDeps) tool.Tool {
+	fn := func(ctx context.Context, req UpdateGameStateReq) (UpdateGameStateRsp, error) {
+		sessionID, _, err := getSessionAndUser(ctx)
+		if err != nil {
+			return UpdateGameStateRsp{}, err
+		}
+
+		if deps.GameStateStore == nil {
+			return UpdateGameStateRsp{Message: "GameStateStore 未初始化"}, nil
+		}
+
+		state := deps.GameStateStore.LoadOrDefault(sessionID)
+		if state == nil {
+			return UpdateGameStateRsp{Message: "未找到 GameState（请先加载剧本）"}, nil
+		}
+
+		// 应用更新
+		applied := 0
+		for _, u := range req.Updates {
+			state.ApplyUpdate(StateUpdate{
+				Type:   u.Type,
+				Target: u.Target,
+				Value:  u.Value,
+			})
+			applied++
+		}
+
+		// 持久化
+		if err := deps.GameStateStore.Save(state); err != nil {
+			return UpdateGameStateRsp{
+				Success: false,
+				Message: fmt.Sprintf("保存失败: %v", err),
+			}, nil
+		}
+
+		return UpdateGameStateRsp{
+			Success: true,
+			Message: fmt.Sprintf("已更新 %d 个状态", applied),
+		}, nil
+	}
+
+	return function.NewFunctionTool(fn,
+		function.WithName("update_game_state"),
+		function.WithDescription(
+			"更新游戏运行态（NPC态度、线索发现、事件触发、目标完成等）。"+
+				"当玩家行动导致游戏状态变化时调用此工具。"+
+				"参数 updates 是状态更新列表，每个包含 type（更新类型）、target（目标）、value（新值）。"+
+				"类型说明: npc_disposition（NPC态度变化，target=NPC名称，value=新态度）、"+
+				"hidden_discovered（线索发现，target=线索描述）、"+
+				"event_triggered（事件触发，target=事件描述）、"+
+				"objective_completed（目标完成，target=目标描述）。"),
+	)
 }

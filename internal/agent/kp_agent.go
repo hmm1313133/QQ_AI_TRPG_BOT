@@ -21,6 +21,8 @@ import (
 // It uses trpc-agent-go's LLMAgent with DeepSeek model.
 // Game state is accessed through Service and shared via core.Session.
 // Script context (timeline, NPCs, progress) is injected for AI-driven KP/DM mode.
+//
+// 多层架构：Chat() 委托给 KPPipeline（Director -> Narrator -> StateUpdate）。
 type KPAgent struct {
 	config     *Config
 	agent      agent.Agent
@@ -29,6 +31,7 @@ type KPAgent struct {
 	sessionMgr *core.SessionManager
 	svc        *trpg.Service
 	scriptDeps *ScriptDeps // 剧本相关依赖（可选，nil 表示无剧本模式）
+	pipeline   *KPPipeline // 多层流水线（可选，nil 时回退到单 agent 模式）
 }
 
 // NewKPAgent creates a KP/DM agent.
@@ -102,13 +105,39 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service,
 	return kp, nil
 }
 
+// SetPipeline 注入多层流水线（由 main.go 在装配阶段调用）。
+func (a *KPAgent) SetPipeline(pipeline *KPPipeline) {
+	a.pipeline = pipeline
+	log.Printf("[KPAgent] 多层流水线已注入")
+}
+
 // AgentID implements core.AgentHandler.
 func (a *KPAgent) AgentID() string {
 	return "kp"
 }
 
 // Chat implements core.AgentHandler.
+// 优先委托给 KPPipeline（Director -> Narrator -> StateUpdate），
+// pipeline 不可用时回退到单 agent 模式。
 func (a *KPAgent) Chat(ctx *core.MessageContext, session *core.Session) (string, error) {
+	// 多层流水线模式
+	if a.pipeline != nil {
+		reply, err := a.pipeline.Run(ctx, session)
+		if err != nil {
+			log.Printf("[KPAgent] Pipeline 执行失败，回退到单 agent 模式: %v", err)
+		} else {
+			log.Printf("[KPAgent] 会话 %s, 用户 %s: %s -> %s",
+				ctx.SessionID, ctx.UserID, truncate(ctx.Content, 50), truncate(reply, 100))
+			return reply, nil
+		}
+	}
+
+	// 单 agent 回退模式（原有逻辑）
+	return a.chatSingleAgent(ctx)
+}
+
+// chatSingleAgent 是原有的单 agent 模式，作为 pipeline 的回退。
+func (a *KPAgent) chatSingleAgent(ctx *core.MessageContext) (string, error) {
 	// Build game context prompt
 	gameContext := a.buildGameContext(ctx.SessionID, ctx.UserID)
 

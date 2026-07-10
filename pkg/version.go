@@ -2,4 +2,4 @@
 package pkg
 
 // Version 项目版本号。
-const Version = "0.1.0"
+const Version = "0.2.0"

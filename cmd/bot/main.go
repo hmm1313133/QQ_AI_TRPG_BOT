@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"trpc.group/trpc-go/trpc-go/log"
@@ -83,14 +84,22 @@ func main() {
 		log.Fatalf("初始化剧本识别 Agent 失败: %v", err)
 	}
 
-	// 9. Create script deps for KPAgent
+	// 9. Initialize GameState store (多层架构：结构化运行态持久化)
+	gameStateDir := getEnv("GAMESTATE_DIR", filepath.Join(scriptDir, "gamestate"))
+	gameStateStore, err := agent.NewGameStateStore(gameStateDir)
+	if err != nil {
+		log.Fatalf("初始化 GameStateStore 失败: %v", err)
+	}
+
+	// 10. Create script deps for KPAgent (含 GameStateStore)
 	scriptDeps := &agent.ScriptDeps{
 		Archive:         scriptArchive,
 		ProgressTracker: progressTracker,
 		TimelineEngine:  timelineEngine,
+		GameStateStore:  gameStateStore,
 	}
 
-	// 10. Initialize AI Agent (trpc-agent-go + DeepSeek)
+	// 11. Initialize AI Agent (trpc-agent-go + DeepSeek)
 	kpAgent, err := agent.NewKPAgent(&agent.Config{
 		LLMProvider:  getEnv("LLM_PROVIDER", "deepseek"),
 		LLMModel:     getEnv("LLM_MODEL", "deepseek-chat"),
@@ -104,12 +113,39 @@ func main() {
 		log.Fatalf("初始化 AI Agent 失败: %v", err)
 	}
 
-	// 11. Register AI Agent
+	// 11b. Initialize multi-layer pipeline (Director -> Narrator -> StateUpdate)
+	metricsEvaluator := agent.NewMetricsEvaluator(svc)
+	director, err := agent.NewDirector(&agent.Config{
+		LLMModel:            getEnv("LLM_MODEL", "deepseek-chat"),
+		LLMAPIKey:           os.Getenv("LLM_API_KEY"),
+		LLMBaseURL:          getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
+		DirectorTemperature: 0.2,
+		DirectorMaxTokens:   2048,
+	}, metricsEvaluator)
+	if err != nil {
+		log.Fatalf("初始化 Director 失败: %v", err)
+	}
+
+	narrator, err := agent.NewNarrator(&agent.Config{
+		LLMModel:            getEnv("LLM_MODEL", "deepseek-chat"),
+		LLMAPIKey:           os.Getenv("LLM_API_KEY"),
+		LLMBaseURL:          getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
+		NarratorTemperature: 0.7,
+		NarratorMaxTokens:   4096,
+	}, sessions, svc, scriptDeps)
+	if err != nil {
+		log.Fatalf("初始化 Narrator 失败: %v", err)
+	}
+
+	pipeline := agent.NewKPPipeline(director, narrator, gameStateStore)
+	kpAgent.SetPipeline(pipeline)
+
+	// 12. Register AI Agent
 	if err := plugins.RegisterAgent(kpAgent); err != nil {
 		log.Fatalf("注册 Agent 失败: %v", err)
 	}
 
-	// 12. Register command handlers (order matters: specific before general)
+	// 13. Register command handlers (order matters: specific before general)
 	handlerCount := 0
 	plugins.RegisterHandler(handler.NewHelpHandler())
 	handlerCount++
@@ -128,7 +164,7 @@ func main() {
 	plugins.RegisterHandler(handler.NewLogHandler(gameLogger))
 	handlerCount++
 	plugins.RegisterHandler(handler.NewScriptHandler(
-		scriptArchive, scriptAnalyzer, progressTracker, timelineEngine, sessions, svc))
+		scriptArchive, scriptAnalyzer, progressTracker, timelineEngine, sessions, svc, gameStateStore))
 	handlerCount++
 
 	// 13. Initialize QQ Bot
@@ -145,9 +181,9 @@ func main() {
 		log.Fatalf("启动 Bot 失败: %v", err)
 	}
 	log.Infof("QQ AI TRPG Bot 已启动")
-	log.Infof("已注册 Handler: %d, Agent: 1", handlerCount)
-	log.Infof("架构: Service层 + 功能层(Handler) + AI层(Agent) + 剧本层(Script) + 联动(Session)")
-	log.Infof("规则集: CoC7 + DnD5e | 角色卡: %s | 剧本: %s", charDir, scriptDir)
+	log.Infof("已注册 Handler: %d, Agent: 1 (多层架构: Director + Narrator)", handlerCount)
+	log.Infof("架构: Service层 + 功能层(Handler) + AI多层(Director->Narrator->StateUpdate) + 剧本层(Script+GameState) + 联动(Session)")
+	log.Infof("规则集: CoC7 + DnD5e | 角色卡: %s | 剧本: %s | 运行态: %s", charDir, scriptDir, gameStateDir)
 	if openVikingClient.IsEnabled() {
 		log.Infof("OpenViking: 已连接")
 	} else {

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/agent"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
@@ -31,6 +32,7 @@ type ScriptHandler struct {
 	timelineEngine  *trpg.TimelineEngine
 	sessionMgr      *core.SessionManager
 	svc             *trpg.Service
+	gameStateStore  *agent.GameStateStore
 }
 
 // NewScriptHandler 创建剧本管理处理器。
@@ -41,6 +43,7 @@ func NewScriptHandler(
 	timelineEngine *trpg.TimelineEngine,
 	sessionMgr *core.SessionManager,
 	svc *trpg.Service,
+	gameStateStore *agent.GameStateStore,
 ) *ScriptHandler {
 	return &ScriptHandler{
 		archive:         archive,
@@ -49,6 +52,7 @@ func NewScriptHandler(
 		timelineEngine:  timelineEngine,
 		sessionMgr:      sessionMgr,
 		svc:             svc,
+		gameStateStore:  gameStateStore,
 	}
 }
 
@@ -341,6 +345,13 @@ func (h *ScriptHandler) handleLoad(ctx *core.MessageContext, reply core.ReplyFun
 			return reply(ctx.Ctx, ctx.OpenID, ctx.MsgID, fmt.Sprintf("初始化进度失败: %v", err), ctx.IsGroup)
 		}
 
+		// 初始化 GameState（多层架构：从剧本结构映射运行态）
+		if h.gameStateStore != nil {
+			if _, err := h.gameStateStore.InitFromScript(ctx.SessionID, scr); err != nil {
+				log.Printf("[ScriptHandler] 初始化 GameState 失败: %v", err)
+			}
+		}
+
 		// 启动时间轴定时器（如果已在 TRPG 模式）
 		if h.timelineEngine != nil && session.Mode == core.ModeTRPG {
 			h.startTimelineEngine(ctx.SessionID)
@@ -460,6 +471,11 @@ func (h *ScriptHandler) handleUnload(ctx *core.MessageContext, reply core.ReplyF
 	// 删除进度
 	if h.progressTracker != nil {
 		_ = h.archive.DeleteProgress(ctx.SessionID)
+	}
+
+	// 删除 GameState（多层架构运行态）
+	if h.gameStateStore != nil {
+		_ = h.gameStateStore.Delete(ctx.SessionID)
 	}
 
 	return reply(ctx.Ctx, ctx.OpenID, ctx.MsgID, "剧本已卸载", ctx.IsGroup)

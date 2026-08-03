@@ -17,6 +17,9 @@ import (
 
 	"trpc.group/trpc-go/trpc-go/log"
 
+	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
+	"trpc.group/trpc-go/trpc-agent-go/model/openai"
+
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/agent"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/bot"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
@@ -26,6 +29,7 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/character"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/gamelog"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
 func main() {
@@ -65,8 +69,19 @@ func main() {
 		Timeout: 10,
 	})
 
-	// 7. Initialize progress tracker and timeline engine
-	progressTracker := trpg.NewProgressTracker(scriptArchive, openVikingClient)
+	// 7. Initialize world engine (世界引擎：状态唯一真相)
+	worldDir := getEnv("WORLD_DIR", "./data/worlds")
+	worldRepo, err := world.NewJSONRepository(worldDir)
+	if err != nil {
+		log.Fatalf("初始化世界状态存储失败: %v", err)
+	}
+	worldEngine := world.NewEngine(worldRepo)
+
+	// 7b. 迁移旧版 GameState/Progress 数据到 WorldState
+	world.MigrateLegacy(worldEngine, getEnv("GAMESTATE_DIR", filepath.Join(scriptDir, "gamestate")), filepath.Join(scriptDir, "progress"))
+
+	// 7c. Initialize progress tracker (world.Engine 门面) and timeline engine
+	progressTracker := trpg.NewProgressTracker(scriptArchive, openVikingClient, worldEngine)
 	timelineEngine := trpg.NewTimelineEngine(trpg.TimelineConfig{
 		IdleInterval: 15,
 		MaxIdleCount: 3,
@@ -84,19 +99,13 @@ func main() {
 		log.Fatalf("初始化剧本识别 Agent 失败: %v", err)
 	}
 
-	// 9. Initialize GameState store (多层架构：结构化运行态持久化)
-	gameStateDir := getEnv("GAMESTATE_DIR", filepath.Join(scriptDir, "gamestate"))
-	gameStateStore, err := agent.NewGameStateStore(gameStateDir)
-	if err != nil {
-		log.Fatalf("初始化 GameStateStore 失败: %v", err)
-	}
-
-	// 10. Create script deps for KPAgent (含 GameStateStore)
+	// 9. Create script deps for KPAgent (含世界引擎与成长引擎)
 	scriptDeps := &agent.ScriptDeps{
 		Archive:         scriptArchive,
 		ProgressTracker: progressTracker,
 		TimelineEngine:  timelineEngine,
-		GameStateStore:  gameStateStore,
+		WorldEngine:     worldEngine,
+		Progression:     agent.NewProgressionEngine(svc, worldEngine),
 	}
 
 	// 11. Initialize AI Agent (trpc-agent-go + DeepSeek)
@@ -113,7 +122,7 @@ func main() {
 		log.Fatalf("初始化 AI Agent 失败: %v", err)
 	}
 
-	// 11b. Initialize multi-layer pipeline (Director -> Narrator -> StateUpdate)
+	// 11b. Initialize turn engine (规则指导 + 低频 Planner + Narrator)
 	metricsEvaluator := agent.NewMetricsEvaluator(svc)
 	director, err := agent.NewDirector(&agent.Config{
 		LLMModel:            getEnv("LLM_MODEL", "deepseek-chat"),
@@ -137,8 +146,27 @@ func main() {
 		log.Fatalf("初始化 Narrator 失败: %v", err)
 	}
 
-	pipeline := agent.NewKPPipeline(director, narrator, gameStateStore)
-	kpAgent.SetPipeline(pipeline)
+	turnEngine := agent.NewTurnEngine(narrator, director, metricsEvaluator, worldEngine,
+		agent.NewContextBuilder(0), agent.DefaultPlanInterval)
+
+	// 11c. Initialize memory service (记忆层：框架接口 + extractor 双轨写入)
+	memoryDir := getEnv("MEMORY_DIR", "./data/memories")
+	memoryStore, err := world.NewMemoryStore(memoryDir)
+	if err != nil {
+		log.Fatalf("初始化记忆存储失败: %v", err)
+	}
+	var memExtractor extractor.MemoryExtractor
+	if getEnv("MEMORY_EXTRACTOR_ENABLED", "true") == "true" {
+		memExtractor = extractor.NewExtractor(
+			openai.New(getEnv("LLM_MODEL", "deepseek-chat"),
+				openai.WithVariant(openai.VariantDeepSeek)),
+			extractor.WithPrompt(agent.TRPGMemoryExtractPrompt),
+		)
+	}
+	memoryService := agent.NewMemoryService(memoryStore, openVikingClient, director, worldEngine, memExtractor)
+	turnEngine.SetMemory(memoryService)
+
+	kpAgent.SetTurnEngine(turnEngine)
 
 	// 12. Register AI Agent
 	if err := plugins.RegisterAgent(kpAgent); err != nil {
@@ -164,7 +192,7 @@ func main() {
 	plugins.RegisterHandler(handler.NewLogHandler(gameLogger))
 	handlerCount++
 	plugins.RegisterHandler(handler.NewScriptHandler(
-		scriptArchive, scriptAnalyzer, progressTracker, timelineEngine, sessions, svc, gameStateStore))
+		scriptArchive, scriptAnalyzer, progressTracker, timelineEngine, sessions, svc, worldEngine))
 	handlerCount++
 
 	// 13. Initialize QQ Bot
@@ -183,7 +211,7 @@ func main() {
 	log.Infof("QQ AI TRPG Bot 已启动")
 	log.Infof("已注册 Handler: %d, Agent: 1 (多层架构: Director + Narrator)", handlerCount)
 	log.Infof("架构: Service层 + 功能层(Handler) + AI多层(Director->Narrator->StateUpdate) + 剧本层(Script+GameState) + 联动(Session)")
-	log.Infof("规则集: CoC7 + DnD5e | 角色卡: %s | 剧本: %s | 运行态: %s", charDir, scriptDir, gameStateDir)
+	log.Infof("规则集: CoC7 + DnD5e | 角色卡: %s | 剧本: %s | 世界状态: %s", charDir, scriptDir, worldDir)
 	if openVikingClient.IsEnabled() {
 		log.Infof("OpenViking: 已连接")
 	} else {

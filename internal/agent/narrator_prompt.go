@@ -2,9 +2,10 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
 // narratorSystemPromptBase 是 Narrator 的基础系统提示词。
@@ -40,8 +41,8 @@ const narratorSystemPromptBase = `你是一个经验丰富的 TRPG 游戏主持�
 9. 使用 update_game_state 工具更新游戏运行态（NPC态度变化、线索发现等）`
 
 // buildNarratorSystemPrompt 构建 Narrator 系统提示词。
-// 在基础提示词上追加 GameState 摘要。
-func buildNarratorSystemPrompt(state *GameState) string {
+// 在基础提示词上追加 WorldState 摘要。
+func buildNarratorSystemPrompt(state *world.WorldState) string {
 	if state == nil {
 		return narratorSystemPromptBase
 	}
@@ -51,39 +52,49 @@ func buildNarratorSystemPrompt(state *GameState) string {
 // buildGameStateSummary 构建当前游戏运行态摘要文本。
 // 每轮通过用户消息注入 Narrator，使其感知微观运行态
 // （当前场景、NPC 态度、目标、隐藏信息与待触发事件）。
-func buildGameStateSummary(state *GameState) string {
+func buildGameStateSummary(state *world.WorldState) string {
 	var sb strings.Builder
 	sb.WriteString("【当前游戏运行态摘要】\n")
-	sb.WriteString(fmt.Sprintf("当前场景: %s (%s)\n", state.CurrentScene.NodeName, state.CurrentScene.NodeID))
-	if state.CurrentScene.Description != "" {
-		sb.WriteString(fmt.Sprintf("场景描述: %s\n", state.CurrentScene.Description))
+	sb.WriteString(fmt.Sprintf("当前场景: %s (%s)\n", state.Scene.NodeName, state.Scene.NodeID))
+	if state.Scene.Description != "" {
+		sb.WriteString(fmt.Sprintf("场景描述: %s\n", state.Scene.Description))
 	}
-	if state.CurrentScene.Atmosphere != "" {
-		sb.WriteString(fmt.Sprintf("氛围: %s\n", state.CurrentScene.Atmosphere))
+	if state.Scene.Atmosphere != "" {
+		sb.WriteString(fmt.Sprintf("氛围: %s\n", state.Scene.Atmosphere))
 	}
-	if state.CurrentScene.DangerLevel != "" {
-		sb.WriteString(fmt.Sprintf("危险等级: %s\n", state.CurrentScene.DangerLevel))
+	if state.Scene.DangerLevel != "" {
+		sb.WriteString(fmt.Sprintf("危险等级: %s\n", state.Scene.DangerLevel))
 	}
-	if state.CurrentScene.KPNotes != "" {
-		sb.WriteString(fmt.Sprintf("KP备注: %s\n", state.CurrentScene.KPNotes))
+	if state.Scene.KPNotes != "" {
+		sb.WriteString(fmt.Sprintf("KP备注: %s\n", state.Scene.KPNotes))
 	}
 
-	// NPC 状态
-	if len(state.NPCStates) > 0 {
+	// NPC 状态（含情绪与性格特质，供拟人化扮演）
+	if len(state.Characters) > 0 {
 		sb.WriteString("\nNPC状态:\n")
-		for _, npc := range state.NPCStates {
+		for _, npc := range state.Characters {
 			sb.WriteString(fmt.Sprintf("  - %s (%s): %s", npc.Name, npc.Role, npc.Disposition))
 			if npc.CurrentAction != "" {
 				sb.WriteString(fmt.Sprintf(" - %s", npc.CurrentAction))
+			}
+			if len(npc.Traits) > 0 {
+				sb.WriteString(fmt.Sprintf(" [性格: %s]", strings.Join(npc.Traits, "/")))
+			}
+			if npc.Mood.Valence != 0 || npc.Mood.Arousal != 0 || len(npc.Mood.Tags) > 0 {
+				moodDesc := fmt.Sprintf(" [情绪: 愉悦%d/激活%d", npc.Mood.Valence, npc.Mood.Arousal)
+				if len(npc.Mood.Tags) > 0 {
+					moodDesc += " " + strings.Join(npc.Mood.Tags, ",")
+				}
+				sb.WriteString(moodDesc + "]")
 			}
 			sb.WriteString("\n")
 		}
 	}
 
 	// 目标
-	if len(state.Objectives) > 0 {
+	if len(state.Quests) > 0 {
 		sb.WriteString("\n当前目标:\n")
-		for _, obj := range state.Objectives {
+		for _, obj := range state.Quests {
 			mark := "○"
 			if obj.Completed {
 				mark = "✓"
@@ -98,9 +109,17 @@ func buildGameStateSummary(state *GameState) string {
 		sb.WriteString(fmt.Sprintf("\n未发现的线索: %d 条\n", undiscovered))
 	}
 
+	// 状态锁定（不可违背的硬事实，优先告知）
+	if len(state.Locks) > 0 {
+		sb.WriteString("\n【锁定事实（不可违背）】\n")
+		for _, l := range state.Locks {
+			sb.WriteString(fmt.Sprintf("  - %s（%s）\n", l.Key, l.Reason))
+		}
+	}
+
 	// 待触发事件
 	activeEvents := 0
-	for _, ev := range state.PendingEvents {
+	for _, ev := range state.EventQueue {
 		if !ev.Triggered {
 			activeEvents++
 		}
@@ -115,67 +134,13 @@ func buildGameStateSummary(state *GameState) string {
 		state.Metrics.PlayerAgency, state.Metrics.ObjectiveProgress,
 		state.RoundCount))
 
-	// 故事背景
-	if state.StoryContext != "" {
-		sb.WriteString(fmt.Sprintf("\n【故事背景】\n%s\n", state.StoryContext))
+	// 故事背景（不可变设定）+ 战役摘要（滚动）
+	if state.Background != "" {
+		sb.WriteString(fmt.Sprintf("\n【故事背景】\n%s\n", state.Background))
 	}
-
-	return sb.String()
-}
-
-// buildNarratorUserMessage 构建 Narrator 用户消息。
-// 包含游戏运行态摘要 + 导演指令 + 游戏上下文 + 玩家消息。
-func buildNarratorUserMessage(
-	state *GameState,
-	directive *DecisionDirective,
-	gameContext string,
-	playerMessage string,
-) string {
-	var sb strings.Builder
-
-	// 注入游戏运行态摘要（微观状态：场景、NPC 态度、目标、线索、事件）
-	if state != nil {
-		sb.WriteString(buildGameStateSummary(state))
-		sb.WriteString("\n")
+	if state.CampaignSummary != "" {
+		sb.WriteString(fmt.Sprintf("\n【剧情摘要】\n%s\n", state.CampaignSummary))
 	}
-
-	// 注入导演指令
-	if directive != nil {
-		sb.WriteString("【导演指令】\n")
-		directiveJSON, err := json.MarshalIndent(directive, "", "  ")
-		if err == nil {
-			sb.Write(directiveJSON)
-			sb.WriteString("\n")
-		}
-
-		sb.WriteString("\n【导演指令摘要】\n")
-		sb.WriteString(fmt.Sprintf("叙事基调: %s\n", directive.NarrationGuide.Tone))
-		sb.WriteString(fmt.Sprintf("节奏: %s\n", directive.NarrationGuide.Pacing))
-		sb.WriteString(fmt.Sprintf("本轮重点: %s\n", directive.NarrationGuide.FocusPoints))
-		sb.WriteString(fmt.Sprintf("NPC行为指导: %s\n", directive.NarrationGuide.NPCBehavior))
-		if directive.NarrationGuide.Constraints != "" {
-			sb.WriteString(fmt.Sprintf("约束: %s\n", directive.NarrationGuide.Constraints))
-		}
-
-		if len(directive.Actions) > 0 {
-			sb.WriteString("\n需要执行的动作:\n")
-			for _, action := range directive.Actions {
-				sb.WriteString(fmt.Sprintf("  - [%s] %s\n", action.Type, action.Description))
-			}
-		}
-
-		sb.WriteString("\n请严格遵循以上导演指令进行叙事。\n")
-	}
-
-	// 游戏上下文
-	if gameContext != "" {
-		sb.WriteString("\n")
-		sb.WriteString(gameContext)
-		sb.WriteString("\n")
-	}
-
-	// 玩家消息
-	sb.WriteString(fmt.Sprintf("\n玩家: %s", playerMessage))
 
 	return sb.String()
 }

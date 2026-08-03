@@ -673,3 +673,51 @@ type GameMode struct {
 ---
 
 *文档完*
+
+---
+
+## 附录 C：P1-P5 实施记录（2026-08-03）
+
+> 本设计已按第十三章节路线落地实施。以下为实际产出与设计文档的对应关系。
+
+### P1 状态统一 ✅
+
+- 新增 `internal/world` 包：`types.go`（WorldState 合并 GameState+Progress，含 Background/CampaignSummary 拆分）、`store.go`（StateRepository 接口 + JSON 实现，.bak 兜底原子写）、`engine.go`（ApplyEvent 单写入入口 + 状态锁定校验 + 事件溯源 EventLog + 会话级互斥锁）、`migrate.go`（旧 gamestate/progress 自动迁移）。
+- 旧 `agent/gamestate*.go` 删除；`trpg/progress.go` 重写为 world.Engine 门面（合成旧 Progress 视图，调用方零改动）。
+- 事件类型支持：npc_disposition / hidden_discovered / event_triggered / objective_completed / mood_change / relation_change / lock / unlock / fact_add / fact_invalidate / decision / note。双时序事实表（失效不覆盖）已实现。
+
+### P2 上下文工程 ✅
+
+- `agent/context_builder.go`：分区优先级 + 字符预算（默认 6000）贪心装配，替代全量 GameState JSON 与无限会话历史。
+- `agent/guidance.go`：RuleGuidance 规则指导器（旧 fallbackDirective 转正），Director 退出每轮热路径。
+- `agent/turn_engine.go`：替代 KPPipeline，同步路径仅 Narrator 一次 LLM 调用；Director 降级为低频 Planner（场景切换或每 8 轮，计划存 WorldState.ScenePlan）。
+- Narrator/Director 全部无状态会话（每次调用唯一 sessionID）。
+
+### P3 记忆层 ✅（2026-08-03 二次迭代：迁移至框架能力）
+
+- `world/memory.go`：MemoryEntry + 文件存储 + 三因子检索（recency 0.995^Δh 按上次访问、importance、relevance 本地 bigram）。
+- `agent/memory_backend.go`：**框架 `memory.Service` 接口的 JSON 持久化后端**（UserKey 映射 worldID/entity，删除即失效的 Mem0 语义）——记忆层已面向框架抽象，未来可无缝切换 mem0/tencentdb 后端。
+- `agent/memory.go`：MemoryService——AfterTurn 异步双轨写入（EventLog 增量走规则零 LLM；**对话内容走框架 `extractor`**，LLM 抽取 add/update/delete 操作集、自带去重，自定义 TRPG 抽取 prompt，`MEMORY_EXTRACTOR_ENABLED` 开关）、BuildMemoryBlock 每轮 top-K 注入（自研三因子重排保留世界时间语义）、Reflector 阈值反思（LLM 洞察带证据引用，Pinned 永久保留）。
+- OpenViking：仅保留记忆双写；语义检索角色由框架后端接管（升级 mem0 后端即获得向量检索）。
+
+### P4 成长闭环与情绪关系 ✅
+
+- `agent/progression.go`：skill_check 成功自动记录（按 userID+skill 去重）→ 场景切换幕间结算（复用 coc7.SkillGrowth）→ 成长报告并入 advance_timeline 响应。
+- `world/mood.go`：情绪每世界日 ×0.7 衰减、记仇特质负面情绪衰减减半、平复后清标签；NPC 认知卡（性格/情绪）已注入 Narrator 上下文。
+- 后果传播：`ConsequenceEngine` 规则实现已完成（全英文开发）：NPC 死亡的盟友连锁（情绪+关系+派生 note 因果链）、hostile/friendly 的情绪与信任联动、encounter 警觉传播；5 个专项测试通过。规则常量在 consequence.go 顶部集中可调。
+
+### P5 世界模拟与多模式框架 ✅
+
+- `world/clock.go`：世界时钟推进、定时事件到期触发、fastForward 离线回归结算（阈值 6 小时，1:1 时间映射）。
+- `world/mode.go`：trpg / simrpg / roleplay 三模式预设（子系统开关），TurnEngine 按模式启停 Planner/记忆/时钟/离线演化/情绪。
+- simrpg/roleplay 的用户侧启用入口待决策（见待决策事项 #4）。
+
+### 验证
+
+- `go build ./...`、`go vet ./...` 通过。
+- world 包 19 个单元测试全部通过（ApplyEvent 匹配与锁定、双时序事实、时钟推进、fastForward、情绪衰减、三因子检索、模式预设）。
+- 离线回归：script 解析测试、store 测试通过。
+
+### 遗留事项
+
+见项目根目录《待决策事项.md》（剩余 8 项：OpenViking 联调、便宜模型、模式入口 UX、主动推送、时间比例、上下文预算、归档摘要、Planner 新事件类型；后果传播已完成）。

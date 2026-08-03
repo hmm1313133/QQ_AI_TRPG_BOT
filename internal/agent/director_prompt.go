@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
 // directorSystemPrompt 是 Director 的系统提示词。
@@ -68,8 +70,8 @@ JSON 格式如下：
 }`
 
 // buildDirectorUserMessage 构建 Director 的用户消息。
-// 包含 GameState JSON、预评估指标、玩家消息、剧本上下文。
-func buildDirectorUserMessage(state *GameState, playerMessage string, scriptContext string) string {
+// 包含 WorldState JSON、预评估指标、玩家消息、剧本上下文。
+func buildDirectorUserMessage(state *world.WorldState, playerMessage string, scriptContext string) string {
 	var sb strings.Builder
 
 	sb.WriteString("【当前游戏运行态】\n")
@@ -94,10 +96,9 @@ func buildDirectorUserMessage(state *GameState, playerMessage string, scriptCont
 		sb.WriteString("\n")
 	}
 
-	if state.LastDirective != nil {
-		sb.WriteString("\n【上一轮决策】\n")
-		lastJSON, _ := json.MarshalIndent(state.LastDirective, "", "  ")
-		sb.Write(lastJSON)
+	if state.ScenePlan != "" {
+		sb.WriteString("\n【当前场景计划】\n")
+		sb.WriteString(state.ScenePlan)
 		sb.WriteString("\n")
 	}
 

@@ -1,14 +1,8 @@
 // Package agent - Director 导演系统。
 //
-// Director 是决策层，负责读取 GameState + 玩家输入，通过规则化指标评估
+// Director 是决策层，负责读取 WorldState + 玩家输入，通过规则化指标评估
 // + 低温度 LLM 调用，输出结构化决策指令（DecisionDirective）。
-//
-// 流程：
-//   1. MetricsEvaluator.Evaluate() - 确定性计算指标
-//   2. LLM 调用（temp=0.2）- 输入 GameState JSON + 指标 + 玩家消息
-//   3. 解析 JSON 输出为 DecisionDirective
-//
-// 降级：LLM 调用失败时，使用规则化预评估生成基础指令。
+// （P2 起降级为低频 Planner 使用，不再跟随每条玩家消息。）
 package agent
 
 import (
@@ -18,6 +12,8 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -86,7 +82,7 @@ func NewDirector(
 // LLM 失败时降级为规则化基础指令。
 func (d *Director) Decide(
 	ctx context.Context,
-	state *GameState,
+	state *world.WorldState,
 	playerMessage string,
 	scriptContext string,
 	sessionID string,
@@ -95,14 +91,17 @@ func (d *Director) Decide(
 
 	// 1. 规则化预评估
 	state.Metrics = d.metrics.Evaluate(state, sessionID)
-	log.Printf("[Director] 预评估: %s", state.String())
+	log.Printf("[Director] 预评估: scene=%s, round=%d, metrics=T%d/C%d/A%d/P%d",
+		state.Scene.NodeName, state.RoundCount,
+		state.Metrics.TensionLevel, state.Metrics.ChaosLevel,
+		state.Metrics.PlayerAgency, state.Metrics.ObjectiveProgress)
 
-	// 2. LLM 调用
+	// 2. LLM 调用（无状态会话：每次规划独立会话，历史不累积）
 	userMsg := buildDirectorUserMessage(state, playerMessage, scriptContext)
 
 	events, err := d.runner.Run(ctx,
 		"director", // userID
-		sessionID,  // sessionID
+		fmt.Sprintf("%s-plan-%d", sessionID, time.Now().UnixNano()),
 		model.NewUserMessage(userMsg),
 	)
 	if err != nil {
@@ -136,8 +135,25 @@ func (d *Director) Decide(
 	return &directive, nil
 }
 
+// rawCompletion 一次无状态的纯文本补全（供 Reflector 等低频任务复用 runner）。
+func (d *Director) rawCompletion(worldID, task, prompt string) (string, error) {
+	events, err := d.runner.Run(context.Background(),
+		"director",
+		fmt.Sprintf("%s-%s-%d", worldID, task, time.Now().UnixNano()),
+		model.NewUserMessage(prompt),
+	)
+	if err != nil {
+		return "", err
+	}
+	reply := collectAgentReply(events)
+	if reply == "" {
+		return "", fmt.Errorf("LLM 返回空回复")
+	}
+	return reply, nil
+}
+
 // fallbackDirective 生成降级规则化指令（LLM 失败时使用）。
-func (d *Director) fallbackDirective(state *GameState, playerMessage string) *DecisionDirective {
+func (d *Director) fallbackDirective(state *world.WorldState, playerMessage string) *DecisionDirective {
 	directive := &DecisionDirective{
 		Assessment: SceneAssessment{
 			TensionSummary:   fmt.Sprintf("张力 %d/100", state.Metrics.TensionLevel),
@@ -183,7 +199,7 @@ func (d *Director) fallbackDirective(state *GameState, playerMessage string) *De
 }
 
 // recommendTone 根据指标推荐叙事基调。
-func (d *Director) recommendTone(state *GameState) string {
+func (d *Director) recommendTone(state *world.WorldState) string {
 	if state.Metrics.TensionLevel > 70 {
 		return "紧张"
 	}
@@ -197,7 +213,7 @@ func (d *Director) recommendTone(state *GameState) string {
 }
 
 // recommendPacing 根据指标推荐节奏。
-func (d *Director) recommendPacing(state *GameState) string {
+func (d *Director) recommendPacing(state *world.WorldState) string {
 	if state.Metrics.TensionLevel > 70 || state.Metrics.ChaosLevel > 60 {
 		return "fast"
 	}

@@ -28,10 +28,11 @@ import (
 
 // NewKPTools creates all FunctionTools for the KP AI agent.
 // Returns a slice suitable for passing to llmagent.WithTools().
-func NewKPTools(sessionMgr *core.SessionManager, svc *trpg.Service) []tool.Tool {
+// progression 可为 nil（禁用成长记录）。
+func NewKPTools(sessionMgr *core.SessionManager, svc *trpg.Service, progression *ProgressionEngine) []tool.Tool {
 	return []tool.Tool{
 		NewRollDiceTool(sessionMgr, svc),
-		NewSkillCheckTool(sessionMgr, svc),
+		NewSkillCheckTool(sessionMgr, svc, progression),
 		NewSANCheckTool(sessionMgr, svc),
 		NewGetCharacterTool(sessionMgr, svc),
 		NewSetRulesetTool(sessionMgr, svc),
@@ -110,7 +111,8 @@ type SkillCheckRsp struct {
 
 // NewSkillCheckTool creates a skill check FunctionTool.
 // Automatically detects CoC7 or DnD5e based on the active ruleset.
-func NewSkillCheckTool(sessionMgr *core.SessionManager, svc *trpg.Service) tool.Tool {
+// 检定成功时通过 ProgressionEngine 记录技能使用（供幕间成长结算）。
+func NewSkillCheckTool(sessionMgr *core.SessionManager, svc *trpg.Service, progression *ProgressionEngine) tool.Tool {
 	fn := func(ctx context.Context, req SkillCheckReq) (SkillCheckRsp, error) {
 		sessionID, userID, err := getSessionAndUser(ctx)
 		if err != nil {
@@ -125,6 +127,11 @@ func NewSkillCheckTool(sessionMgr *core.SessionManager, svc *trpg.Service) tool.
 		})
 		if err != nil {
 			return SkillCheckRsp{}, err
+		}
+
+		// 成长闭环：记录成功的技能使用（异步侧链，失败静默）
+		if progression != nil && result.Success {
+			progression.RecordSkillUse(sessionID, userID, result.Skill, true)
 		}
 
 		return SkillCheckRsp{

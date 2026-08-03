@@ -22,7 +22,7 @@ import (
 // Game state is accessed through Service and shared via core.Session.
 // Script context (timeline, NPCs, progress) is injected for AI-driven KP/DM mode.
 //
-// 多层架构：Chat() 委托给 KPPipeline（Director -> Narrator -> StateUpdate）。
+// 多层架构：Chat() 委托给 TurnEngine（规则指导 + 低频 Planner + Narrator）。
 type KPAgent struct {
 	config     *Config
 	agent      agent.Agent
@@ -31,7 +31,7 @@ type KPAgent struct {
 	sessionMgr *core.SessionManager
 	svc        *trpg.Service
 	scriptDeps *ScriptDeps // 剧本相关依赖（可选，nil 表示无剧本模式）
-	pipeline   *KPPipeline // 多层流水线（可选，nil 时回退到单 agent 模式）
+	turnEngine *TurnEngine // 回合引擎（可选，nil 时回退到单 agent 模式）
 }
 
 // NewKPAgent creates a KP/DM agent.
@@ -65,7 +65,11 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service,
 	modelInstance := openai.New(cfg.LLMModel, modelOpts...)
 
 	// 2. Create TRPG tools (KP-relevant only)
-	tools := NewKPTools(sessionMgr, svc)
+	var progression *ProgressionEngine
+	if scriptDeps != nil {
+		progression = scriptDeps.Progression
+	}
+	tools := NewKPTools(sessionMgr, svc, progression)
 
 	// 2b. Add script-related tools if script deps are available
 	if scriptDeps != nil {
@@ -105,10 +109,10 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service,
 	return kp, nil
 }
 
-// SetPipeline 注入多层流水线（由 main.go 在装配阶段调用）。
-func (a *KPAgent) SetPipeline(pipeline *KPPipeline) {
-	a.pipeline = pipeline
-	log.Printf("[KPAgent] 多层流水线已注入")
+// SetTurnEngine 注入回合引擎（由 main.go 在装配阶段调用）。
+func (a *KPAgent) SetTurnEngine(engine *TurnEngine) {
+	a.turnEngine = engine
+	log.Printf("[KPAgent] 回合引擎已注入")
 }
 
 // AgentID implements core.AgentHandler.
@@ -117,14 +121,14 @@ func (a *KPAgent) AgentID() string {
 }
 
 // Chat implements core.AgentHandler.
-// 优先委托给 KPPipeline（Director -> Narrator -> StateUpdate），
-// pipeline 不可用时回退到单 agent 模式。
+// 优先委托给 TurnEngine（规则指导 + 低频 Planner + Narrator），
+// turnEngine 不可用时回退到单 agent 模式。
 func (a *KPAgent) Chat(ctx *core.MessageContext, session *core.Session) (string, error) {
-	// 多层流水线模式
-	if a.pipeline != nil {
-		reply, err := a.pipeline.Run(ctx, session)
+	// 回合引擎模式
+	if a.turnEngine != nil {
+		reply, err := a.turnEngine.Run(ctx, session)
 		if err != nil {
-			log.Printf("[KPAgent] Pipeline 执行失败，回退到单 agent 模式: %v", err)
+			log.Printf("[KPAgent] TurnEngine 执行失败，回退到单 agent 模式: %v", err)
 		} else {
 			log.Printf("[KPAgent] 会话 %s, 用户 %s: %s -> %s",
 				ctx.SessionID, ctx.UserID, truncate(ctx.Content, 50), truncate(reply, 100))

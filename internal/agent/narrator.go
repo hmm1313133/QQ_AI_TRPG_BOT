@@ -70,7 +70,11 @@ func NewNarrator(
 	modelInstance := openai.New(cfg.LLMModel, modelOpts...)
 
 	// 2. Create tools (KP tools + script tools)
-	tools := NewKPTools(sessionMgr, svc)
+	var progression *ProgressionEngine
+	if scriptDeps != nil {
+		progression = scriptDeps.Progression
+	}
+	tools := NewKPTools(sessionMgr, svc, progression)
 	if scriptDeps != nil {
 		tools = append(tools, NewScriptTools(scriptDeps)...)
 	}
@@ -111,30 +115,30 @@ func NewNarrator(
 	return n, nil
 }
 
-// Narrate 生成叙事文本。
-// 注入 DecisionDirective 到用户消息，使用工具进行骰子检定等操作。
-func (n *Narrator) Narrate(
+// NarrateMessage 生成叙事文本（无状态调用）。
+//
+// 每轮使用唯一的 runner 会话 ID：跨轮一致性由 WorldState 与 ContextBuilder
+// 组装的上下文包承载，不依赖框架会话历史（旧版会话历史无限累积，
+// 是长团 token 爆炸的根因，见 AI多层架构分析.md 问题 6）。
+func (n *Narrator) NarrateMessage(
 	ctx context.Context,
-	state *GameState,
-	directive *DecisionDirective,
-	gameContext string,
-	playerMessage string,
+	userMessage string,
 	sessionID string,
 	userID string,
 ) (string, error) {
 	start := time.Now()
 
-	// 构建用户消息：游戏运行态摘要 + 导演指令 + 游戏上下文 + 玩家消息
-	userMessage := buildNarratorUserMessage(state, directive, gameContext, playerMessage)
-
 	// Inject sessionID and userID into context for FunctionTools
 	agentCtx := withSessionID(ctx, sessionID)
 	agentCtx = withUserID(agentCtx, userID)
 
+	// 无状态会话：每次调用独立会话，历史不跨轮累积
+	runSessionID := fmt.Sprintf("%s-%d", sessionID, time.Now().UnixNano())
+
 	// Run AI agent
 	events, err := n.runner.Run(agentCtx,
 		userID,
-		sessionID,
+		runSessionID,
 		model.NewUserMessage(userMessage),
 	)
 	if err != nil {
@@ -149,7 +153,7 @@ func (n *Narrator) Narrate(
 
 	elapsed := time.Since(start)
 	log.Printf("[Narrator] 叙事完成 (%.1fs): %s -> %s",
-		elapsed.Seconds(), truncate(playerMessage, 50), truncate(reply, 100))
+		elapsed.Seconds(), truncate(userMessage, 50), truncate(reply, 100))
 
 	return reply, nil
 }

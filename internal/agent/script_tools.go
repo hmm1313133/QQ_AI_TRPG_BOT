@@ -6,10 +6,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
@@ -20,7 +22,8 @@ type ScriptDeps struct {
 	Archive         *script.Archive
 	ProgressTracker *trpg.ProgressTracker
 	TimelineEngine  *trpg.TimelineEngine
-	GameStateStore  *GameStateStore // 结构化运行态存储（多层架构）
+	WorldEngine     *world.Engine      // 世界引擎（状态唯一写入入口）
+	Progression     *ProgressionEngine // 成长引擎（技能成长闭环）
 }
 
 // NewScriptTools 创建剧本相关的 FunctionTool 集合。
@@ -35,8 +38,8 @@ func NewScriptTools(deps *ScriptDeps) []tool.Tool {
 		NewSaveProgressTool(deps),
 		NewGetNPCTool(deps),
 	}
-	// 仅在 GameStateStore 可用时注册 update_game_state 工具
-	if deps.GameStateStore != nil {
+	// 仅在 WorldEngine 可用时注册 update_game_state 工具
+	if deps.WorldEngine != nil {
 		tools = append(tools, NewUpdateGameStateTool(deps))
 	}
 	return tools
@@ -260,11 +263,18 @@ func NewAdvanceTimelineTool(deps *ScriptDeps) tool.Tool {
 			deps.TimelineEngine.ResetIdleCount(sessionID)
 		}
 
-		// 联动 GameStateStore：刷新微观运行态（新场景/目标/隐藏信息/事件）
-		if deps.GameStateStore != nil {
-			if err := deps.GameStateStore.RefreshForNode(sessionID, scr, targetNodeID); err != nil {
+		// 联动 WorldEngine：刷新微观运行态（新场景/目标/隐藏信息/事件）
+		if deps.WorldEngine != nil {
+			if err := deps.WorldEngine.RefreshScene(sessionID, scr, targetNodeID); err != nil {
 				// 刷新失败不影响主流程，仅记录日志
-				fmt.Printf("[ScriptTools] 刷新 GameState 失败: %v\n", err)
+				log.Printf("[ScriptTools] 刷新 WorldState 失败: %v", err)
+			}
+		}
+
+		// 幕间成长结算（场景切换钩子，设计文档 7.2）
+		if deps.Progression != nil {
+			if report := deps.Progression.Settle(sessionID); report != "" {
+				rsp.Message += "\n\n" + report
 			}
 		}
 
@@ -413,13 +423,10 @@ func NewSaveProgressTool(deps *ScriptDeps) tool.Tool {
 			deps.TimelineEngine.ResetIdleCount(sessionID)
 		}
 
-		// 联动 GameStateStore：更新故事上下文并持久化微观运行态
-		if deps.GameStateStore != nil {
-			if state := deps.GameStateStore.LoadOrDefault(sessionID); state != nil {
-				if req.StorySummary != "" {
-					state.StoryContext = req.StorySummary
-				}
-				_ = deps.GameStateStore.Save(state)
+		// 联动 WorldEngine：更新战役摘要（写入 CampaignSummary，不覆盖 Background）
+		if deps.WorldEngine != nil && req.StorySummary != "" {
+			if err := deps.WorldEngine.UpdateSummary(sessionID, req.StorySummary); err != nil {
+				log.Printf("[ScriptTools] 更新战役摘要失败: %v", err)
 			}
 		}
 
@@ -541,9 +548,9 @@ type UpdateGameStateReq struct {
 }
 
 type StateUpdateReq struct {
-	Type   string `json:"type" jsonschema:"description=更新类型: npc_disposition/hidden_discovered/event_triggered/objective_completed,required"`
+	Type   string `json:"type" jsonschema:"description=更新类型: npc_disposition/hidden_discovered/event_triggered/objective_completed/mood_change/relation_change,required"`
 	Target string `json:"target" jsonschema:"description=目标: NPC名称/线索ID或线索描述/事件ID或事件描述/目标描述（与游戏运行态中的文本一致，可使用描述片段）,required"`
-	Value  string `json:"value,omitempty" jsonschema:"description=新值（如NPC新态度: friendly/neutral/suspicious/hostile/dead）"`
+	Value  string `json:"value,omitempty" jsonschema:"description=新值（NPC态度: friendly/neutral/suspicious/hostile/dead；mood_change 用 valence=+30,arousal=+10,tag=情绪 格式；relation_change 用 to=对象,trust=-10,fear=+5 格式）"`
 }
 
 type UpdateGameStateRsp struct {
@@ -552,6 +559,7 @@ type UpdateGameStateRsp struct {
 }
 
 // NewUpdateGameStateTool 创建更新游戏运行态的 FunctionTool。
+// 变更经 world.Engine.ApplyEvent 单写入入口校验并落库。
 func NewUpdateGameStateTool(deps *ScriptDeps) tool.Tool {
 	fn := func(ctx context.Context, req UpdateGameStateReq) (UpdateGameStateRsp, error) {
 		sessionID, _, err := getSessionAndUser(ctx)
@@ -559,25 +567,26 @@ func NewUpdateGameStateTool(deps *ScriptDeps) tool.Tool {
 			return UpdateGameStateRsp{}, err
 		}
 
-		if deps.GameStateStore == nil {
-			return UpdateGameStateRsp{Message: "GameStateStore 未初始化"}, nil
+		if deps.WorldEngine == nil {
+			return UpdateGameStateRsp{Message: "WorldEngine 未初始化"}, nil
 		}
 
-		state := deps.GameStateStore.LoadOrDefault(sessionID)
+		state := deps.WorldEngine.LoadOrNil(sessionID)
 		if state == nil {
-			return UpdateGameStateRsp{Message: "未找到 GameState（请先加载剧本）"}, nil
+			return UpdateGameStateRsp{Message: "未找到 WorldState（请先加载剧本）"}, nil
 		}
 
 		// 应用更新（逐条校验是否命中，未命中的反馈给 LLM 以便纠正）
 		applied := 0
 		var failed []string
 		for _, u := range req.Updates {
-			ok := state.ApplyUpdate(StateUpdate{
+			ok, err := deps.WorldEngine.ApplyEvent(state, world.WorldEvent{
 				Type:   u.Type,
+				Actor:  "narrator",
 				Target: u.Target,
 				Value:  u.Value,
 			})
-			if ok {
+			if err == nil && ok {
 				applied++
 			} else {
 				failed = append(failed, fmt.Sprintf("%s:%s", u.Type, u.Target))
@@ -585,7 +594,7 @@ func NewUpdateGameStateTool(deps *ScriptDeps) tool.Tool {
 		}
 
 		// 持久化
-		if err := deps.GameStateStore.Save(state); err != nil {
+		if err := deps.WorldEngine.Save(state); err != nil {
 			return UpdateGameStateRsp{
 				Success: false,
 				Message: fmt.Sprintf("保存失败: %v", err),

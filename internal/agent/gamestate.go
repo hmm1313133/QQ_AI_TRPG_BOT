@@ -13,7 +13,10 @@
 //   - StoryContext  <- Script.Background
 package agent
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // GameState 是一个会话的结构化运行态，持久化到 JSON。
 type GameState struct {
@@ -127,8 +130,8 @@ type DirectorAction struct {
 
 // StateUpdate 是导演系统要求应用的状态变更。
 type StateUpdate struct {
-	Type     string `json:"type"`     // npc_disposition / hidden_discovered / event_triggered / objective_completed / scene_change
-	Target   string `json:"target"`   // 目标 NPC 名称 / HiddenItem ID / PendingEvent ID / Objective 描述
+	Type     string `json:"type"`     // npc_disposition / hidden_discovered / event_triggered / objective_completed
+	Target   string `json:"target"`   // 目标 NPC 名称 / HiddenItem ID 或线索描述 / PendingEvent ID 或事件描述 / Objective 描述
 	Value    string `json:"value"`    // 新值
 }
 
@@ -157,43 +160,83 @@ func (gs *GameState) String() string {
 		gs.Metrics.PlayerAgency, gs.Metrics.ObjectiveProgress)
 }
 
-// ApplyUpdate 应用一个 StateUpdate 到 GameState。
-func (gs *GameState) ApplyUpdate(update StateUpdate) {
+// ApplyUpdate 应用一个 StateUpdate 到 GameState，返回是否命中目标。
+// target 支持精确 ID 或描述文本匹配（含双向子串匹配），
+// 兼容 Director（可见 GameState JSON 中的 ID）和 Narrator 工具
+// （通常只能给出自然语言描述）两种来源。
+func (gs *GameState) ApplyUpdate(update StateUpdate) bool {
 	switch update.Type {
 	case "npc_disposition":
 		if npc, ok := gs.NPCStates[update.Target]; ok {
 			npc.Disposition = update.Value
 			gs.NPCStates[update.Target] = npc
+			return true
+		}
+		// 名称模糊匹配（LLM 可能输出带空格的变体）
+		for name, npc := range gs.NPCStates {
+			if strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(update.Target)) {
+				npc.Disposition = update.Value
+				gs.NPCStates[name] = npc
+				return true
+			}
 		}
 	case "hidden_discovered":
 		for i := range gs.HiddenInfo {
-			if gs.HiddenInfo[i].ID == update.Target {
-				gs.HiddenInfo[i].Discovered = true
-				break
+			h := &gs.HiddenInfo[i]
+			if matchTarget(update.Target, h.ID, h.Description) {
+				h.Discovered = true
+				return true
 			}
 		}
 	case "event_triggered":
 		for i := range gs.PendingEvents {
-			if gs.PendingEvents[i].ID == update.Target {
-				gs.PendingEvents[i].Triggered = true
-				break
+			ev := &gs.PendingEvents[i]
+			if matchTarget(update.Target, ev.ID, ev.Description) {
+				ev.Triggered = true
+				return true
 			}
 		}
 	case "objective_completed":
 		for i := range gs.Objectives {
-			if gs.Objectives[i].Description == update.Target {
-				gs.Objectives[i].Completed = true
-				break
+			obj := &gs.Objectives[i]
+			if matchTarget(update.Target, "", obj.Description) {
+				obj.Completed = true
+				return true
 			}
 		}
 	}
+	return false
 }
 
-// ApplyUpdates 批量应用 StateUpdates。
-func (gs *GameState) ApplyUpdates(updates []StateUpdate) {
-	for _, u := range updates {
-		gs.ApplyUpdate(u)
+// matchTarget 判断 target 是否命中给定的 id/description。
+// 优先精确匹配；target 足够长（≥4 字）时允许双向子串匹配，
+// 兼容 LLM 输出描述片段或带前后缀的情况，同时避免过短 target 误命中。
+func matchTarget(target, id, description string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
 	}
+	if target == id || target == description {
+		return true
+	}
+	if len([]rune(target)) < 4 {
+		return false
+	}
+	if description != "" && (strings.Contains(description, target) || strings.Contains(target, description)) {
+		return true
+	}
+	return false
+}
+
+// ApplyUpdates 批量应用 StateUpdates，返回成功命中的条数。
+func (gs *GameState) ApplyUpdates(updates []StateUpdate) int {
+	applied := 0
+	for _, u := range updates {
+		if gs.ApplyUpdate(u) {
+			applied++
+		}
+	}
+	return applied
 }
 
 // CompletedObjectiveCount 返回已完成目标数。

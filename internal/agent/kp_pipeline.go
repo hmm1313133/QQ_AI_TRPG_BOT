@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
@@ -29,6 +30,11 @@ type KPPipeline struct {
 	director   *Director
 	narrator   *Narrator
 	stateStore *GameStateStore
+
+	// 会话级互斥锁：串行化同一会话的流水线执行，
+	// 避免并发 Run 交错读写同一 GameState 文件。
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
 }
 
 // NewKPPipeline 创建流水线协调器。
@@ -41,7 +47,20 @@ func NewKPPipeline(
 		director:   director,
 		narrator:   narrator,
 		stateStore: stateStore,
+		locks:      make(map[string]*sync.Mutex),
 	}
+}
+
+// sessionLock 返回指定会话的互斥锁（不存在则创建）。
+func (p *KPPipeline) sessionLock(sessionID string) *sync.Mutex {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	l, ok := p.locks[sessionID]
+	if !ok {
+		l = &sync.Mutex{}
+		p.locks[sessionID] = l
+	}
+	return l
 }
 
 // Run 执行一轮完整的 KP 流水线。
@@ -54,6 +73,11 @@ func (p *KPPipeline) Run(
 	sessionID := ctx.SessionID
 	userID := ctx.UserID
 	playerMessage := ctx.Content
+
+	// 串行化同一会话的流水线执行，防止并发消息交错读写 GameState
+	lock := p.sessionLock(sessionID)
+	lock.Lock()
+	defer lock.Unlock()
 
 	// 1. 加载 GameState
 	state := p.loadOrCreateState(sessionID, session)
@@ -171,25 +195,39 @@ func (p *KPPipeline) runDirector(
 }
 
 // applyUpdatesAndSave 应用 DecisionDirective 中的 StateUpdates 并持久化 GameState。
+//
+// 注意：不能直接用本轮开头 Load 的 state 覆盖写回——Narrator 执行期间，
+// 其工具（update_game_state / advance_timeline / save_progress）会各自
+// 从磁盘 Load → 修改 → Save。这里先重新 Load 最新状态，只叠加本轮流水线的
+// 增量（StateUpdates、LastDirective、Metrics、RoundCount），避免回滚工具的修改。
 func (p *KPPipeline) applyUpdatesAndSave(state *GameState, directive *DecisionDirective, sessionID string) {
 	if p.stateStore == nil || state == nil {
 		return
 	}
 
+	// 重新加载最新状态（可能已被 Narrator 工具更新），失败则回退用内存对象
+	latest := p.stateStore.LoadOrDefault(sessionID)
+	if latest == nil {
+		latest = state
+	}
+
 	// 应用 StateUpdates
 	if directive != nil && len(directive.StateUpdates) > 0 {
-		state.ApplyUpdates(directive.StateUpdates)
-		log.Printf("[KPPipeline] 应用 %d 个状态更新", len(directive.StateUpdates))
+		applied := latest.ApplyUpdates(directive.StateUpdates)
+		log.Printf("[KPPipeline] 应用状态更新: %d/%d 条命中", applied, len(directive.StateUpdates))
 	}
 
 	// 保存 LastDirective
-	state.LastDirective = directive
+	latest.LastDirective = directive
+
+	// 保留本轮 Director 预评估的指标（最新状态上的是上一轮的）
+	latest.Metrics = state.Metrics
 
 	// 增加轮次计数
-	state.RoundCount++
+	latest.RoundCount++
 
 	// 持久化
-	if err := p.stateStore.Save(state); err != nil {
+	if err := p.stateStore.Save(latest); err != nil {
 		log.Printf("[KPPipeline] 持久化 GameState 失败: %v", err)
 	}
 }

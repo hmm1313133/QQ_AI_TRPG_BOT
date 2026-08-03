@@ -124,8 +124,8 @@ func (n *Narrator) Narrate(
 ) (string, error) {
 	start := time.Now()
 
-	// 构建用户消息：导演指令 + 游戏上下文 + 玩家消息
-	userMessage := buildNarratorUserMessage(directive, gameContext, playerMessage)
+	// 构建用户消息：游戏运行态摘要 + 导演指令 + 游戏上下文 + 玩家消息
+	userMessage := buildNarratorUserMessage(state, directive, gameContext, playerMessage)
 
 	// Inject sessionID and userID into context for FunctionTools
 	agentCtx := withSessionID(ctx, sessionID)

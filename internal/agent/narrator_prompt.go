@@ -45,11 +45,15 @@ func buildNarratorSystemPrompt(state *GameState) string {
 	if state == nil {
 		return narratorSystemPromptBase
 	}
+	return narratorSystemPromptBase + "\n\n" + buildGameStateSummary(state)
+}
 
+// buildGameStateSummary 构建当前游戏运行态摘要文本。
+// 每轮通过用户消息注入 Narrator，使其感知微观运行态
+// （当前场景、NPC 态度、目标、隐藏信息与待触发事件）。
+func buildGameStateSummary(state *GameState) string {
 	var sb strings.Builder
-	sb.WriteString(narratorSystemPromptBase)
-
-	sb.WriteString("\n\n【当前游戏运行态摘要】\n")
+	sb.WriteString("【当前游戏运行态摘要】\n")
 	sb.WriteString(fmt.Sprintf("当前场景: %s (%s)\n", state.CurrentScene.NodeName, state.CurrentScene.NodeID))
 	if state.CurrentScene.Description != "" {
 		sb.WriteString(fmt.Sprintf("场景描述: %s\n", state.CurrentScene.Description))
@@ -120,13 +124,20 @@ func buildNarratorSystemPrompt(state *GameState) string {
 }
 
 // buildNarratorUserMessage 构建 Narrator 用户消息。
-// 包含导演指令 + 游戏上下文 + 玩家消息。
+// 包含游戏运行态摘要 + 导演指令 + 游戏上下文 + 玩家消息。
 func buildNarratorUserMessage(
+	state *GameState,
 	directive *DecisionDirective,
 	gameContext string,
 	playerMessage string,
 ) string {
 	var sb strings.Builder
+
+	// 注入游戏运行态摘要（微观状态：场景、NPC 态度、目标、线索、事件）
+	if state != nil {
+		sb.WriteString(buildGameStateSummary(state))
+		sb.WriteString("\n")
+	}
 
 	// 注入导演指令
 	if directive != nil {

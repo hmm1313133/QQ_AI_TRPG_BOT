@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
@@ -540,8 +541,8 @@ type UpdateGameStateReq struct {
 }
 
 type StateUpdateReq struct {
-	Type   string `json:"type" jsonschema:"description=更新类型: npc_disposition/hidden_discovered/event_triggered/objective_completed/scene_change,required"`
-	Target string `json:"target" jsonschema:"description=目标: NPC名称/线索描述/事件描述/目标描述"`
+	Type   string `json:"type" jsonschema:"description=更新类型: npc_disposition/hidden_discovered/event_triggered/objective_completed,required"`
+	Target string `json:"target" jsonschema:"description=目标: NPC名称/线索ID或线索描述/事件ID或事件描述/目标描述（与游戏运行态中的文本一致，可使用描述片段）,required"`
 	Value  string `json:"value,omitempty" jsonschema:"description=新值（如NPC新态度: friendly/neutral/suspicious/hostile/dead）"`
 }
 
@@ -567,15 +568,20 @@ func NewUpdateGameStateTool(deps *ScriptDeps) tool.Tool {
 			return UpdateGameStateRsp{Message: "未找到 GameState（请先加载剧本）"}, nil
 		}
 
-		// 应用更新
+		// 应用更新（逐条校验是否命中，未命中的反馈给 LLM 以便纠正）
 		applied := 0
+		var failed []string
 		for _, u := range req.Updates {
-			state.ApplyUpdate(StateUpdate{
+			ok := state.ApplyUpdate(StateUpdate{
 				Type:   u.Type,
 				Target: u.Target,
 				Value:  u.Value,
 			})
-			applied++
+			if ok {
+				applied++
+			} else {
+				failed = append(failed, fmt.Sprintf("%s:%s", u.Type, u.Target))
+			}
 		}
 
 		// 持久化
@@ -586,9 +592,15 @@ func NewUpdateGameStateTool(deps *ScriptDeps) tool.Tool {
 			}, nil
 		}
 
+		msg := fmt.Sprintf("已更新 %d 个状态", applied)
+		if len(failed) > 0 {
+			msg += fmt.Sprintf("；%d 个未匹配到目标: [%s]。target 必须与游戏运行态中的 NPC名称/线索ID/事件ID/目标描述 一致（可用描述片段），请修正后重试",
+				len(failed), strings.Join(failed, ", "))
+		}
+
 		return UpdateGameStateRsp{
-			Success: true,
-			Message: fmt.Sprintf("已更新 %d 个状态", applied),
+			Success: len(failed) == 0,
+			Message: msg,
 		}, nil
 	}
 
@@ -599,8 +611,9 @@ func NewUpdateGameStateTool(deps *ScriptDeps) tool.Tool {
 				"当玩家行动导致游戏状态变化时调用此工具。"+
 				"参数 updates 是状态更新列表，每个包含 type（更新类型）、target（目标）、value（新值）。"+
 				"类型说明: npc_disposition（NPC态度变化，target=NPC名称，value=新态度）、"+
-				"hidden_discovered（线索发现，target=线索描述）、"+
-				"event_triggered（事件触发，target=事件描述）、"+
-				"objective_completed（目标完成，target=目标描述）。"),
+				"hidden_discovered（线索发现，target=线索ID或线索描述片段）、"+
+				"event_triggered（事件触发，target=事件ID或事件描述片段）、"+
+				"objective_completed（目标完成，target=目标描述或片段）。"+
+				"注意：target 必须与运行态中的实际文本一致，未匹配的目标会在返回中列出，需修正后重试。"),
 	)
 }

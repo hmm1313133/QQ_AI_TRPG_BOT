@@ -59,8 +59,8 @@ JSON 格式如下：
   ],
   "state_updates": [
     {
-      "type": "更新类型（npc_disposition/hidden_discovered/event_triggered/objective_completed/scene_change）",
-      "target": "目标 NPC名称/HiddenItem ID/PendingEvent ID/Objective描述",
+      "type": "更新类型（npc_disposition/hidden_discovered/event_triggered/objective_completed）",
+      "target": "目标 NPC名称/HiddenItem ID/线索描述/PendingEvent ID/事件描述/Objective描述",
       "value": "新值"
     }
   ],

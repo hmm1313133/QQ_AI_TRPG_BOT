@@ -257,10 +257,15 @@ func (a *ScriptAnalyzer) Analyze(ctx context.Context, text string, sourceFile st
 	// 创建文本访问器
 	provider := NewTextAccessProvider(text)
 
+	// 每次分析使用唯一的会话 ID 前缀：runner 的 in-memory session 会按
+	// (appName, userID, sessionID) 累积历史，若沿用固定 ID，第二次分析时
+	// 上一个剧本的全文会残留在会话中，导致串剧本和 token 膨胀。
+	runID := fmt.Sprintf("%d", time.Now().UnixNano())
+
 	// === Phase 1: Planner ===
 	a.notify(progress, "planning", "Phase 1: AI 正在通读全文，制定提取计划...")
 	planStart := time.Now()
-	plan, err := a.runPlanner(ctx, text)
+	plan, err := a.runPlanner(ctx, text, runID)
 	if err != nil {
 		log.Printf("[ScriptAnalyzer] Phase 1 规划失败: %v", err)
 		return nil, fmt.Errorf("规划阶段失败: %w", err)
@@ -278,7 +283,7 @@ func (a *ScriptAnalyzer) Analyze(ctx context.Context, text string, sourceFile st
 	// === Phase 2: 并行模块提取 ===
 	a.notify(progress, "extracting", "Phase 2: 4 个 AI Agent 并行提取模块...")
 	extractStart := time.Now()
-	results, extractErrors := a.runParallelExtraction(ctx, plan, provider, verbatimExcerpts, progress)
+	results, extractErrors := a.runParallelExtraction(ctx, plan, provider, verbatimExcerpts, progress, runID)
 	log.Printf("[ScriptAnalyzer] Phase 2 完成: 耗时 %s, 错误数 %d",
 		time.Since(extractStart).Round(time.Millisecond), len(extractErrors))
 	for module, err := range extractErrors {
@@ -290,7 +295,7 @@ func (a *ScriptAnalyzer) Analyze(ctx context.Context, text string, sourceFile st
 	// === Phase 3: Integrator ===
 	a.notify(progress, "integrating", "Phase 3: AI 正在整合各模块结果...")
 	integrateStart := time.Now()
-	result, err := a.runIntegrator(ctx, plan, results, verbatimExcerpts)
+	result, err := a.runIntegrator(ctx, plan, results, verbatimExcerpts, runID)
 	if err != nil {
 		log.Printf("[ScriptAnalyzer] Phase 3 整合失败: %v", err)
 		return nil, fmt.Errorf("整合阶段失败: %w", err)
@@ -364,12 +369,12 @@ func (a *ScriptAnalyzer) Analyze(ctx context.Context, text string, sourceFile st
 // ============================================================
 
 // runPlanner 执行 Phase 1，让 AI 通读全文输出提取计划。
-func (a *ScriptAnalyzer) runPlanner(ctx context.Context, text string) (*ExtractionPlan, error) {
+func (a *ScriptAnalyzer) runPlanner(ctx context.Context, text string, runID string) (*ExtractionPlan, error) {
 	// 构建带行号的文本
 	numberedText := buildNumberedText(text)
 	userMessage := fmt.Sprintf("请分析以下 TRPG 剧本文本（带行号），输出提取计划：\n\n---\n%s\n---", numberedText)
 
-	events, err := a.plannerRun.Run(ctx, "analyzer", "script-planning",
+	events, err := a.plannerRun.Run(ctx, "analyzer", "script-planning-"+runID,
 		model.NewUserMessage(userMessage),
 	)
 	if err != nil {
@@ -418,6 +423,7 @@ func (a *ScriptAnalyzer) runParallelExtraction(
 	provider *TextAccessProvider,
 	verbatimExcerpts []VerbatimExcerpt,
 	progress ProgressFunc,
+	runID string,
 ) (*ExtractionResults, map[string]error) {
 
 	// 构建 segment_map + hints + 逐字摘录 的共享上下文文本
@@ -458,7 +464,7 @@ func (a *ScriptAnalyzer) runParallelExtraction(
 			// 注入 TextAccessProvider 到 context
 			agentCtx := withTextAccessProvider(ctx, provider)
 
-			events, err := m.runner.Run(agentCtx, "analyzer", fmt.Sprintf("extract-%s", m.name),
+			events, err := m.runner.Run(agentCtx, "analyzer", fmt.Sprintf("extract-%s-%s", m.name, runID),
 				model.NewUserMessage(userMessage),
 			)
 			if err != nil {
@@ -538,7 +544,7 @@ func (a *ScriptAnalyzer) runParallelExtraction(
 // ============================================================
 
 // runIntegrator 执行 Phase 3，整合 4 个模块结果。
-func (a *ScriptAnalyzer) runIntegrator(ctx context.Context, plan *ExtractionPlan, results *ExtractionResults, verbatimExcerpts []VerbatimExcerpt) (*analyzerResult, error) {
+func (a *ScriptAnalyzer) runIntegrator(ctx context.Context, plan *ExtractionPlan, results *ExtractionResults, verbatimExcerpts []VerbatimExcerpt, runID string) (*analyzerResult, error) {
 	// 构建整合输入
 	planJSON, _ := json.MarshalIndent(plan, "", "  ")
 	resultsJSON, _ := json.MarshalIndent(results, "", "  ")
@@ -547,7 +553,7 @@ func (a *ScriptAnalyzer) runIntegrator(ctx context.Context, plan *ExtractionPlan
 	userMessage := fmt.Sprintf("## 提取计划（ExtractionPlan）\n%s\n\n## 四个模块的提取结果\n%s\n\n## 已提取的逐字原文摘录（必须原封不动分配到各节点/背景的 verbatim_excerpts 字段中，不得丢弃、概括或修改任何一个字）\n%s\n\n请整合以上内容为最终的剧本 JSON。确保每一条逐字摘录都被分配到最合适的节点或背景的 verbatim_excerpts 字段中。",
 		string(planJSON), string(resultsJSON), string(verbatimJSON))
 
-	events, err := a.integratorRun.Run(ctx, "analyzer", "script-integration",
+	events, err := a.integratorRun.Run(ctx, "analyzer", "script-integration-"+runID,
 		model.NewUserMessage(userMessage),
 	)
 	if err != nil {

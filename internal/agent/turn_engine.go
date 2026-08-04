@@ -18,6 +18,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
@@ -27,6 +29,9 @@ import (
 
 // DefaultPlanInterval 默认场景计划刷新间隔（轮次）。
 const DefaultPlanInterval = 8
+
+// recentInjectionsCap 每世界保留的最近 lore 注入记录数（环形缓存，供管理端可观测性用）。
+const recentInjectionsCap = 20
 
 // TurnEngine 是回合引擎（KP 主循环）。
 type TurnEngine struct {
@@ -38,6 +43,10 @@ type TurnEngine struct {
 	memory       *MemoryService // 记忆服务（可为 nil 禁用）
 	cfgStore     *config.Store  // 运行时配置（热更新项每回合读取，可为 nil）
 	planInterval int
+
+	// injections 世界 ID -> 最近 N 回合 lore 注入清单（内存环形缓存）。
+	injMu      sync.Mutex
+	injections map[string][]world.LoreResult
 }
 
 // NewTurnEngine 创建回合引擎。
@@ -62,6 +71,7 @@ func NewTurnEngine(
 		worldEngine:  worldEngine,
 		ctxBuilder:   ctxBuilder,
 		planInterval: planInterval,
+		injections:   make(map[string][]world.LoreResult),
 	}
 }
 
@@ -98,15 +108,30 @@ func (t *TurnEngine) Run(
 	if state == nil {
 		// 无世界状态（自由模式）-> 直接叙事
 		gameContext := t.narrator.buildGameContext(sessionID, userID)
-		userMessage := t.ctxBuilder.BuildNarratorMessage(nil, nil, gameContext, "", playerMessage)
+		userMessage := t.ctxBuilder.BuildNarratorMessage(nil, nil, nil, gameContext, "", playerMessage)
 		return t.narrator.NarrateMessage(ctx.Ctx, userMessage, sessionID, userID)
 	}
 	eventLogBase := len(state.EventLog) // 本回合开始前的事件数，供 AfterTurn 取增量
 	mode := world.GetMode(state.Mode)
 
-	// 1c. 应用运行时配置（热更新项：上下文预算每回合读取）
+	// 1c. 应用运行时配置（热更新项：上下文预算与 lore 检索参数每回合读取）
+	loreBudget := world.DefaultLoreBudget
+	loreScanRounds := world.DefaultLoreScanRounds
+	loreRecursion := false
 	if t.cfgStore != nil {
 		t.ctxBuilder.Budget = t.cfgStore.GetInt(config.KeyContextBudget, t.ctxBuilder.Budget)
+		loreBudget = t.cfgStore.GetInt(config.KeyLoreBudget, loreBudget)
+		loreScanRounds = t.cfgStore.GetInt(config.KeyLoreScanRounds, loreScanRounds)
+		loreRecursion = t.cfgStore.GetBool(config.KeyLoreRecursion, false)
+	}
+
+	// 1d. lore 检索：设定条目按需召回 + 预算装配（替代旧 Background 全量注入）
+	scanText := t.buildLoreScanText(state, playerMessage, loreScanRounds)
+	lore := world.Resolve(state, scanText, loreBudget, loreRecursion)
+	t.recordInjection(sessionID, lore)
+	if len(lore.Front)+len(lore.Tail)+len(lore.Dropped) > 0 {
+		log.Printf("[TurnEngine] lore 注入: front=%d tail=%d 裁掉=%d（预算 %d）",
+			len(lore.Front), len(lore.Tail), len(lore.Dropped), loreBudget)
 	}
 
 	// 1b. 世界时钟：离线演化（回归结算）+ 本回合时间推进
@@ -122,7 +147,7 @@ func (t *TurnEngine) Run(
 
 	// 4. 低频 Planner：场景切换 / 间隔到期 / 无计划时生成场景计划
 	if mode.EnablePlanner && t.needsPlan(state) {
-		t.refreshPlan(ctx.Ctx, state, playerMessage, sessionID)
+		t.refreshPlan(ctx.Ctx, state, playerMessage, sessionID, scanText, loreBudget, loreRecursion)
 	}
 
 	// 5. ContextBuilder 按预算组装上下文包（含记忆检索块与世界事件）
@@ -131,7 +156,7 @@ func (t *TurnEngine) Run(
 	if mode.EnableMemory && t.memory != nil {
 		memoryBlock += t.memory.BuildMemoryBlock(state, playerMessage)
 	}
-	userMessage := t.ctxBuilder.BuildNarratorMessage(state, guidance, gameContext, memoryBlock, playerMessage)
+	userMessage := t.ctxBuilder.BuildNarratorMessage(state, &lore, guidance, gameContext, memoryBlock, playerMessage)
 	log.Printf("[TurnEngine] 上下文包: %d 字符（预算 %d）", len(userMessage), t.ctxBuilder.Budget)
 
 	// 6. Narrator 无状态调用
@@ -156,6 +181,44 @@ func (t *TurnEngine) Run(
 		time.Since(start).Seconds(), sessionID, state.RoundCount)
 
 	return reply, nil
+}
+
+// buildLoreScanText 构建 lore 关键词层的扫描文本（设计文档 §4.2）：
+// 本回合玩家消息 + 最近 K 轮决策记录 + 当前场景名与在场 NPC 名。
+// （逐字对话历史不落 WorldState，决策记录是持久化的最近轮次代理。）
+func (t *TurnEngine) buildLoreScanText(state *world.WorldState, playerMessage string, rounds int) string {
+	var sb strings.Builder
+	sb.WriteString(playerMessage)
+	if t.worldEngine != nil && rounds > 0 {
+		for _, d := range t.worldEngine.RecentDecisions(state, rounds) {
+			sb.WriteString("\n" + d.Value)
+		}
+	}
+	for _, name := range world.SceneEntityNames(state) {
+		sb.WriteString("\n" + name)
+	}
+	return sb.String()
+}
+
+// recordInjection 记录本回合 lore 注入清单（环形缓存，每世界保留最近 20 回合）。
+func (t *TurnEngine) recordInjection(worldID string, r world.LoreResult) {
+	t.injMu.Lock()
+	defer t.injMu.Unlock()
+	list := append(t.injections[worldID], r)
+	if len(list) > recentInjectionsCap {
+		list = list[len(list)-recentInjectionsCap:]
+	}
+	t.injections[worldID] = list
+}
+
+// RecentInjections 返回指定世界最近的 lore 注入记录（旧->新，P3 管理端 API 用）。
+func (t *TurnEngine) RecentInjections(worldID string) []world.LoreResult {
+	t.injMu.Lock()
+	defer t.injMu.Unlock()
+	src := t.injections[worldID]
+	out := make([]world.LoreResult, len(src))
+	copy(out, src)
+	return out
 }
 
 // loadOrCreateState 加载 WorldState，不存在且有剧本则初始化。
@@ -218,10 +281,17 @@ func (t *TurnEngine) needsPlan(state *world.WorldState) bool {
 
 // refreshPlan 调用 Director LLM 生成场景计划（低频）。
 // 计划文本存入 WorldState.ScenePlan；Planner 的 StateUpdates 经 ApplyEvent 落库。
-func (t *TurnEngine) refreshPlan(ctx context.Context, state *world.WorldState, playerMessage, sessionID string) {
+// 设定文本由 LoreResolver 按需产出（预算 lore_budget*2），替代旧 Background 全文注入。
+func (t *TurnEngine) refreshPlan(ctx context.Context, state *world.WorldState, playerMessage, sessionID, scanText string, loreBudget int, loreRecursion bool) {
 	pStart := time.Now()
 
-	scriptContext := state.Background
+	planLore := world.Resolve(state, scanText, loreBudget*2, loreRecursion)
+	scriptContext := formatLoreHits("【世界设定】", planLore.Front) +
+		formatLoreHits("【补充设定】", planLore.Tail)
+	if scriptContext == "" {
+		// 兜底：无 lore 条目命中时回退 Background（如条目被清空的旧世界）
+		scriptContext = state.Background
+	}
 	if state.CampaignSummary != "" {
 		scriptContext += "\n剧情摘要: " + state.CampaignSummary
 	}

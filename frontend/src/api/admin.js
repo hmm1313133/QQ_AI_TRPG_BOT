@@ -3,8 +3,9 @@ import { ElMessage } from 'element-plus'
 const TOKEN_KEY = 'trpg_admin_token'
 
 export function getAdminToken() {
-  let token = sessionStorage.getItem(TOKEN_KEY) || ''
-  if (!token) {
+  // 注意：空串是合法选择（本机无 ADMIN_TOKEN 模式），只有从未设置过（null）才弹框
+  let token = sessionStorage.getItem(TOKEN_KEY)
+  if (token === null) {
     token = window.prompt('请输入管理令牌（本机访问可留空）:') || ''
     sessionStorage.setItem(TOKEN_KEY, token)
   }
@@ -50,4 +51,45 @@ export async function adminReq(path, opts = {}) {
     throw err
   }
   return text ? JSON.parse(text) : null
+}
+
+// ============================================================
+// 世界设定库（lore）与分区编辑（《世界设定库与按需加载设计.md》§4.4）
+// ============================================================
+
+const enc = encodeURIComponent
+
+export const worldApi = {
+  list: () => adminReq('/api/admin/worlds'),
+  detail: (id) => adminReq(`/api/admin/worlds/${enc(id)}`),
+  create: (body) => adminReq('/api/admin/worlds', { method: 'POST', body: JSON.stringify(body) }),
+  remove: (id) => adminReq(`/api/admin/worlds/${enc(id)}`, { method: 'DELETE' }),
+  advance: (id) => adminReq(`/api/admin/worlds/${enc(id)}/advance`, { method: 'POST' }),
+  section: (id, part) => adminReq(`/api/admin/worlds/${enc(id)}/section?part=${enc(part)}`),
+  saveSection: (id, part, data) => adminReq(`/api/admin/worlds/${enc(id)}/section`, {
+    method: 'PATCH',
+    body: JSON.stringify({ part, data }),
+  }),
+}
+
+export const loreApi = {
+  list: (id) => adminReq(`/api/admin/worlds/${enc(id)}/lore`),
+  create: (id, entry) => adminReq(`/api/admin/worlds/${enc(id)}/lore`, {
+    method: 'POST',
+    body: JSON.stringify(entry),
+  }),
+  update: (id, eid, entry) => adminReq(`/api/admin/worlds/${enc(id)}/lore/${enc(eid)}`, {
+    method: 'PUT',
+    body: JSON.stringify(entry),
+  }),
+  remove: (id, eid) => adminReq(`/api/admin/worlds/${enc(id)}/lore/${enc(eid)}`, { method: 'DELETE' }),
+  test: (id, text) => adminReq(`/api/admin/worlds/${enc(id)}/lore/test`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  }),
+  injections: (id) => adminReq(`/api/admin/worlds/${enc(id)}/lore/injections`),
+  importText: (id, text) => adminReq(`/api/admin/worlds/${enc(id)}/lore/import`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  }),
 }

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/agent"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
@@ -39,7 +40,9 @@ type AdminDeps struct {
 	GameLogger  *gamelog.GameLogger
 	ConfigStore ConfigStore   // W4 接入，可为 nil
 	Bot         BotController // QQ 机器人生命周期控制，可为 nil
-	StartTime   time.Time
+	// TurnEngine 回合引擎（lore 注入记录可观测性用，可为 nil）。
+	TurnEngine *agent.TurnEngine
+	StartTime  time.Time
 }
 
 // ConfigStore 运行时配置存储接口（W4 实现，此处定义解耦）。
@@ -82,6 +85,16 @@ func (s *Server) registerAdmin(mux *http.ServeMux, deps AdminDeps, adminToken st
 	mux.HandleFunc("DELETE /api/admin/worlds/{id}", a.wrap(a.handleWorldDelete))
 	mux.HandleFunc("POST /api/admin/worlds/{id}/advance", a.wrap(a.handleWorldAdvance))
 	mux.HandleFunc("PATCH /api/admin/worlds/{id}/state", a.wrap(a.handleWorldPatch))
+	// 世界设定库（lore）与分区编辑（《世界设定库与按需加载设计.md》§4.4）
+	mux.HandleFunc("GET /api/admin/worlds/{id}/lore", a.wrap(a.handleLoreList))
+	mux.HandleFunc("POST /api/admin/worlds/{id}/lore", a.wrap(a.handleLoreCreate))
+	mux.HandleFunc("PUT /api/admin/worlds/{id}/lore/{eid}", a.wrap(a.handleLoreUpdate))
+	mux.HandleFunc("DELETE /api/admin/worlds/{id}/lore/{eid}", a.wrap(a.handleLoreDelete))
+	mux.HandleFunc("POST /api/admin/worlds/{id}/lore/test", a.wrap(a.handleLoreTest))
+	mux.HandleFunc("GET /api/admin/worlds/{id}/lore/injections", a.wrap(a.handleLoreInjections))
+	mux.HandleFunc("POST /api/admin/worlds/{id}/lore/import", a.wrap(a.handleLoreImport))
+	mux.HandleFunc("GET /api/admin/worlds/{id}/section", a.wrap(a.handleSectionGet))
+	mux.HandleFunc("PATCH /api/admin/worlds/{id}/section", a.wrap(a.handleSectionPatch))
 	mux.HandleFunc("GET /api/admin/scripts", a.wrap(a.handleScripts))
 	mux.HandleFunc("POST /api/admin/scripts", a.wrap(a.handleScriptCreate))
 	mux.HandleFunc("GET /api/admin/scripts/{id}", a.wrap(a.handleScriptDetail))
@@ -278,6 +291,8 @@ type worldCreateReq struct {
 	NPCs       []world.NPCSeed `json:"npcs"`
 	Locations  []string        `json:"locations"`
 	ScriptID   string          `json:"script_id"` // trpg 必填
+	// Lore 创建时随世界写入的手工设定条目（可选；校验与默认值同 POST /lore）。
+	Lore []loreUpsertReq `json:"lore"`
 }
 
 // handleWorldCreate 创建并播种世界（经 Engine.SeedWorld 单写入入口）。
@@ -322,6 +337,13 @@ func (a *adminAPI) handleWorldCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "世界已存在: "+req.WorldID, http.StatusConflict)
 		return
 	}
+	// 随附 lore 先校验（避免世界已创建才报参数错）
+	for i := range req.Lore {
+		if err := req.Lore[i].validate(); err != nil {
+			http.Error(w, fmt.Sprintf("第 %d 条 lore 校验失败: %v", i+1, err), http.StatusBadRequest)
+			return
+		}
+	}
 	state, err := a.deps.WorldEngine.SeedWorld(req.WorldID, world.SeedSpec{
 		Mode:       req.Mode,
 		Background: req.Background,
@@ -333,6 +355,23 @@ func (a *adminAPI) handleWorldCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "创建失败: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// 创建向导随附的手工设定条目（trpg 世界也可在剧本生成条目之上追加）
+	if len(req.Lore) > 0 {
+		a.deps.WorldEngine.Lock(state.WorldID)
+		for i := range req.Lore {
+			entry := world.LoreEntry{ID: newLoreID(), Source: world.LoreSourceManual}
+			req.Lore[i].applyTo(&entry, true)
+			state.Lore = append(state.Lore, entry)
+		}
+		if err := a.saveWithAuditNote(state, "lore:init",
+			fmt.Sprintf("创建世界时写入手工设定条目 %d 条", len(req.Lore))); err != nil {
+			a.deps.WorldEngine.Unlock(state.WorldID)
+			http.Error(w, "保存失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		a.deps.WorldEngine.Unlock(state.WorldID)
 	}
 	writeJSON(w, state)
 }

@@ -24,14 +24,15 @@ import (
 
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
+	trpcserver "trpc.group/trpc-go/trpc-go/server"
 )
 
 //go:embed static
 var staticFS embed.FS
 
 // Config Web 渠道配置。
+// 监听地址/端口由 trpc_go.yaml 的 server.service 段配置，不在此处。
 type Config struct {
-	Addr      string // 监听地址，如 :8080
 	ChatToken string // 可选访问令牌（为空则开放）
 	UploadDir string // 上传文件目录
 }
@@ -42,7 +43,7 @@ type Server struct {
 	router *core.Router
 	sess   *core.SessionManager
 
-	httpServer *http.Server
+	trpcServer *trpcserver.Server // trpc-go 泛 HTTP 托管（StartTrpc 后非空）
 
 	adminDeps  AdminDeps
 	adminToken string
@@ -69,9 +70,6 @@ type wsMessage struct {
 
 // NewServer 创建 Web 渠道服务器。
 func NewServer(cfg Config, router *core.Router, sessions *core.SessionManager) *Server {
-	if cfg.Addr == "" {
-		cfg.Addr = ":8080"
-	}
 	if cfg.UploadDir == "" {
 		cfg.UploadDir = "./data/uploads"
 	}
@@ -123,35 +121,9 @@ func (s *Server) Handler() http.Handler {
 	return s.buildMux()
 }
 
-// Start 启动 HTTP 服务（非阻塞）。
-func (s *Server) Start() error {
-	if err := os.MkdirAll(s.cfg.UploadDir, 0755); err != nil {
-		return err
-	}
-
-	s.httpServer = &http.Server{
-		Addr:              s.cfg.Addr,
-		Handler:           s.buildMux(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	go func() {
-		log.Printf("[Web] 聊天与管理服务已启动: http://localhost%s", s.cfg.Addr)
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[Web] HTTP 服务出错: %v", err)
-		}
-	}()
-	return nil
-}
-
 // Stop 停止服务。
 func (s *Server) Stop() error {
-	if s.httpServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		return s.httpServer.Shutdown(ctx)
-	}
-	return nil
+	return s.stopTrpc()
 }
 
 // ============================================================

@@ -25,6 +25,9 @@ const (
 	KeyNarratorTemp     = "narrator_temp"
 	KeyDirectorTemp     = "director_temp"
 	KeyContextBudget    = "context_budget"
+	KeyLoreBudget       = "lore_budget"
+	KeyLoreScanRounds   = "lore_scan_rounds"
+	KeyLoreRecursion    = "lore_recursion"
 	KeyPlanInterval     = "plan_interval"
 	KeyExtractorEnabled = "extractor_enabled"
 	KeyQQAppID          = "qq_appid"
@@ -66,6 +69,9 @@ var KeyRegistry = []KeyMeta{
 	{Key: KeyNarratorTemp, Label: "Narrator 温度", Group: "LLM", Type: "number", Scope: ScopeProcessRestart},
 	{Key: KeyDirectorTemp, Label: "Planner 温度", Group: "LLM", Type: "number", Scope: ScopeProcessRestart},
 	{Key: KeyContextBudget, Label: "上下文预算·字符", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
+	{Key: KeyLoreBudget, Label: "设定库预算·字符", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
+	{Key: KeyLoreScanRounds, Label: "设定库扫描轮数", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
+	{Key: KeyLoreRecursion, Label: "设定库递归扫描开关", Group: "上下文与记忆", Type: "bool", Scope: ScopeHot},
 	{Key: KeyExtractorEnabled, Label: "对话记忆抽取开关", Group: "上下文与记忆", Type: "bool", Scope: ScopeHot},
 	{Key: KeyPlanInterval, Label: "场景计划间隔·轮", Group: "时间轴", Type: "number", Scope: ScopeHot},
 }
@@ -91,6 +97,9 @@ var HotKeys = map[string]bool{
 	KeyContextBudget:    true,
 	KeyPlanInterval:     true,
 	KeyExtractorEnabled: true,
+	KeyLoreBudget:       true,
+	KeyLoreScanRounds:   true,
+	KeyLoreRecursion:    true,
 }
 
 // Store 是 SQLite 配置存储。

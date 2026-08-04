@@ -207,6 +207,9 @@ func main() {
 	cfgStore.Seed(config.KeyNarratorTemp, "0.7")
 	cfgStore.Seed(config.KeyDirectorTemp, "0.2")
 	cfgStore.Seed(config.KeyContextBudget, "6000")
+	cfgStore.Seed(config.KeyLoreBudget, "1500")
+	cfgStore.Seed(config.KeyLoreScanRounds, "4")
+	cfgStore.Seed(config.KeyLoreRecursion, "false")
 	cfgStore.Seed(config.KeyPlanInterval, "8")
 	cfgStore.Seed(config.KeyExtractorEnabled, getEnv("MEMORY_EXTRACTOR_ENABLED", "true"))
 	// 新键启动时从 env 播种（env 仅作初始值，之后以 DB 为准；改凭证后重启机器人即生效）
@@ -235,10 +238,10 @@ func main() {
 	}
 
 	// 13b. Initialize Web channel (Web 聊天 + 管理后台)
+	// 监听地址/端口由 trpc_go.yaml 的 server.service 段配置（trpc.trpg.web.Admin）
 	var webServer *web.Server
 	if getEnv("WEB_ENABLED", "true") == "true" {
 		webServer = web.NewServer(web.Config{
-			Addr:      getEnv("WEB_ADDR", ":8080"),
 			ChatToken: os.Getenv("WEB_CHAT_TOKEN"),
 		}, router, sessions)
 		webServer.SetAdmin(web.AdminDeps{
@@ -252,9 +255,10 @@ func main() {
 			GameLogger:  gameLogger,
 			ConfigStore: cfgStore,
 			Bot:         qqBot,
+			TurnEngine:  turnEngine,
 			StartTime:   time.Now(),
 		}, os.Getenv("ADMIN_TOKEN"))
-		if err := webServer.Start(); err != nil {
+		if err := webServer.StartTrpc(getEnv("TRPC_CONF", "./conf/trpc_go.yaml")); err != nil {
 			log.Errorf("启动 Web 渠道失败: %v", err)
 		} else {
 			defer webServer.Stop()

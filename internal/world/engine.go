@@ -62,8 +62,14 @@ func (e *Engine) worldLock(worldID string) *sync.Mutex {
 }
 
 // Load 加载世界状态。
+// 加载后执行旧 Background 的 lore 兼容迁移（内存中转换，下次 Save 落盘）。
 func (e *Engine) Load(worldID string) (*WorldState, error) {
-	return e.repo.Load(worldID)
+	state, err := e.repo.Load(worldID)
+	if err != nil {
+		return nil, err
+	}
+	MigrateLegacyBackground(state)
+	return state, nil
 }
 
 // LoadOrNil 加载世界状态，不存在返回 nil。
@@ -72,6 +78,7 @@ func (e *Engine) LoadOrNil(worldID string) *WorldState {
 	if err != nil {
 		return nil
 	}
+	MigrateLegacyBackground(state)
 	return state
 }
 
@@ -337,6 +344,8 @@ func (e *Engine) InitFromScript(worldID string, scr *script.Script) (*WorldState
 	state.ScriptID = scr.ID
 	state.ScriptName = scr.Name
 	state.Background = BuildStoryContext(&scr.Background)
+	// P4 剧本条目化：Background/Timeline/Characters → lore 条目（Background 原文保留兼容旧读路径）
+	state.Lore = ScriptLoreEntries(scr)
 
 	if firstNode := scr.GetFirstNode(); firstNode != nil {
 		applyNodeToState(state, scr, firstNode)
@@ -362,8 +371,8 @@ func (e *Engine) InitFromScript(worldID string, scr *script.Script) (*WorldState
 		return nil, fmt.Errorf("保存初始 WorldState 失败: %w", err)
 	}
 
-	log.Printf("[World] 初始化 WorldState: world=%s, script=%s, scene=%s, npcs=%d",
-		worldID, scr.Name, state.Scene.NodeName, len(state.Characters))
+	log.Printf("[World] 初始化 WorldState: world=%s, script=%s, scene=%s, npcs=%d, lore=%d",
+		worldID, scr.Name, state.Scene.NodeName, len(state.Characters), len(state.Lore))
 	return state, nil
 }
 

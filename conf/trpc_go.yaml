@@ -5,7 +5,7 @@ global:
   namespace: development
   env_name: development
   container_name: qq-ai-trpg-bot
-  enable_set: false
+  enable_set: "N"          # trpc-go 该字段为字符串（"Y"/"N"）
   full_link_name: qq_ai_trpg_bot
 
 server:
@@ -13,9 +13,17 @@ server:
   server: bot
   bin_path: ./bin/
   conf_path: ./conf/
-  filter:
-    - recovery    # panic 恢复
-    - metrics     # 指标监控
+  # 注意：server.filter 中列出的名称必须已注册（filter.RegisterServer），
+  # 否则 trpc.NewServer 会 panic。recovery/metrics 为腾讯生态插件，
+  # 本项目未引入，如需启用请先 import 对应插件再放开。
+  service:
+    # Web 渠道（聊天 + 管理后台）：泛 HTTP 标准服务（NoProtocol）
+    - name: trpc.trpg.web.Admin
+      ip: 0.0.0.0
+      port: 8080
+      network: tcp
+      protocol: http
+      idletime: -1          # 禁用空闲连接回收（WebSocket 长连接必须；框架默认 60s 会杀 WS）
 
 # QQ 机器人配置 (官方 API v2)
 # 文档: https://bot.q.qq.com/wiki/develop/api-v2/

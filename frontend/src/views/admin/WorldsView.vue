@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="page-title">世界管理</div>
-    <div class="page-desc">查看世界状态，手动推进剧情或修正状态</div>
+    <div class="page-desc">查看世界状态，进入编辑器修正状态或维护设定库</div>
 
     <div class="card">
       <div class="card-title">世界列表</div>
@@ -22,7 +22,7 @@
         <el-table-column prop="round" label="轮次" width="80" />
         <el-table-column label="操作" width="160">
           <template #default="{ row }">
-            <el-button size="small" @click="showWorld(row.id)">详情</el-button>
+            <el-button size="small" @click="router.push(`/admin/worlds/${encodeURIComponent(row.id)}`)">详情</el-button>
             <el-button type="danger" plain size="small" @click="removeWorld(row.id)">删除</el-button>
           </template>
         </el-table-column>
@@ -30,7 +30,7 @@
     </div>
 
     <!-- 新建世界向导 -->
-    <el-dialog v-model="createVisible" title="新建世界" width="620px" :close-on-click-modal="false">
+    <el-dialog v-model="createVisible" title="新建世界" width="680px" :close-on-click-modal="false">
       <el-form label-width="110px">
         <el-form-item label="模式">
           <el-radio-group v-model="createForm.mode">
@@ -102,52 +102,70 @@
             </div>
           </el-form-item>
         </template>
+
+        <!-- 设定库快速录入（设计文档 §3.2：逐条添加 + 段落拆分两种入口） -->
+        <template v-if="createForm.mode !== 'trpg'">
+          <el-form-item label="设定条目">
+            <div class="loc-list">
+              <div class="muted">
+                只写静态设定（地理/势力/规则/历史）；HP、任务进度等易变事实由系统自动管理。可留空，创建后在世界编辑器中维护。
+              </div>
+              <div v-for="(e, i) in createForm.lore" :key="i" class="npc-card">
+                <div class="loc-row">
+                  <el-input v-model="e.title" size="small" placeholder="条目标题（必填）" style="width:200px" />
+                  <el-checkbox v-model="e.constant" size="small">恒定</el-checkbox>
+                  <span class="spacer"></span>
+                  <el-button type="danger" plain size="small" circle @click="createForm.lore.splice(i, 1)">×</el-button>
+                </div>
+                <el-input v-model="e.keysText" size="small" placeholder="关键词（逗号/顿号分隔，恒定条目可留空）" style="margin-top:6px" />
+                <el-input v-model="e.content" type="textarea" :rows="2" placeholder="设定正文（必填）" style="margin-top:6px" />
+              </div>
+              <div>
+                <el-button size="small" plain @click="createForm.lore.push(newLoreDraft())">+ 逐条添加</el-button>
+                <el-button size="small" plain @click="splitVisible = !splitVisible">
+                  {{ splitVisible ? '收起段落拆分' : '粘贴大段文本拆分' }}
+                </el-button>
+              </div>
+              <div v-if="splitVisible" class="npc-card">
+                <el-input
+                  v-model="splitText"
+                  type="textarea"
+                  :rows="5"
+                  placeholder="粘贴大段设定文本，按空行拆成条目草稿"
+                />
+                <div style="margin-top:8px">
+                  <el-button size="small" :disabled="!splitText.trim()" @click="previewSplit">预览拆分</el-button>
+                </div>
+                <template v-if="splitDrafts.length">
+                  <div class="muted" style="margin:8px 0 4px">将拆分为 {{ splitDrafts.length }} 条（标题取首行前 20 字，可稍后补关键词）：</div>
+                  <div v-for="(d, i) in splitDrafts" :key="i" class="split-draft">
+                    <b>{{ d.title }}</b>
+                    <span class="muted">{{ d.content.length }} 字</span>
+                  </div>
+                  <el-button size="small" type="primary" plain style="margin-top:8px" @click="confirmSplit">确认添加为条目草稿</el-button>
+                </template>
+              </div>
+            </div>
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
         <el-button type="primary" :loading="creating" @click="createWorld">创建</el-button>
       </template>
     </el-dialog>
-
-    <div v-if="detail" class="card">
-      <div class="card-title">世界详情 <span class="muted">{{ currentWorld }}</span></div>
-      <div class="detail-grid">
-        <div>
-          <div class="muted">当前场景</div>
-          <p>{{ sceneText }}</p>
-          <div class="muted">目标</div>
-          <p v-if="quests.length" v-html="quests"></p>
-          <p v-else>-</p>
-          <div class="muted">指标（张力/混乱/掌控/进度）</div>
-          <p>{{ metricsText }}</p>
-        </div>
-        <div>
-          <div class="muted">NPC 状态</div>
-          <p v-if="npcs.length" v-html="npcs"></p>
-          <p v-else>-</p>
-          <div class="muted">待触发事件</div>
-          <p v-if="events.length" v-html="events"></p>
-          <p v-else>-</p>
-          <div class="muted">锁定事实</div>
-          <p v-if="locks.length" v-html="locks"></p>
-          <p v-else>-</p>
-        </div>
-      </div>
-      <div style="display:flex;gap:10px;margin-top:14px">
-        <el-button type="primary" size="small" @click="advance">推进时间轴 →</el-button>
-      </div>
-    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { adminApi, adminReq } from '../../api/admin'
 
+const router = useRouter()
+
 const worlds = ref([])
-const detail = ref(null)
-const currentWorld = ref('')
 
 const createVisible = ref(false)
 const creating = ref(false)
@@ -160,7 +178,11 @@ const createForm = reactive({
   scene: '',
   locations: [],
   npcs: [],
+  lore: [],
 })
+const splitVisible = ref(false)
+const splitText = ref('')
+const splitDrafts = ref([])
 
 const MODE_DESC = {
   trpg: '按已有剧本跑团：完整规则 + 时间轴推进，需选择剧本。',
@@ -172,11 +194,43 @@ function addNpc() {
   createForm.npcs.push({ name: '', kind: 'npc', disposition: 'neutral', personality: '' })
 }
 
+function newLoreDraft() {
+  return { title: '', keysText: '', content: '', constant: false }
+}
+
+// 大段文本按空行拆段落（与服务端 importTextDrafts 同一规则：标题取首行前 20 字）
+function previewSplit() {
+  const text = splitText.value.replace(/\r\n/g, '\n')
+  splitDrafts.value = text
+    .split('\n\n')
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => {
+      let title = p.split('\n')[0]
+      if ([...title].length > 20) title = [...title].slice(0, 20).join('')
+      return { title, content: p }
+    })
+  if (!splitDrafts.value.length) ElMessage.warning('未解析到有效段落')
+}
+
+function confirmSplit() {
+  for (const d of splitDrafts.value) {
+    createForm.lore.push({ title: d.title, keysText: '', content: d.content, constant: false })
+  }
+  ElMessage.success(`已添加 ${splitDrafts.value.length} 条草稿，请逐条补关键词`)
+  splitDrafts.value = []
+  splitText.value = ''
+  splitVisible.value = false
+}
+
 async function openCreate() {
   Object.assign(createForm, {
     mode: 'trpg', world_id: '', script_id: '', background: '', scene: '',
-    locations: [], npcs: [],
+    locations: [], npcs: [], lore: [],
   })
+  splitVisible.value = false
+  splitText.value = ''
+  splitDrafts.value = []
   addNpc()
   createVisible.value = true
   try {
@@ -194,6 +248,14 @@ async function createWorld() {
     const valid = f.npcs.filter((n) => n.name.trim())
     if (valid.length === 0) { ElMessage.warning('roleplay 模式至少需要 1 个 NPC'); return }
   }
+  const lore = f.mode === 'trpg' ? [] : f.lore
+    .filter((e) => e.title.trim() && e.content.trim())
+    .map((e) => ({
+      title: e.title.trim(),
+      content: e.content,
+      keys: e.keysText.split(/[,，、;；]+/).map((s) => s.trim()).filter(Boolean),
+      constant: e.constant,
+    }))
   const body = {
     world_id: f.world_id.trim(),
     mode: f.mode,
@@ -206,6 +268,7 @@ async function createWorld() {
           name: n.name.trim(), kind: n.kind, disposition: n.disposition, personality: n.personality,
         }))
       : [],
+    lore,
   }
   creating.value = true
   try {
@@ -240,63 +303,20 @@ async function removeWorld(id) {
   try {
     await adminReq(`/api/admin/worlds/${encodeURIComponent(id)}`, { method: 'DELETE' })
     ElMessage.success('已删除')
-    if (currentWorld.value === id) { detail.value = null; currentWorld.value = '' }
     loadWorlds()
   } catch (e) {
     ElMessage.error(e.status === 409 ? '有会话正在使用该世界，无法删除' : e.message)
   }
 }
 
-const sceneText = computed(() => {
-  if (!detail.value) return '-'
-  const s = detail.value.scene || {}
-  return `${s.node_name || '-'} (${s.node_id || '-'})`
-})
-const quests = computed(() => (detail.value?.quests || [])
-  .map((q) => `${q.completed ? '✅' : '◻️'} ${escapeHtml(q.description)}`).join('<br>'))
-const metricsText = computed(() => {
-  const m = detail.value?.metrics || {}
-  return `${m.tension_level} / ${m.chaos_level} / ${m.player_agency} / ${m.objective_progress}`
-})
-const npcs = computed(() => Object.values(detail.value?.characters || {})
-  .map((n) => `${n.alive ? '🙂' : '⚰️'} ${escapeHtml(n.name)}: ${escapeHtml(n.disposition)}`).join('<br>'))
-const events = computed(() => (detail.value?.event_queue || [])
-  .filter((e) => !e.triggered).map((e) => `◦ ${escapeHtml(e.description)}`).join('<br>'))
-const locks = computed(() => (detail.value?.locks || [])
-  .map((l) => `🔒 ${escapeHtml(l.key)}`).join('<br>'))
-
-function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]))
-}
-
 async function loadWorlds() {
   worlds.value = (await adminApi('/api/admin/worlds')) || []
-}
-
-async function showWorld(id) {
-  detail.value = await adminApi('/api/admin/worlds/' + encodeURIComponent(id))
-  currentWorld.value = id
-}
-
-async function advance() {
-  if (!currentWorld.value) return
-  try {
-    const r = await adminApi(`/api/admin/worlds/${encodeURIComponent(currentWorld.value)}/advance`, { method: 'POST' })
-    ElMessage.success(r.message || '已推进')
-    showWorld(currentWorld.value)
-  } catch (e) {
-    ElMessage.error('推进失败')
-  }
 }
 
 onMounted(loadWorlds)
 </script>
 
 <style scoped>
-.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.detail-grid p { font-size: 13.5px; line-height: 1.8; margin: 4px 0 12px; }
 .mode-desc { margin-top: 6px; line-height: 1.6; }
 .loc-list { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; width: 100%; }
 .loc-row { display: flex; gap: 8px; align-items: center; width: 100%; }
@@ -304,7 +324,10 @@ onMounted(loadWorlds)
   width: 100%; border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 10px; background: var(--bg);
 }
-@media (max-width: 860px) {
-  .detail-grid { grid-template-columns: 1fr; }
+.spacer { flex: 1; }
+.split-draft {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-size: 12.5px; padding: 4px 8px; border-radius: 6px;
 }
+.split-draft:nth-child(odd) { background: var(--surface); }
 </style>

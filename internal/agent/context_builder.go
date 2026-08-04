@@ -48,8 +48,13 @@ func NewContextBuilder(budget int) *ContextBuilder {
 //   4. 场景计划 ScenePlan（可选）
 //   5. 游戏上下文：角色卡/骰点/规则集（可选）
 //   6. 记忆检索块（可选，P3 接入）
+//
+// lore 分区（《世界设定库与按需加载设计.md》§4.3）：front 条目放状态摘要之前
+// （世界观区），tail 条目放玩家消息之后（风格指令区，对应 Author's Note 位置）。
+// lore 已经 LoreResolver 按 lore_budget 裁剪，此处作为高优先级可选分区接入。
 func (b *ContextBuilder) BuildNarratorMessage(
 	state *world.WorldState,
+	lore *world.LoreResult,
 	guidance *RuleGuidance,
 	gameContext string,
 	memoryBlock string,
@@ -57,11 +62,19 @@ func (b *ContextBuilder) BuildNarratorMessage(
 ) string {
 	var sections []contextSection
 
+	// 可选：lore front（世界观区，状态摘要之前）
+	if lore != nil && len(lore.Front) > 0 {
+		sections = append(sections, contextSection{
+			priority: 2, name: "lore_front",
+			content: formatLoreHits("【世界设定】", lore.Front),
+		})
+	}
+
 	// 必需：运行态摘要（含锁定事实）
 	if state != nil {
 		sections = append(sections, contextSection{
 			priority: 2, name: "state_summary",
-			content: buildGameStateSummary(state), required: true,
+			content: buildGameStateSummary(state, lore), required: true,
 		})
 	}
 
@@ -103,7 +116,29 @@ func (b *ContextBuilder) BuildNarratorMessage(
 		content: "\n玩家: " + playerMessage, required: true,
 	})
 
+	// 可选：lore tail（风格指令区，玩家消息之后，Author's Note 位置）
+	if lore != nil && len(lore.Tail) > 0 {
+		sections = append(sections, contextSection{
+			priority: 2, name: "lore_tail",
+			content: formatLoreHits("【补充设定】", lore.Tail),
+		})
+	}
+
 	return b.assemble(sections)
+}
+
+// formatLoreHits 把 lore 命中格式化为注入文本块（无命中返回空串）。
+func formatLoreHits(header string, hits []world.LoreHit) string {
+	if len(hits) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(header + "\n")
+	for _, h := range hits {
+		sb.WriteString("◆ " + h.Entry.Title + "\n")
+		sb.WriteString(h.Entry.Content + "\n")
+	}
+	return sb.String()
 }
 
 // assemble 按优先级贪心装配分区，超预算的可选分区被裁剪（高数值优先级先裁）。

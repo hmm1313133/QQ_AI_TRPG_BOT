@@ -186,7 +186,7 @@ cd frontend && npm install && npm run build && cd ..   # 产物 -> internal/web/
 go build -o bot.exe ./cmd/bot
 ```
 
-构建后访问 `http://localhost:8080/chat`（聊天页）与 `http://localhost:8080/admin`（管理后台）。前端开发调试：`cd frontend && npm run dev`（已配置 /api、/ws 代理到 :8080）。
+构建后访问 `http://localhost:8080/chat`（聊天页）与 `http://localhost:8080/admin`（管理后台）。Web 服务由 trpc-go 泛 HTTP 托管，监听地址在 `conf/trpc_go.yaml` 的 `server.service`（`trpc.trpg.web.Admin`）中配置。前端开发调试：`cd frontend && npm run dev`（已配置 /api、/ws 代理到 :8080）。
 
 ## 项目结构
 

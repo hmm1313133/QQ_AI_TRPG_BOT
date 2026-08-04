@@ -28,6 +28,10 @@ type WorldState struct {
 	// CampaignSummary 是滚动更新的战役摘要（不再覆盖 Background）。
 	CampaignSummary string `json:"campaign_summary,omitempty"`
 
+	// Lore 世界设定库（Lorebook 条目，设计文档《世界设定库与按需加载设计.md》§4.1）。
+	// 内嵌进 WorldState：条目与世界强绑定，沿用每世界单 JSON 文件存储。
+	Lore []LoreEntry `json:"lore,omitempty"`
+
 	Clock      WorldClock                 `json:"clock"`
 	Scene      SceneState                 `json:"scene"`
 	ScenePlan  string                     `json:"scene_plan,omitempty"` // Planner 的场景级计划（替代旧 LastDirective）

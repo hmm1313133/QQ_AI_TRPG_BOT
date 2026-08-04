@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +20,7 @@ type StateRepository interface {
 	Load(worldID string) (*WorldState, error)
 	Save(state *WorldState) error
 	Delete(worldID string) error
+	List() ([]string, error)
 	// Archive 将 beforeRound 之前的事件日志压缩归档（P5 实现，当前保留接口）。
 	Archive(worldID string, beforeRound int) error
 }
@@ -118,6 +120,26 @@ func (r *JSONRepository) Delete(worldID string) error {
 	_ = os.Remove(r.path(worldID))
 	_ = os.Remove(r.path(worldID) + ".bak")
 	return nil
+}
+
+// List 列出所有世界 ID（管理后台用）。
+func (r *JSONRepository) List() ([]string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	entries, err := os.ReadDir(r.dir)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") ||
+			strings.HasSuffix(entry.Name(), ".bak") || strings.HasSuffix(entry.Name(), ".tmp") {
+			continue
+		}
+		ids = append(ids, strings.TrimSuffix(entry.Name(), ".json"))
+	}
+	return ids, nil
 }
 
 // Archive 归档旧事件日志：将 beforeRound 之前的事件压缩为一条摘要事件。

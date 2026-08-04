@@ -20,6 +20,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
@@ -35,6 +36,7 @@ type TurnEngine struct {
 	worldEngine  *world.Engine
 	ctxBuilder   *ContextBuilder
 	memory       *MemoryService // 记忆服务（可为 nil 禁用）
+	cfgStore     *config.Store  // 运行时配置（热更新项每回合读取，可为 nil）
 	planInterval int
 }
 
@@ -69,6 +71,12 @@ func (t *TurnEngine) SetMemory(m *MemoryService) {
 	log.Printf("[TurnEngine] 记忆服务已注入")
 }
 
+// SetConfigStore 注入运行时配置存储（热更新项每回合读取）。
+func (t *TurnEngine) SetConfigStore(s *config.Store) {
+	t.cfgStore = s
+	log.Printf("[TurnEngine] 运行时配置已接入")
+}
+
 // Run 执行一回合。返回叙事文本。
 func (t *TurnEngine) Run(
 	ctx *core.MessageContext,
@@ -95,6 +103,11 @@ func (t *TurnEngine) Run(
 	}
 	eventLogBase := len(state.EventLog) // 本回合开始前的事件数，供 AfterTurn 取增量
 	mode := world.GetMode(state.Mode)
+
+	// 1c. 应用运行时配置（热更新项：上下文预算每回合读取）
+	if t.cfgStore != nil {
+		t.ctxBuilder.Budget = t.cfgStore.GetInt(config.KeyContextBudget, t.ctxBuilder.Budget)
+	}
 
 	// 1b. 世界时钟：离线演化（回归结算）+ 本回合时间推进
 	worldEventsBlock := t.advanceWorldClock(state, mode)
@@ -192,7 +205,12 @@ func (t *TurnEngine) needsPlan(state *world.WorldState) bool {
 	if state.PlanNodeID != state.Scene.NodeID {
 		return true
 	}
-	if state.RoundCount-state.PlanRound >= t.planInterval {
+	// 计划间隔支持运行时配置热更新
+	interval := t.planInterval
+	if t.cfgStore != nil {
+		interval = t.cfgStore.GetInt(config.KeyPlanInterval, interval)
+	}
+	if state.RoundCount-state.PlanRound >= interval {
 		return true
 	}
 	return false

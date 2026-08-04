@@ -32,6 +32,15 @@ type TimelineEngine struct {
 	tickers         map[string]*sessionTicker // sessionID -> ticker
 	progressTracker *ProgressTracker
 	sessionMgr      *core.SessionManager
+	pushFn          func(sessionID, msg string) // 可选：主动推送（如 WebSocket）
+}
+
+// SetPushFunc 注册主动推送回调（例如 Web 渠道的 WS 推送）。
+// 设置后，sendIdlePrompt 除写 session KV 外还会调用该回调。
+func (e *TimelineEngine) SetPushFunc(fn func(sessionID, msg string)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pushFn = fn
 }
 
 // sessionTicker 单个会话的定时器。
@@ -191,13 +200,20 @@ func (e *TimelineEngine) checkAndNotify(sessionID string, st *sessionTicker, cal
 	}
 }
 
-// sendIdlePrompt 通过会话状态传递提示消息。
-// 实际发送由 Bot 层在检测到 session 中的 "timeline_prompt" 时执行。
+// sendIdlePrompt 通过会话状态传递提示消息，并在注册了推送回调时主动推送。
+// QQ 渠道由 Bot 层在检测到 session 中的 "timeline_prompt" 时消费；
+// Web 渠道通过 pushFn（WS 推送）即时收到。
 func (e *TimelineEngine) sendIdlePrompt(sessionID, msg string) {
 	if e.sessionMgr != nil {
 		session := e.sessionMgr.GetSession(sessionID)
 		session.Set("timeline_prompt", msg)
 		session.Set("timeline_prompt_time", time.Now().Format("15:04:05"))
+	}
+	e.mu.RLock()
+	fn := e.pushFn
+	e.mu.RUnlock()
+	if fn != nil {
+		fn(sessionID, msg)
 	}
 }
 

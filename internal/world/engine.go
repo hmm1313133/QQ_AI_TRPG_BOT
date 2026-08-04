@@ -85,6 +85,11 @@ func (e *Engine) Delete(worldID string) error {
 	return e.repo.Delete(worldID)
 }
 
+// ListWorlds 列出所有世界 ID。
+func (e *Engine) ListWorlds() ([]string, error) {
+	return e.repo.List()
+}
+
 // ============================================================
 // ApplyEvent：状态变更唯一入口
 // ============================================================

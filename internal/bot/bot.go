@@ -15,14 +15,15 @@ import (
 	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/gamelog"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/web"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/pkg/qqbot"
 )
 
 // Config 是 Bot 的配置。
 type Config struct {
-	AppID        string
-	ClientSecret string
+	AppID        string                        // 静态凭证（CredFn 为空时使用）
+	ClientSecret string                        // 静态凭证（CredFn 为空时使用）
+	CredFn       func() (appID, secret string) // 凭证回调：Start/Restart 时读取，支持改凭证后重启生效
 }
 
 // msgDedup 用于消息去重，避免 GROUP_AT_MESSAGE_CREATE 和 GROUP_MESSAGE_CREATE 重复处理同一条消息。
@@ -53,18 +54,23 @@ func (d *msgDedup) isDuplicate(id string) bool {
 	return false
 }
 
-// Bot 是 QQ 机器人实例，负责消息路由和组件编排。
+// Bot 是 QQ 机器人实例（QQChannel），负责 QQ 消息收发。
+// 路由逻辑已抽取到 core.Router，Bot 只负责构建 MessageContext 与回复。
+// 实现 web.BotController：Start/Stop/Restart 幂等，Restart 重读凭证。
 type Bot struct {
 	config     *Config
-	qqBot      *qqbot.Bot
-	plugins    *core.PluginManager
-	sessions   *core.SessionManager
-	gameLogger *gamelog.GameLogger
+	router     *core.Router
 	dedup      *msgDedup
 	replySeqMu sync.Mutex
 	replySeq   map[string]int // msgID → 已回复次数（用于生成递增 msg_seq）
-	ctx        context.Context
-	cancel     context.CancelFunc
+
+	// 生命周期（mu 保护；管理后台启停与消息收发并发）
+	mu        sync.Mutex
+	qqBot     *qqbot.Bot
+	ctx       context.Context
+	cancel    context.CancelFunc
+	running   bool
+	startedAt time.Time
 }
 
 // mentionRegex 匹配 QQ 消息中的 @ 提及，格式 <@openid> 或 <@!openid>。
@@ -96,31 +102,37 @@ func convertAttachments(qqAtts []qqbot.Attachment) []core.Attachment {
 }
 
 // NewBot 创建 Bot 实例。
-// 所有功能组件通过 PluginManager 注册，Bot 只负责路由。
-func NewBot(cfg *Config, plugins *core.PluginManager, sessions *core.SessionManager, gameLogger *gamelog.GameLogger) (*Bot, error) {
-	qqBot := qqbot.NewBot(&qqbot.Config{
-		AppID:        cfg.AppID,
-		ClientSecret: cfg.ClientSecret,
-	})
-
+// router 为渠道共用的统一路由器（含插件管理、会话与日志记录器）。
+// qqbot.Bot 延迟到 Start 时按当前凭证构建（改凭证 → 重启生效）。
+func NewBot(cfg *Config, router *core.Router) (*Bot, error) {
 	b := &Bot{
-		config:     cfg,
-		qqBot:      qqBot,
-		plugins:    plugins,
-		sessions:   sessions,
-		gameLogger: gameLogger,
-		dedup:      newMsgDedup(),
-		replySeq:   make(map[string]int),
+		config:   cfg,
+		router:   router,
+		dedup:    newMsgDedup(),
+		replySeq: make(map[string]int),
 	}
-
-	b.registerQQHandlers()
 	return b, nil
 }
 
+// creds 读取当前凭证（优先 CredFn，回落静态配置）。
+func (b *Bot) creds() (appID, secret string) {
+	if b.config.CredFn != nil {
+		return b.config.CredFn()
+	}
+	return b.config.AppID, b.config.ClientSecret
+}
+
+// current 返回当前 qqbot.Bot（可能为 nil，未启动时）。
+func (b *Bot) current() *qqbot.Bot {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.qqBot
+}
+
 // registerQQHandlers 注册 QQ 消息事件处理函数，将消息转为统一 MessageContext。
-func (b *Bot) registerQQHandlers() {
+func (b *Bot) registerQQHandlers(qb *qqbot.Bot) {
 	// 群聊@机器人消息
-	b.qqBot.OnGroupAtMessage(func(ctx *qqbot.EventContext, msg *qqbot.GroupMessageEvent) {
+	qb.OnGroupAtMessage(func(ctx *qqbot.EventContext, msg *qqbot.GroupMessageEvent) {
 		if b.dedup.isDuplicate(msg.ID) {
 			return
 		}
@@ -143,7 +155,7 @@ func (b *Bot) registerQQHandlers() {
 	})
 
 	// 群聊全量消息（群主开启后可收到群内所有消息，不限于@机器人）
-	b.qqBot.OnGroupMessage(func(ctx *qqbot.EventContext, msg *qqbot.GroupMessageEvent) {
+	qb.OnGroupMessage(func(ctx *qqbot.EventContext, msg *qqbot.GroupMessageEvent) {
 		// 跳过机器人自身消息
 		if msg.Author.Bot {
 			return
@@ -172,7 +184,7 @@ func (b *Bot) registerQQHandlers() {
 	})
 
 	// 单聊消息
-	b.qqBot.OnC2CMessage(func(ctx *qqbot.EventContext, msg *qqbot.C2CMessageEvent) {
+	qb.OnC2CMessage(func(ctx *qqbot.EventContext, msg *qqbot.C2CMessageEvent) {
 		content := strings.TrimSpace(msg.Content)
 		log.Printf("[Bot] 单聊消息 user=%s content=%q", msg.Author.UserOpenid, content)
 
@@ -192,7 +204,7 @@ func (b *Bot) registerQQHandlers() {
 	})
 
 	// 频道消息（@机器人 / 私域全量 / 频道私信）
-	b.qqBot.OnChannelMessage(func(ctx *qqbot.EventContext, msg *qqbot.ChannelMessageEvent) {
+	qb.OnChannelMessage(func(ctx *qqbot.EventContext, msg *qqbot.ChannelMessageEvent) {
 		if msg.Author.Bot {
 			return
 		}
@@ -214,96 +226,17 @@ func (b *Bot) registerQQHandlers() {
 	})
 
 	// 机器人加入/退出群聊
-	b.qqBot.OnGroupAddRobot(func(ctx *qqbot.EventContext, event *qqbot.GroupRobotEvent) {
+	qb.OnGroupAddRobot(func(ctx *qqbot.EventContext, event *qqbot.GroupRobotEvent) {
 		log.Printf("[Bot] 被添加到群聊 group=%s", event.GroupOpenid)
 	})
-	b.qqBot.OnGroupDelRobot(func(ctx *qqbot.EventContext, event *qqbot.GroupRobotEvent) {
+	qb.OnGroupDelRobot(func(ctx *qqbot.EventContext, event *qqbot.GroupRobotEvent) {
 		log.Printf("[Bot] 被移出群聊 group=%s", event.GroupOpenid)
 	})
 }
 
-// route 是核心路由逻辑，根据消息内容和会话模式决定处理路径。
-//
-// 路由策略:
-//  1. 所有指令消息 (以 . 开头) → 优先匹配 Handler
-//  2. 非指令消息，根据会话模式:
-//     - ModeNormal: 忽略
-//     - ModeTRPG: 交给 AI Agent (KP) + 自动记录日志
-//     - ModeFreeChat: 交给 AI Agent
+// route 将消息交给统一路由器，回复函数由本渠道提供。
 func (b *Bot) route(mc *core.MessageContext) {
-	reply := b.makeReplyFunc(mc)
-
-	// TRPG/FreeChat 模式下，记录玩家消息到日志
-	if b.gameLogger.IsRecording(mc.SessionID) {
-		b.gameLogger.RecordUserMessage(mc.SessionID, mc.UserID, mc.Content)
-	}
-
-	// 文件附件处理：缓存到会话，支持文件和指令分条发送的场景
-	if mc.HasFileAttachment() {
-		fileAtt := mc.GetFileAttachment()
-		session := b.sessions.GetSession(mc.SessionID)
-		session.Set("last_file_attachment", fileAtt)
-		session.Set("last_file_time", time.Now().Unix())
-
-		log.Printf("[Bot] 收到文件附件: %s (%s) session=%s",
-			fileAtt.Filename, fileAtt.ContentType, mc.SessionID)
-
-		// 场景2: 用户先发 .script upload，再发文件 → 等待状态触发
-		if waiting, ok := session.Get("waiting_script_upload"); ok && waiting.(bool) {
-			session.Set("waiting_script_upload", false)
-			mc.Content = ".script upload"
-			if handler := b.plugins.MatchHandler(mc); handler != nil {
-				if err := handler.Execute(mc, reply); err != nil {
-					log.Printf("[Bot] Handler %s 执行失败: %v", handler.Name(), err)
-				}
-			}
-			return
-		}
-
-		// 文件已缓存，但没有指令文本 → 提示用户
-		if mc.Content == "" {
-			reply(mc.Ctx, mc.OpenID, mc.MsgID,
-				fmt.Sprintf("收到文件: %s\n如需上传剧本，请发送 .script upload", fileAtt.Filename),
-				mc.IsGroup)
-			return
-		}
-		// 文件 + 指令同时发送 → 走正常指令路由（ScriptHandler 会处理附件）
-	}
-
-	// 1. 尝试匹配指令 Handler (以 . 开头的消息)
-	if strings.HasPrefix(mc.Content, ".") {
-		handler := b.plugins.MatchHandler(mc)
-		if handler != nil {
-			if err := handler.Execute(mc, reply); err != nil {
-				log.Printf("[Bot] Handler %s 执行失败: %v", handler.Name(), err)
-			}
-			return
-		}
-		// 未匹配的指令
-		reply(mc.Ctx, mc.OpenID, mc.MsgID, "未知指令，输入 .help 查看帮助", mc.IsGroup)
-		return
-	}
-
-	// 2. 非指令消息，根据会话模式路由
-	session := b.sessions.GetSession(mc.SessionID)
-	switch session.Mode {
-	case core.ModeNormal:
-		// 普通模式，不处理非指令消息
-		return
-
-	case core.ModeTRPG, core.ModeFreeChat:
-		// 交给 AI Agent 处理
-		b.plugins.ChatAgent(mc, session, func(ctx context.Context, openid, msgID, text string, isGroup bool) error {
-			// AI 回复也记录到日志
-			if b.gameLogger.IsRecording(mc.SessionID) {
-				b.gameLogger.RecordAssistantMessage(mc.SessionID, text)
-			}
-			return b.sendReply(mc.Source, openid, msgID, text, mc.MentionUserID)
-		})
-
-	default:
-		log.Printf("[Bot] 未知会话模式: %s", session.Mode)
-	}
+	b.router.Route(mc, b.makeReplyFunc(mc))
 }
 
 // makeReplyFunc 创建标准的回复函数，根据消息来源选择回复方式。
@@ -320,7 +253,11 @@ func (b *Bot) makeReplyFunc(mc *core.MessageContext) core.ReplyFunc {
 // 同一条消息多次回复时自动递增 msg_seq 避免被 QQ 去重；
 // 若仍被去重，则降级为直接发送（不带 msg_id 的主动消息）。
 func (b *Bot) sendReply(source core.MessageSource, openid, msgID, text, mentionUserID string) error {
-	api := b.qqBot.API()
+	qb := b.current()
+	if qb == nil {
+		return fmt.Errorf("机器人未启动")
+	}
+	api := qb.API()
 	seq := b.nextMsgSeq(msgID)
 
 	var err error
@@ -374,7 +311,11 @@ func (b *Bot) sendReply(source core.MessageSource, openid, msgID, text, mentionU
 
 // sendDirect 不带 msg_id 直接发送消息（主动消息），用于去重降级。
 func (b *Bot) sendDirect(source core.MessageSource, openid, text string) error {
-	api := b.qqBot.API()
+	qb := b.current()
+	if qb == nil {
+		return fmt.Errorf("机器人未启动")
+	}
+	api := qb.API()
 	var err error
 	switch source {
 	case core.SourceChannel:
@@ -422,22 +363,88 @@ func isDedupError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "去重")
 }
 
-// Start 启动 Bot。
+// ID 实现 core.Channel。
+func (b *Bot) ID() string { return "qq" }
+
+// Start 启动 Bot（幂等：已运行则直接返回 nil）。
+// 每次启动按 CredFn 读取最新凭证构建 qqbot.Bot。
 func (b *Bot) Start() error {
-	b.ctx, b.cancel = context.WithCancel(context.Background())
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.running {
+		return nil
+	}
+
+	appID, secret := b.creds()
+	if appID == "" || secret == "" {
+		return fmt.Errorf("QQ 凭证未配置（qq_appid / qq_secret）")
+	}
+
+	qb := qqbot.NewBot(&qqbot.Config{AppID: appID, ClientSecret: secret})
+	b.registerQQHandlers(qb)
+
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		if err := b.qqBot.Run(b.ctx); err != nil {
+		if err := qb.Run(ctx); err != nil {
 			log.Printf("[Bot] 运行出错: %v", err)
 		}
 	}()
+
+	b.qqBot = qb
+	b.ctx = ctx
+	b.cancel = cancel
+	b.running = true
+	b.startedAt = time.Now()
 	return nil
 }
 
-// Stop 停止 Bot。
+// Stop 停止 Bot（幂等：未运行则直接返回 nil）。
 func (b *Bot) Stop() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.running {
+		return nil
+	}
 	if b.cancel != nil {
 		b.cancel()
 	}
-	b.qqBot.Stop()
+	if b.qqBot != nil {
+		b.qqBot.Stop()
+	}
+	b.running = false
 	return nil
+}
+
+// Restart 重启 Bot：Stop + Start，Start 时重读凭证使新配置生效。
+func (b *Bot) Restart() error {
+	if err := b.Stop(); err != nil {
+		return err
+	}
+	return b.Start()
+}
+
+// Status 返回 Bot 运行状态（实现 web.BotController；Secret 永不外露）。
+func (b *Bot) Status() web.BotStatus {
+	b.mu.Lock()
+	running := b.running
+	startedAt := b.startedAt
+	qb := b.qqBot
+	b.mu.Unlock()
+
+	appID, _ := b.creds()
+	st := web.BotStatus{Running: running, AppID: appID}
+	if !running {
+		return st
+	}
+	st.StartedAt = startedAt.Format("2006-01-02 15:04:05")
+	st.Uptime = time.Since(startedAt).Round(time.Second).String()
+	if qb != nil {
+		ws := qb.Stats()
+		st.Connected = ws.Connected
+		st.LastConnectedAt = ws.LastConnectedAt
+		st.ReconnectCount = ws.ReconnectCount
+		st.RxCount = ws.RxCount
+		st.TxCount = ws.TxCount
+	}
+	return st
 }

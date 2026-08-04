@@ -69,7 +69,7 @@ func (m *Manager) Create(card *Card) error {
 		return fmt.Errorf("角色卡 %s 已存在", card.Name)
 	}
 
-	card.FilePath = filepath.Join(m.dir, card.ID+".json")
+	card.FilePath = filepath.Join(m.dir, cardFileName(card.ID))
 	m.cards[card.ID] = card
 	return m.saveLocked(card)
 }
@@ -193,11 +193,21 @@ func (m *Manager) SetStatus(cardID, key string, value int) error {
 
 // --- internal ---
 
+// cardFileName 由角色卡 ID 派生文件名：替换 Windows 文件名非法字符（如 ID 中的冒号）。
+// 卡片内容里的 ID 保持不变，loadAll 从 JSON 恢复 ID，因此不影响按 ID 查找。
+func cardFileName(cardID string) string {
+	r := strings.NewReplacer(
+		":", "_", "<", "_", ">", "_", "\"", "_",
+		"/", "_", "\\", "_", "|", "_", "?", "_", "*", "_",
+	)
+	return r.Replace(cardID) + ".json"
+}
+
 // saveLocked serializes the card to JSON and writes it atomically.
 // Caller must hold m.mu.
 func (m *Manager) saveLocked(card *Card) error {
 	if card.FilePath == "" {
-		card.FilePath = filepath.Join(m.dir, card.ID+".json")
+		card.FilePath = filepath.Join(m.dir, cardFileName(card.ID))
 	}
 	data, err := json.MarshalIndent(card, "", "  ")
 	if err != nil {
@@ -239,4 +249,15 @@ func (m *Manager) loadAll() error {
 		m.cards[card.ID] = &card
 	}
 	return nil
+}
+
+// ListAll 返回所有角色卡（管理后台用）。
+func (m *Manager) ListAll() []*Card {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]*Card, 0, len(m.cards))
+	for _, c := range m.cards {
+		result = append(result, c)
+	}
+	return result
 }

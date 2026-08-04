@@ -8,9 +8,9 @@ import (
 
 // Config 是 QQ 机器人的配置。
 type Config struct {
-	AppID        string  // 机器人 AppID
-	ClientSecret string  // 机器人 ClientSecret
-	Intents      Intent  // 事件订阅标记位，0 则使用默认值
+	AppID        string // 机器人 AppID
+	ClientSecret string // 机器人 ClientSecret
+	Intents      Intent // 事件订阅标记位，0 则使用默认值
 }
 
 // Bot 是 QQ 机器人高层客户端，整合 OpenAPI 和 WebSocket。
@@ -137,4 +137,9 @@ func (b *Bot) Run(ctx context.Context) error {
 func (b *Bot) Stop() {
 	b.wsClient.Stop()
 	log.Printf("[Bot] 已停止")
+}
+
+// Stats 返回 WebSocket 连接状态与收发统计（管理后台展示用）。
+func (b *Bot) Stats() WSStats {
+	return b.wsClient.Stats()
 }

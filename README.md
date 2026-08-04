@@ -172,9 +172,21 @@ go run cmd/bot/main.go
 
 ### 构建二进制
 
-```bash
-go build -o trpg-bot cmd/bot/main.go
+前端（Vue3 + Element Plus，源码在 `frontend/`）通过 `go:embed` 嵌入二进制，**需先构建前端再编译 Go**。一键构建：
+
+```powershell
+# Windows（自动使用系统 Node 或项目便携版 tools/node）
+.\build.ps1
 ```
+
+手动分步：
+
+```bash
+cd frontend && npm install && npm run build && cd ..   # 产物 -> internal/web/static/dist
+go build -o bot.exe ./cmd/bot
+```
+
+构建后访问 `http://localhost:8080/chat`（聊天页）与 `http://localhost:8080/admin`（管理后台）。前端开发调试：`cd frontend && npm run dev`（已配置 /api、/ws 代理到 :8080）。
 
 ## 项目结构
 
@@ -223,6 +235,9 @@ QQ_AI_TRPG_BOT/
 ├── pkg/                         # 公共工具
 │   └── version.go               # 版本号
 ├── go.mod / go.sum              # Go 依赖管理
+├── frontend/                    # Web 前端（Vue3 + Vite + Element Plus）
+├── tools/node/                  # 便携 Node 工具链（不入库）
+├── build.ps1                    # 一键构建脚本（先前端后 Go）
 └── start.ps1                    # Windows 启动脚本
 ```
 

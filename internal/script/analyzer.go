@@ -307,7 +307,7 @@ func (a *ScriptAnalyzer) Analyze(ctx context.Context, text string, sourceFile st
 	a.notify(progress, "parsing", "正在解析结构化数据...")
 
 	scr := &Script{
-		ID:         generateScriptID(result.Name),
+		ID:         GenerateScriptID(result.Name),
 		Name:       result.Name,
 		Title:      result.Title,
 		System:     result.System,
@@ -668,14 +668,6 @@ func extractJSON(text string) string {
 	}
 
 	return ""
-}
-
-// generateScriptID 根据名称生成剧本 ID。
-func generateScriptID(name string) string {
-	if name == "" {
-		return fmt.Sprintf("script_%d", time.Now().Unix())
-	}
-	return strings.ReplaceAll(strings.TrimSpace(name), " ", "_")
 }
 
 // truncate 截断字符串到指定长度。

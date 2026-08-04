@@ -39,6 +39,7 @@ const (
 	SourceGroup    MessageSource = iota // 群聊
 	SourceC2C                           // 单聊
 	SourceChannel                       // 频道
+	SourceWeb                           // Web 渠道
 )
 
 // Attachment 表示消息中的文件附件。
@@ -180,4 +181,15 @@ func (sm *SessionManager) SetMode(id string, mode SessionMode) {
 // GetMode 获取会话模式。
 func (sm *SessionManager) GetMode(id string) SessionMode {
 	return sm.GetSession(id).Mode
+}
+
+// List 返回所有会话（管理后台用）。
+func (sm *SessionManager) List() []*Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	result := make([]*Session, 0, len(sm.sessions))
+	for _, s := range sm.sessions {
+		result = append(result, s)
+	}
+	return result
 }

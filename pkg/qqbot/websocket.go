@@ -15,23 +15,52 @@ import (
 // WSClient 是 QQ 机器人 WebSocket 事件订阅客户端。
 // 实现: 连接 → Hello → Identify → 心跳循环 → 事件分发 → 断线 Resume
 type WSClient struct {
-	tokenMgr    *tokenManager
-	api         *OpenAPI
-	dispatcher  *EventDispatcher
-	intents     Intent
+	tokenMgr   *tokenManager
+	api        *OpenAPI
+	dispatcher *EventDispatcher
+	intents    Intent
 
 	// 连接状态
-	mu         sync.Mutex
-	conn       *websocket.Conn
-	sessionID  string
-	lastSeq    int64          // 最后处理的消息序列号
-	connected  atomic.Bool    // 是否已连接
-	ctx        context.Context
-	cancel     context.CancelFunc
+	mu        sync.Mutex
+	conn      *websocket.Conn
+	sessionID string
+	lastSeq   int64       // 最后处理的消息序列号
+	connected atomic.Bool // 是否已连接
+	ctx       context.Context
+	cancel    context.CancelFunc
 
 	// 心跳
 	heartbeatInterval time.Duration
 	heartbeatTicker   *time.Ticker
+
+	// 运行统计（管理后台展示用）
+	rxCount        atomic.Uint64 // 累计接收消息数
+	txCount        atomic.Uint64 // 累计发送消息数
+	reconnectCount atomic.Uint64 // 断线重连次数
+	lastConnected  atomic.Int64  // 最近一次连接建立时间（UnixNano，0=从未连接）
+}
+
+// WSStats 是 WebSocket 连接的运行统计。
+type WSStats struct {
+	Connected       bool      // 当前是否已连接
+	LastConnectedAt time.Time // 最近一次连接建立时间（零值=从未连接）
+	ReconnectCount  uint64    // 断线重连次数
+	RxCount         uint64    // 累计接收消息数
+	TxCount         uint64    // 累计发送消息数
+}
+
+// Stats 返回连接状态与收发统计。
+func (w *WSClient) Stats() WSStats {
+	st := WSStats{
+		Connected:      w.connected.Load(),
+		ReconnectCount: w.reconnectCount.Load(),
+		RxCount:        w.rxCount.Load(),
+		TxCount:        w.txCount.Load(),
+	}
+	if ts := w.lastConnected.Load(); ts > 0 {
+		st.LastConnectedAt = time.Unix(0, ts)
+	}
+	return st
 }
 
 // NewWSClient 创建 WebSocket 客户端。
@@ -50,10 +79,15 @@ func (w *WSClient) Run(ctx context.Context) error {
 	w.ctx, w.cancel = context.WithCancel(ctx)
 	defer w.cancel()
 
+	first := true
 	for {
 		if w.ctx.Err() != nil {
 			return w.ctx.Err()
 		}
+		if !first {
+			w.reconnectCount.Add(1)
+		}
+		first = false
 
 		err := w.connectAndServe(w.ctx)
 		if err != nil {
@@ -147,6 +181,7 @@ func (w *WSClient) connectAndServe(ctx context.Context) error {
 	go w.heartbeatLoop(heartbeatCtx)
 
 	w.connected.Store(true)
+	w.lastConnected.Store(time.Now().UnixNano())
 	log.Printf("[WS] 连接已建立，开始接收事件")
 
 	// 6. 消息接收循环
@@ -361,6 +396,7 @@ func (w *WSClient) receivePayload(ctx context.Context) (*Payload, error) {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, fmt.Errorf("解析 payload 失败: %w, raw: %s", err, string(data))
 	}
+	w.rxCount.Add(1)
 	return &payload, nil
 }
 
@@ -377,7 +413,11 @@ func (w *WSClient) sendPayload(ctx context.Context, payload Payload) error {
 	if err != nil {
 		return fmt.Errorf("序列化 payload 失败: %w", err)
 	}
-	return conn.Write(ctx, websocket.MessageText, data)
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		return err
+	}
+	w.txCount.Add(1)
+	return nil
 }
 
 // parseData 将 payload.D (interface{}) 解析为目标类型。

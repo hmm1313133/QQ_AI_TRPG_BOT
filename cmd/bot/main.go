@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"trpc.group/trpc-go/trpc-go/log"
 
@@ -22,6 +23,7 @@ import (
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/agent"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/bot"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/handler"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
@@ -29,6 +31,7 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/character"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/gamelog"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/web"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
@@ -195,14 +198,75 @@ func main() {
 		scriptArchive, scriptAnalyzer, progressTracker, timelineEngine, sessions, svc, worldEngine))
 	handlerCount++
 
-	// 13. Initialize QQ Bot
+	// 12b. Initialize runtime config store (SQLite, 运行时配置热更新)
+	cfgStore, err := config.Open(getEnv("CONFIG_DB", "./data/app.db"))
+	if err != nil {
+		log.Fatalf("初始化配置存储失败: %v", err)
+	}
+	cfgStore.Seed(config.KeyLLMModel, getEnv("LLM_MODEL", "deepseek-chat"))
+	cfgStore.Seed(config.KeyNarratorTemp, "0.7")
+	cfgStore.Seed(config.KeyDirectorTemp, "0.2")
+	cfgStore.Seed(config.KeyContextBudget, "6000")
+	cfgStore.Seed(config.KeyPlanInterval, "8")
+	cfgStore.Seed(config.KeyExtractorEnabled, getEnv("MEMORY_EXTRACTOR_ENABLED", "true"))
+	// 新键启动时从 env 播种（env 仅作初始值，之后以 DB 为准；改凭证后重启机器人即生效）
+	cfgStore.Seed(config.KeyQQAppID, os.Getenv("QQ_BOT_APPID"))
+	cfgStore.Seed(config.KeyQQSecret, os.Getenv("QQ_BOT_SECRET"))
+	cfgStore.Seed(config.KeyLLMAPIKey, os.Getenv("LLM_API_KEY"))
+	cfgStore.Seed(config.KeyLLMBaseURL, getEnv("LLM_BASE_URL", "https://api.deepseek.com"))
+	cfgStore.Seed(config.KeyWebChatToken, os.Getenv("WEB_CHAT_TOKEN"))
+	turnEngine.SetConfigStore(cfgStore)
+	memoryService.SetEnabledFn(func() bool {
+		return cfgStore.GetBool(config.KeyExtractorEnabled, true)
+	})
+
+	// 13. Initialize QQ Bot (QQChannel，路由统一走 core.Router)
+	// 凭证经 CredFn 从 ConfigStore 读取（qq_appid/qq_secret，见《管理后台扩展设计.md》2.1/2.2），
+	// 未配置时回落环境变量；管理后台改凭证后点"重启机器人"即生效。
+	router := core.NewRouter(plugins, sessions, gameLogger)
 	qqBot, err := bot.NewBot(&bot.Config{
-		AppID:        os.Getenv("QQ_BOT_APPID"),
-		ClientSecret: os.Getenv("QQ_BOT_SECRET"),
-	}, plugins, sessions, gameLogger)
+		CredFn: func() (string, string) {
+			return cfgStore.Get("qq_appid", os.Getenv("QQ_BOT_APPID")),
+				cfgStore.Get("qq_secret", os.Getenv("QQ_BOT_SECRET"))
+		},
+	}, router)
 	if err != nil {
 		log.Fatalf("初始化 QQ Bot 失败: %v", err)
 	}
+
+	// 13b. Initialize Web channel (Web 聊天 + 管理后台)
+	var webServer *web.Server
+	if getEnv("WEB_ENABLED", "true") == "true" {
+		webServer = web.NewServer(web.Config{
+			Addr:      getEnv("WEB_ADDR", ":8080"),
+			ChatToken: os.Getenv("WEB_CHAT_TOKEN"),
+		}, router, sessions)
+		webServer.SetAdmin(web.AdminDeps{
+			Sessions:    sessions,
+			Service:     svc,
+			WorldEngine: worldEngine,
+			Archive:     scriptArchive,
+			Analyzer:    scriptAnalyzer,
+			CharMgr:     charMgr,
+			MemoryStore: memoryStore,
+			GameLogger:  gameLogger,
+			ConfigStore: cfgStore,
+			Bot:         qqBot,
+			StartTime:   time.Now(),
+		}, os.Getenv("ADMIN_TOKEN"))
+		if err := webServer.Start(); err != nil {
+			log.Errorf("启动 Web 渠道失败: %v", err)
+		} else {
+			defer webServer.Stop()
+		}
+	}
+
+	// 13c. TimelineEngine 主动推送（Web 渠道通过 WS 即时收到无进展提示）
+	timelineEngine.SetPushFunc(func(sessionID, msg string) {
+		if webServer != nil {
+			webServer.PushToSession(sessionID, msg)
+		}
+	})
 
 	// 14. Start
 	if err := qqBot.Start(); err != nil {

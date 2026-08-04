@@ -161,3 +161,14 @@ func (g *GameLogger) IsRecording(sessionID string) bool {
 	_, ok := g.sessions[sessionID]
 	return ok
 }
+
+// ListSessions 返回有日志记录的会话 ID 列表（管理后台用）。
+func (g *GameLogger) ListSessions() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	result := make([]string, 0, len(g.sessions))
+	for id := range g.sessions {
+		result = append(result, id)
+	}
+	return result
+}

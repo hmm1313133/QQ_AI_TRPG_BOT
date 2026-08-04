@@ -55,6 +55,8 @@ type MemoryService struct {
 
 	mu         sync.Mutex
 	reflecting map[string]bool // 防并发反思: worldID/entity
+
+	enabledFn  func() bool     // extractor 热开关（可为 nil，默认启用）
 }
 
 // NewMemoryService 创建记忆服务。
@@ -77,6 +79,11 @@ func NewMemoryService(store *world.MemoryStore, ov *store.OpenVikingClient, dire
 		director:   director,
 		reflecting: make(map[string]bool),
 	}
+}
+
+// SetEnabledFn 设置对话抽取的热开关（每回合求值，nil 表示始终启用）。
+func (m *MemoryService) SetEnabledFn(fn func() bool) {
+	m.enabledFn = fn
 }
 
 // worldMemoryEntity 世界级记忆的实体名。
@@ -138,7 +145,8 @@ func (m *MemoryService) AfterTurn(state *world.WorldState, playerMessage, narrat
 	}
 
 	// 3. 对话 → 框架 extractor 抽取（LLM，带去重；仅世界记忆实体）
-	if m.extractor != nil && strings.TrimSpace(playerMessage) != "" {
+	extractorOn := m.enabledFn == nil || m.enabledFn()
+	if m.extractor != nil && extractorOn && strings.TrimSpace(playerMessage) != "" {
 		m.extractFromDialogue(state, playerMessage, narratorReply)
 	}
 

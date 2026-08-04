@@ -10,6 +10,7 @@ import ConfigView from '../views/admin/ConfigView.vue'
 import CharactersView from '../views/admin/CharactersView.vue'
 import MemoryView from '../views/admin/MemoryView.vue'
 import LogsView from '../views/admin/LogsView.vue'
+import AssetsView from '../views/admin/AssetsView.vue'
 
 const routes = [
   { path: '/', redirect: '/chat' },
@@ -26,6 +27,7 @@ const routes = [
       { path: 'scripts', name: 'admin-scripts', component: ScriptsView },
       { path: 'config', name: 'admin-config', component: ConfigView },
       { path: 'characters', name: 'admin-characters', component: CharactersView },
+      { path: 'assets', name: 'admin-assets', component: AssetsView },
       { path: 'memory', name: 'admin-memory', component: MemoryView },
       { path: 'logs', name: 'admin-logs', component: LogsView },
     ],

@@ -49,6 +49,8 @@ type Server struct {
 	adminToken string
 	adminReady bool
 
+	history ChatLogger // 聊天记录存储（可为 nil，nil 时 /api/chat/history 返回空）
+
 	mu    sync.Mutex
 	conns map[string]*wsConn // sessionToken -> 连接
 }
@@ -110,6 +112,8 @@ func (s *Server) buildMux() *http.ServeMux {
 	mux.HandleFunc("GET /api/session", s.handleSession)
 	mux.HandleFunc("POST /api/upload", s.handleUpload)
 	mux.HandleFunc("GET /ws/chat", s.handleChatWS)
+	mux.HandleFunc("GET /api/chat/history", s.handleChatHistory)
+	s.registerChatSaveRoutes(mux) // 玩家侧存档（设计 §9.4）
 	if s.adminReady {
 		s.registerAdmin(mux, s.adminDeps, s.adminToken)
 	}
@@ -246,6 +250,9 @@ func (s *Server) handleChatWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// 记录玩家消息（历史恢复用）
+		s.recordChat(sessionID, "user", strings.TrimSpace(msg.Text))
+
 		// 构建统一消息上下文，走共享路由
 		mc := &core.MessageContext{
 			Ctx:       context.Background(),
@@ -264,15 +271,16 @@ func (s *Server) handleChatWS(w http.ResponseWriter, r *http.Request) {
 			s.send(wc, wsMessage{Type: "status", State: "thinking"})
 		}
 
-		go s.router.Route(mc, s.makeReplyFunc(wc))
+		go s.router.Route(mc, s.makeReplyFunc(wc, sessionID))
 	}
 }
 
-// makeReplyFunc 创建 Web 渠道的回复函数（WS 推送）。
-func (s *Server) makeReplyFunc(wc *wsConn) core.ReplyFunc {
+// makeReplyFunc 创建 Web 渠道的回复函数（WS 推送 + 历史记录）。
+func (s *Server) makeReplyFunc(wc *wsConn, sessionID string) core.ReplyFunc {
 	return func(ctx context.Context, openid, msgID, text string, isGroup bool) error {
 		s.send(wc, wsMessage{Type: "reply", Text: text})
 		s.send(wc, wsMessage{Type: "status", State: "idle"})
+		s.recordChat(sessionID, "reply", text)
 		return nil
 	}
 }
@@ -301,6 +309,7 @@ func (s *Server) PushToSession(sessionID, text string) {
 	if !ok {
 		return
 	}
+	s.recordChat(sessionID, "push", text)
 	s.send(wc, wsMessage{Type: "push", Text: text})
 }
 

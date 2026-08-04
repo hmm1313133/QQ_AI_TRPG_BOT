@@ -73,9 +73,7 @@ func (r *JSONRepository) Load(worldID string) (*WorldState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("解析 WorldState JSON 失败: %w", err)
 	}
-	if state.Characters == nil {
-		state.Characters = make(map[string]*CharacterState)
-	}
+	state.ensureMaps()
 	return &state, nil
 }
 
@@ -149,6 +147,19 @@ func (r *JSONRepository) Archive(worldID string, beforeRound int) error {
 	if err != nil {
 		return err
 	}
+	if !archiveEvents(state, beforeRound) {
+		return nil
+	}
+	if err := r.Save(state); err != nil {
+		return err
+	}
+	log.Printf("[World] 归档事件日志: world=%s, archived=%d", worldID, beforeRound)
+	return nil
+}
+
+// archiveEvents 把 beforeRound 之前的事件压缩为一条计数摘要事件；有归档动作返回 true。
+// JSON 与 SQLite 两种存储共用（Archive 方法仅差最后的持久化调用）。
+func archiveEvents(state *WorldState, beforeRound int) bool {
 	kept := state.EventLog[:0]
 	archived := 0
 	for _, ev := range state.EventLog {
@@ -159,7 +170,7 @@ func (r *JSONRepository) Archive(worldID string, beforeRound int) error {
 		kept = append(kept, ev)
 	}
 	if archived == 0 {
-		return nil
+		return false
 	}
 	state.EventLog = append([]WorldEvent{{
 		Type:   "note",
@@ -168,9 +179,5 @@ func (r *JSONRepository) Archive(worldID string, beforeRound int) error {
 		Value:  fmt.Sprintf("已归档 %d 条早期事件（round < %d）", archived, beforeRound),
 		Round:  beforeRound,
 	}}, kept...)
-	if err := r.Save(state); err != nil {
-		return err
-	}
-	log.Printf("[World] 归档事件日志: world=%s, archived=%d", worldID, archived)
-	return nil
+	return true
 }

@@ -38,111 +38,100 @@
         </div>
       </el-tab-pane>
 
-      <!-- 设定库 -->
-      <el-tab-pane label="设定库" name="lore" lazy>
+      <!-- 主线 -->
+      <el-tab-pane label="主线" name="storyline" lazy>
         <div class="card">
-          <LorebookPanel v-if="activeTab === 'lore'" :world-id="worldId" />
-        </div>
-      </el-tab-pane>
-
-      <!-- 场景 -->
-      <el-tab-pane label="场景" name="scene" lazy>
-        <div class="card">
-          <div class="card-title">当前场景</div>
-          <div v-if="!sections.scene" class="empty">加载中…</div>
-          <el-form v-else label-width="90px">
-            <el-form-item label="节点 ID">
-              <el-input v-model="sections.scene.node_id" style="max-width:280px" class="mono" />
-            </el-form-item>
-            <el-form-item label="名称" required>
-              <el-input v-model="sections.scene.node_name" style="max-width:360px" />
-            </el-form-item>
-            <el-form-item label="类型">
-              <el-input v-model="sections.scene.node_type" style="max-width:200px" placeholder="act / scene / event" />
-            </el-form-item>
-            <el-form-item label="描述">
-              <el-input v-model="sections.scene.description" type="textarea" :rows="3" />
-            </el-form-item>
-            <el-form-item label="叙事">
-              <el-input v-model="sections.scene.narrative" type="textarea" :rows="2" />
-            </el-form-item>
-            <el-form-item label="氛围">
-              <el-input v-model="sections.scene.atmosphere" style="max-width:420px" />
-            </el-form-item>
-            <el-form-item label="危险度">
-              <el-input v-model="sections.scene.danger_level" style="max-width:200px" placeholder="如 安全 / 低危 / 高危" />
-            </el-form-item>
-            <el-form-item label="调查点">
-              <TagsInput v-model="sections.scene.investigation_points" placeholder="可调查的线索点" />
-            </el-form-item>
-            <el-form-item label="出口">
-              <TagsInput v-model="sections.scene.exits" placeholder="可前往的地点 / 场景" />
-            </el-form-item>
-            <el-form-item label="KP 笔记">
-              <el-input v-model="sections.scene.kp_notes" type="textarea" :rows="3" />
-            </el-form-item>
-          </el-form>
-          <el-button type="primary" size="small" :loading="saving.scene" :disabled="!sections.scene" @click="saveSection('scene')">保存场景</el-button>
+          <div class="card-title">主线剧情</div>
+          <div v-if="!loaded.storylineDone" class="empty">加载中…</div>
+          <!-- trpg 模式：主线由剧本时间轴驱动，只读展示 -->
+          <template v-else-if="isTrpg">
+            <div class="muted" style="margin-bottom:10px">trpg 模式的主线由剧本时间轴驱动，此处仅供只读查看。</div>
+            <div v-if="!sections.storyline" class="empty">该世界没有独立主线（进度见「场景」与时间轴）</div>
+            <template v-else>
+              <h3 class="sl-title">{{ sections.storyline.title }}</h3>
+              <p v-if="sections.storyline.premise" class="muted">{{ sections.storyline.premise }}</p>
+              <div v-for="(a, i) in sections.storyline.acts || []" :key="a.id || i" class="act-row">
+                <span class="act-index">{{ i + 1 }}</span>
+                <div class="act-body">
+                  <b>{{ a.title }}</b>
+                  <div v-if="a.summary" class="muted">{{ a.summary }}</div>
+                </div>
+                <el-tag size="small" :type="actStatusType(a.status)">{{ actStatusLabel(a.status) }}</el-tag>
+              </div>
+            </template>
+          </template>
+          <!-- simrpg / roleplay：可编辑 -->
+          <template v-else>
+            <div v-if="!storylineForm" class="empty">
+              尚未设置主线剧情
+              <div style="margin-top:10px">
+                <el-button type="primary" plain size="small" @click="storylineForm = newStoryline()">+ 创建主线</el-button>
+              </div>
+            </div>
+            <template v-else>
+              <el-form label-width="90px">
+                <el-form-item label="主线标题" required>
+                  <el-input v-model="storylineForm.title" style="max-width:360px" placeholder="如 活神之手" />
+                </el-form-item>
+                <el-form-item label="主线前提">
+                  <el-input v-model="storylineForm.premise" type="textarea" :rows="3" placeholder="核心悬念 / 前提" />
+                </el-form-item>
+                <el-form-item label="分幕">
+                  <div class="act-list">
+                    <div v-for="(a, i) in storylineForm.acts" :key="i" class="act-edit-card">
+                      <div class="act-edit-head">
+                        <span class="act-index">{{ i + 1 }}</span>
+                        <el-input v-model="a.title" size="small" placeholder="幕标题" style="flex:1" />
+                        <el-select v-model="a.status" size="small" style="width:110px">
+                          <el-option label="未开始" value="pending" />
+                          <el-option label="进行中" value="active" />
+                          <el-option label="已完成" value="done" />
+                        </el-select>
+                        <el-button size="small" plain circle :disabled="i === 0" title="上移" @click="moveAct(i, -1)">↑</el-button>
+                        <el-button size="small" plain circle :disabled="i === storylineForm.acts.length - 1" title="下移" @click="moveAct(i, 1)">↓</el-button>
+                        <el-button type="danger" plain size="small" circle @click="storylineForm.acts.splice(i, 1)">×</el-button>
+                      </div>
+                      <el-input v-model="a.summary" type="textarea" :rows="2" placeholder="本幕概要" style="margin-top:6px" />
+                    </div>
+                    <el-button size="small" plain @click="storylineForm.acts.push({ id: '', title: '', summary: '', status: 'pending' })">+ 添加一幕</el-button>
+                  </div>
+                </el-form-item>
+              </el-form>
+              <div style="display:flex;gap:10px;margin-top:12px">
+                <el-button type="primary" size="small" :loading="saving.storyline" @click="saveStoryline">保存主线</el-button>
+                <el-button type="danger" plain size="small" @click="clearStoryline">清空主线</el-button>
+              </div>
+            </template>
+          </template>
         </div>
       </el-tab-pane>
 
       <!-- 角色 -->
       <el-tab-pane label="角色" name="characters" lazy>
         <div class="card">
-          <div class="card-title">NPC 列表</div>
+          <div class="card-title">角色列表</div>
           <div v-if="!sections.characters" class="empty">加载中…</div>
           <template v-else>
-            <div v-for="(c, i) in charList" :key="i" class="npc-card">
-              <div class="npc-head">
-                <el-input v-model="c.name" size="small" placeholder="名称（作为唯一键）" style="width:180px" />
-                <el-select v-model="c.kind" size="small" style="width:90px">
-                  <el-option label="npc" value="npc" />
-                  <el-option label="pc" value="pc" />
-                </el-select>
-                <el-select v-model="c.disposition" size="small" style="width:130px">
-                  <el-option label="friendly 友善" value="friendly" />
-                  <el-option label="neutral 中立" value="neutral" />
-                  <el-option label="suspicious 警惕" value="suspicious" />
-                  <el-option label="hostile 敌对" value="hostile" />
-                  <el-option label="dead 死亡" value="dead" />
-                </el-select>
-                <el-checkbox v-model="c.alive" size="small">存活</el-checkbox>
-                <el-input v-model="c.location" size="small" placeholder="所在地点" style="width:140px" />
-                <span class="spacer"></span>
-                <el-button type="danger" plain size="small" circle @click="charList.splice(i, 1)">×</el-button>
-              </div>
-              <div class="npc-grid">
-                <el-input v-model="c.role" size="small" placeholder="角色定位 role" />
-                <el-input v-model="c.current_action" size="small" placeholder="当前行动 current_action" />
-                <el-input v-model="c.motivation" size="small" placeholder="动机 motivation" />
-                <el-input v-model="c.secrets" size="small" placeholder="秘密 secrets" />
-              </div>
-              <el-input v-model="c.dialogue_style" size="small" placeholder="对话风格 dialogue_style" style="margin-top:6px" />
-              <div class="npc-grid" style="margin-top:6px">
-                <TagsInput v-model="c.traits" placeholder="性格特质（记仇/胆小/贪婪…）" />
-                <TagsInput v-model="c.key_dialogue" placeholder="关键台词" />
-              </div>
-              <!-- 目标 -->
-              <div class="goal-list">
-                <div v-for="(g, gi) in c.goals" :key="gi" class="goal-row">
-                  <el-input v-model="g.description" size="small" placeholder="目标描述" style="flex:1" />
-                  <el-input-number v-model="g.priority" :min="1" :max="10" size="small" style="width:110px" title="优先级 1-10" />
-                  <el-input-number v-model="g.progress" :min="0" :max="100" size="small" style="width:110px" title="进度 0-100" />
-                  <el-button type="danger" plain size="small" circle @click="c.goals.splice(gi, 1)">×</el-button>
-                </div>
-                <el-button size="small" plain @click="c.goals.push({ description: '', priority: 5, progress: 0 })">+ 添加目标</el-button>
-              </div>
-              <div class="npc-grid" style="margin-top:6px">
-                <div class="mood-row">
-                  <span class="muted">心情 愉悦度</span>
-                  <el-input-number v-model="c.mood.valence" :min="-100" :max="100" size="small" />
-                  <span class="muted">激活度</span>
-                  <el-input-number v-model="c.mood.arousal" :min="0" :max="100" size="small" />
-                </div>
-                <el-input v-model="c.notes" size="small" placeholder="备注 notes" />
-              </div>
+            <div class="tab-toolbar">
+              <el-button plain size="small" @click="addCharacter">+ 添加 NPC</el-button>
+              <el-button type="primary" plain size="small" @click="pickerVisible = true">从素材库导入</el-button>
             </div>
-            <el-button plain size="small" @click="addCharacter">+ 添加 NPC</el-button>
+            <el-collapse v-if="charList.length" v-model="openChars">
+              <el-collapse-item v-for="(c, i) in charList" :key="i" :name="i">
+                <template #title>
+                  <span class="char-title">{{ c.name || '（未命名）' }}</span>
+                  <el-tag size="small" effect="plain">{{ c.kind }}</el-tag>
+                  <el-tag size="small" effect="plain">{{ c.disposition }}</el-tag>
+                  <el-tag v-if="!c.alive" type="danger" size="small">已死亡</el-tag>
+                </template>
+                <CharacterForm v-model="charList[i]" />
+                <div class="char-ops">
+                  <el-button size="small" plain @click="collectEntity('character', c.name)">收藏到素材库</el-button>
+                  <el-button type="danger" plain size="small" @click="charList.splice(i, 1)">删除角色</el-button>
+                </div>
+              </el-collapse-item>
+            </el-collapse>
+            <div v-else class="empty">暂无角色，点击上方按钮添加或从素材导入</div>
             <div style="margin-top:12px">
               <el-button type="primary" size="small" :loading="saving.characters" @click="saveCharacters">保存角色</el-button>
             </div>
@@ -150,8 +139,49 @@
         </div>
       </el-tab-pane>
 
-      <!-- 地点 / 势力 -->
-      <el-tab-pane label="地点/势力" name="places" lazy>
+      <!-- 物品 -->
+      <el-tab-pane label="物品" name="items" lazy>
+        <div class="card">
+          <div class="card-title">物品</div>
+          <div v-if="!sections.items" class="empty">加载中…</div>
+          <template v-else>
+            <div class="tab-toolbar">
+              <el-button plain size="small" @click="addItem">+ 添加物品</el-button>
+              <el-button type="primary" plain size="small" @click="pickerVisible = true">从素材库导入</el-button>
+            </div>
+            <div v-for="(it, i) in itemList" :key="i" class="npc-card">
+              <div class="npc-head">
+                <el-input v-model="it.name" size="small" placeholder="物品名（唯一键）" style="width:180px" />
+                <el-select v-model="it.type" size="small" style="width:130px">
+                  <el-option label="weapon 武器" value="weapon" />
+                  <el-option label="consumable 消耗品" value="consumable" />
+                  <el-option label="key 关键道具" value="key" />
+                  <el-option label="material 材料" value="material" />
+                  <el-option label="other 其他" value="other" />
+                </el-select>
+                <el-select v-model="it.location" size="small" clearable filterable placeholder="所在地点" style="width:150px">
+                  <el-option v-for="l in locList" :key="l.name" :label="l.name" :value="l.name" />
+                </el-select>
+                <el-select v-model="it.owner" size="small" clearable filterable placeholder="持有者" style="width:150px">
+                  <el-option label="玩家" value="玩家" />
+                  <el-option v-for="c in charList" :key="c.name" :label="c.name" :value="c.name" />
+                </el-select>
+                <span class="spacer"></span>
+                <el-button type="danger" plain size="small" circle @click="itemList.splice(i, 1)">×</el-button>
+              </div>
+              <el-input v-model="it.description" type="textarea" :rows="2" placeholder="物品描述" style="margin-top:6px" />
+              <TagsInput v-model="it.tags" placeholder="标签（如 魔法 / 任务物品）" style="margin-top:6px" />
+            </div>
+            <div v-if="!itemList.length" class="empty">暂无物品</div>
+            <div style="margin-top:12px">
+              <el-button type="primary" size="small" :loading="saving.items" @click="saveMapSection('items', itemList, '物品')">保存物品</el-button>
+            </div>
+          </template>
+        </div>
+      </el-tab-pane>
+
+      <!-- 地点 · 势力 -->
+      <el-tab-pane label="地点·势力" name="places" lazy>
         <div class="card">
           <div class="card-title">地点</div>
           <div v-if="!sections.locations" class="empty">加载中…</div>
@@ -159,13 +189,19 @@
             <div v-for="(l, i) in locList" :key="i" class="npc-card">
               <div class="npc-head">
                 <el-input v-model="l.name" size="small" placeholder="地点名（唯一键）" style="width:200px" />
+                <el-input v-model="l.atmosphere" size="small" placeholder="氛围（如 阴森潮湿）" style="width:180px" />
+                <el-input v-model="l.danger" size="small" placeholder="危险度（如 低危）" style="width:140px" />
                 <span class="spacer"></span>
+                <el-button size="small" plain @click="collectEntity('location', l.name)">收藏</el-button>
                 <el-button type="danger" plain size="small" circle @click="locList.splice(i, 1)">×</el-button>
               </div>
               <el-input v-model="l.description" type="textarea" :rows="2" placeholder="描述" style="margin-top:6px" />
-              <TagsInput v-model="l.exits" placeholder="出口（可前往地点）" style="margin-top:6px" />
+              <div class="npc-grid" style="margin-top:6px">
+                <TagsInput v-model="l.exits" placeholder="出口（可前往地点）" />
+                <TagsInput v-model="l.points" placeholder="兴趣点 / 可调查处" />
+              </div>
             </div>
-            <el-button plain size="small" @click="locList.push({ name: '', description: '', exits: [] })">+ 添加地点</el-button>
+            <el-button plain size="small" @click="locList.push({ name: '', description: '', atmosphere: '', danger: '', exits: [], points: [] })">+ 添加地点</el-button>
             <div style="margin-top:12px">
               <el-button type="primary" size="small" :loading="saving.locations" @click="saveMapSection('locations', locList, '地点')">保存地点</el-button>
             </div>
@@ -178,13 +214,20 @@
             <div v-for="(f, i) in facList" :key="i" class="npc-card">
               <div class="npc-head">
                 <el-input v-model="f.name" size="small" placeholder="势力名（唯一键）" style="width:200px" />
+                <el-input v-model="f.leader" size="small" placeholder="领袖（角色名）" style="width:140px" />
+                <span class="spacer"></span>
+                <el-button size="small" plain @click="collectEntity('faction', f.name)">收藏</el-button>
+                <el-button type="danger" plain size="small" circle @click="facList.splice(i, 1)">×</el-button>
+              </div>
+              <div class="npc-head" style="margin-top:6px">
                 <span class="muted">玩家声誉</span>
                 <el-slider v-model="f.reputation" :min="-100" :max="100" style="flex:1;max-width:260px" />
                 <span class="mono" style="width:40px;text-align:right">{{ f.reputation }}</span>
-                <el-button type="danger" plain size="small" circle @click="facList.splice(i, 1)">×</el-button>
               </div>
+              <el-input v-model="f.description" type="textarea" :rows="2" placeholder="势力描述" style="margin-top:6px" />
+              <TagsInput v-model="f.goals" placeholder="势力目标" style="margin-top:6px" />
             </div>
-            <el-button plain size="small" @click="facList.push({ name: '', reputation: 0 })">+ 添加势力</el-button>
+            <el-button plain size="small" @click="facList.push({ name: '', reputation: 0, description: '', goals: [], leader: '' })">+ 添加势力</el-button>
             <div style="margin-top:12px">
               <el-button type="primary" size="small" :loading="saving.factions" @click="saveMapSection('factions', facList, '势力')">保存势力</el-button>
             </div>
@@ -192,8 +235,8 @@
         </div>
       </el-tab-pane>
 
-      <!-- 任务 / 线索 -->
-      <el-tab-pane label="任务/线索" name="quests" lazy>
+      <!-- 任务 · 线索 -->
+      <el-tab-pane label="任务·线索" name="quests" lazy>
         <div class="card">
           <div class="card-title">任务</div>
           <div v-if="!sections.quests" class="empty">加载中…</div>
@@ -230,6 +273,63 @@
             </div>
           </template>
         </div>
+      </el-tab-pane>
+
+      <!-- 设定库 -->
+      <el-tab-pane label="设定库" name="lore" lazy>
+        <div class="card">
+          <LorebookPanel v-if="activeTab === 'lore'" :world-id="worldId" />
+        </div>
+      </el-tab-pane>
+
+      <!-- 存档 -->
+      <el-tab-pane label="存档" name="saves" lazy>
+        <div class="card">
+          <div class="card-title">
+            游玩存档
+            <el-button size="small" text style="margin-left:8px" @click="loadSaves">刷新</el-button>
+          </div>
+          <div class="tab-toolbar">
+            <el-button type="primary" size="small" @click="openSaveDialog">+ 新建存档</el-button>
+          </div>
+          <div v-if="saves === null" class="empty">加载中…</div>
+          <el-table v-else :data="saves" size="small" empty-text="暂无存档">
+            <el-table-column prop="name" label="名称" min-width="140" />
+            <el-table-column prop="round_count" label="轮次" width="70" />
+            <el-table-column label="时间" width="160">
+              <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
+            </el-table-column>
+            <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
+            <el-table-column label="类型" width="80">
+              <template #default="{ row }">
+                <el-tag v-if="row.auto" size="small" type="info" effect="plain">自动</el-tag>
+                <el-tag v-else size="small" effect="plain">手动</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="150">
+              <template #default="{ row }">
+                <el-button size="small" @click="restoreSave(row)">恢复</el-button>
+                <el-button type="danger" plain size="small" @click="removeSave(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <!-- 新建存档 -->
+        <el-dialog v-model="saveDialog.visible" title="新建存档" width="420px" :close-on-click-modal="false">
+          <el-form label-width="70px">
+            <el-form-item label="名称" required>
+              <el-input v-model="saveDialog.name" placeholder="如 进入古堡前" />
+            </el-form-item>
+            <el-form-item label="备注">
+              <el-input v-model="saveDialog.note" type="textarea" :rows="2" placeholder="可选" />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button size="small" @click="saveDialog.visible = false">取消</el-button>
+            <el-button type="primary" size="small" :loading="saveDialog.creating" @click="createSave">保存</el-button>
+          </template>
+        </el-dialog>
       </el-tab-pane>
 
       <!-- 注入记录 -->
@@ -283,7 +383,7 @@
         <div class="card">
           <div class="card-title">完整世界状态 JSON（高阶编辑）</div>
           <div class="muted" style="margin-bottom:8px">
-            保存时仅回写可编辑分区：scene / characters / locations / factions / quests / hidden_info / metrics；
+            保存时仅回写可编辑分区：scene / characters / locations / factions / items / storyline / quests / hidden_info / metrics；
             其余字段（clock、event_log、locks 等运行时数据）的修改会被忽略。
           </div>
           <div v-if="jsonText === null" class="empty">加载中…</div>
@@ -298,6 +398,9 @@
         </div>
       </el-tab-pane>
     </el-tabs>
+
+    <!-- 素材导入 -->
+    <AssetPicker v-model:visible="pickerVisible" :exclude-world-id="worldId" @confirm="onImportConfirm" />
   </div>
 </template>
 
@@ -305,10 +408,11 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { worldApi } from '../../api/admin'
-import { loreApi } from '../../api/admin'
+import { worldApi, loreApi, assetApi, saveApi } from '../../api/admin'
 import LorebookPanel from '../../components/LorebookPanel.vue'
 import TagsInput from '../../components/TagsInput.vue'
+import CharacterForm from '../../components/CharacterForm.vue'
+import AssetPicker from '../../components/AssetPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -326,10 +430,12 @@ const sections = reactive({
   factions: null,
   quests: null,
   hidden: null,
+  items: null,
+  storyline: null,
 })
 const saving = reactive({
-  scene: false, characters: false, locations: false,
-  factions: false, quests: false, hidden: false, json: false,
+  scene: false, characters: false, locations: false, factions: false,
+  quests: false, hidden: false, items: false, storyline: false, json: false,
 })
 const loaded = reactive({})
 const injections = ref(null)
@@ -338,6 +444,19 @@ const injections = ref(null)
 const charList = ref([])
 const locList = ref([])
 const facList = ref([])
+const itemList = ref([])
+const openChars = ref([])
+const storylineForm = ref(null)
+
+// 素材导入
+const pickerVisible = ref(false)
+const importing = ref(false)
+
+// 存档
+const saves = ref(null)
+const saveDialog = reactive({ visible: false, name: '', note: '', creating: false })
+
+const isTrpg = computed(() => detail.value?.mode === 'trpg')
 
 const metricsText = computed(() => {
   const m = detail.value?.metrics
@@ -404,13 +523,50 @@ async function loadSection(part) {
     if (part === 'characters') {
       charList.value = Object.entries(data || {}).map(([k, v]) => normalizeChar(k, v))
     } else if (part === 'locations') {
-      locList.value = Object.entries(data || {}).map(([k, v]) => ({ name: v?.name || k, description: v?.description || '', exits: [...(v?.exits || [])] }))
+      locList.value = Object.entries(data || {}).map(([k, v]) => ({
+        name: v?.name || k,
+        description: v?.description || '',
+        atmosphere: v?.atmosphere || '',
+        danger: v?.danger || '',
+        exits: [...(v?.exits || [])],
+        points: [...(v?.points || [])],
+      }))
     } else if (part === 'factions') {
-      facList.value = Object.entries(data || {}).map(([k, v]) => ({ name: v?.name || k, reputation: v?.reputation ?? 0 }))
+      facList.value = Object.entries(data || {}).map(([k, v]) => ({
+        name: v?.name || k,
+        reputation: v?.reputation ?? 0,
+        description: v?.description || '',
+        goals: [...(v?.goals || [])],
+        leader: v?.leader || '',
+      }))
+    } else if (part === 'items') {
+      itemList.value = Object.entries(data || {}).map(([k, v]) => ({
+        name: v?.name || k,
+        type: v?.type || 'other',
+        description: v?.description || '',
+        location: v?.location || '',
+        owner: v?.owner || '',
+        tags: [...(v?.tags || [])],
+      }))
+    } else if (part === 'storyline') {
+      storylineForm.value = data
+        ? {
+            title: data.title || '',
+            premise: data.premise || '',
+            acts: (data.acts || []).map((a, i) => ({
+              id: a.id || `act_${i + 1}`,
+              title: a.title || '',
+              summary: a.summary || '',
+              status: a.status || 'pending',
+            })),
+          }
+        : null
+      loaded.storylineDone = true
     }
   } catch (e) {
     ElMessage.error(`加载分区 ${part} 失败：` + e.message)
     sections[part] = null
+    if (part === 'storyline') loaded.storylineDone = true
   }
 }
 
@@ -428,6 +584,10 @@ function normalizeChar(key, v) {
     dialogue_style: v?.dialogue_style || '',
     key_dialogue: [...(v?.key_dialogue || [])],
     traits: [...(v?.traits || [])],
+    appearance: v?.appearance || '',
+    personality: v?.personality || '',
+    backstory: v?.backstory || '',
+    skills: [...(v?.skills || [])],
     goals: (v?.goals || []).map((g) => ({ description: g.description || '', priority: g.priority ?? 5, progress: g.progress ?? 0 })),
     mood: { valence: v?.mood?.valence ?? 0, arousal: v?.mood?.arousal ?? 0, tags: [...(v?.mood?.tags || [])], updated_at: v?.mood?.updated_at ?? 0 },
     notes: v?.notes || '',
@@ -438,12 +598,19 @@ function normalizeChar(key, v) {
 
 function addCharacter() {
   charList.value.push(normalizeChar('', null))
+  openChars.value = [charList.value.length - 1]
+}
+
+function addItem() {
+  itemList.value.push({ name: '', type: 'other', description: '', location: '', owner: '', tags: [] })
 }
 
 async function ensureTabData(tab) {
   const need = {
     scene: ['scene'],
+    storyline: ['storyline'],
     characters: ['characters'],
+    items: ['items', 'locations', 'characters'],
     places: ['locations', 'factions'],
     quests: ['quests', 'hidden'],
   }[tab]
@@ -454,6 +621,8 @@ async function ensureTabData(tab) {
         await loadSection(p)
       }
     }
+  } else if (tab === 'saves' && saves.value === null) {
+    await loadSaves()
   } else if (tab === 'injections' && injections.value === null) {
     await loadInjections()
   } else if (tab === 'json' && jsonText.value === null) {
@@ -513,6 +682,196 @@ async function saveMapSection(part, list, label) {
   }
 }
 
+// ---------- 主线 ----------
+
+function newStoryline() {
+  return { title: '', premise: '', acts: [{ id: 'act_1', title: '', summary: '', status: 'pending' }] }
+}
+
+function moveAct(i, dir) {
+  const acts = storylineForm.value.acts
+  const j = i + dir
+  if (j < 0 || j >= acts.length) return
+  const [a] = acts.splice(i, 1)
+  acts.splice(j, 0, a)
+}
+
+function actStatusLabel(s) {
+  return { pending: '未开始', active: '进行中', done: '已完成' }[s] || s
+}
+
+function actStatusType(s) {
+  return { pending: 'info', active: 'warning', done: 'success' }[s] || 'info'
+}
+
+async function saveStoryline() {
+  const f = storylineForm.value
+  if (!f.title.trim()) { ElMessage.warning('请填写主线标题'); return }
+  const data = {
+    title: f.title.trim(),
+    premise: f.premise,
+    acts: f.acts
+      .filter((a) => a.title.trim())
+      .map((a, i) => ({ id: a.id || `act_${i + 1}`, title: a.title.trim(), summary: a.summary, status: a.status || 'pending' })),
+  }
+  saving.storyline = true
+  try {
+    await worldApi.saveSection(worldId, 'storyline', data)
+    ElMessage.success('主线已保存')
+    sections.storyline = data
+  } catch (e) {
+    ElMessage.error('保存失败：' + e.message)
+  } finally {
+    saving.storyline = false
+  }
+}
+
+async function clearStoryline() {
+  try {
+    await ElMessageBox.confirm('清空后该世界将没有主线剧情，确定继续？', '清空主线', {
+      type: 'warning',
+      confirmButtonText: '清空',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  saving.storyline = true
+  try {
+    await worldApi.saveSection(worldId, 'storyline', null)
+    ElMessage.success('主线已清空')
+    sections.storyline = null
+    storylineForm.value = null
+  } catch (e) {
+    ElMessage.error('清空失败：' + e.message)
+  } finally {
+    saving.storyline = false
+  }
+}
+
+// ---------- 素材联动 ----------
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]))
+}
+
+async function onImportConfirm(payload) {
+  importing.value = true
+  try {
+    const res = await assetApi.import(worldId, payload)
+    const lines = [`成功导入 ${res?.imported ?? 0} 项`]
+    if (res?.conflicts?.length) lines.push(`跳过冲突 ${res.conflicts.length} 项：${res.conflicts.map(escapeHtml).join('、')}`)
+    if (res?.errors?.length) lines.push(`失败 ${res.errors.length} 项：${res.errors.map(escapeHtml).join('；')}`)
+    ElMessageBox.alert(lines.join('<br>'), '导入结果', {
+      confirmButtonText: '知道了',
+      dangerouslyUseHTMLStringMessage: true,
+    })
+    // 导入会影响多个分区，全部标记为未加载并按需重载
+    for (const k of Object.keys(loaded)) loaded[k] = false
+    await ensureTabData(activeTab.value)
+  } catch (e) {
+    ElMessage.error('导入失败：' + e.message)
+  } finally {
+    importing.value = false
+  }
+}
+
+async function collectEntity(kind, name) {
+  if (!name?.trim()) { ElMessage.warning('请先填写名称并保存，再收藏'); return }
+  let summary = ''
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '收藏的是服务端已保存的实体（请先保存当前修改）。可填写一句摘要（可选）：',
+      `收藏「${name}」到素材库`,
+      { confirmButtonText: '收藏', cancelButtonText: '取消' }
+    )
+    summary = value || ''
+  } catch {
+    return
+  }
+  try {
+    await assetApi.collect(worldId, { kind, name: name.trim(), tags: [], summary })
+    ElMessage.success('已收藏到素材库')
+  } catch (e) {
+    ElMessage.error('收藏失败：' + e.message)
+  }
+}
+
+// ---------- 存档 ----------
+
+function fmtTime(s) {
+  return (s || '').replace('T', ' ').slice(0, 19) || '-'
+}
+
+async function loadSaves() {
+  try {
+    saves.value = (await saveApi.list(worldId)) || []
+  } catch (e) {
+    ElMessage.error('加载存档失败：' + e.message)
+    saves.value = []
+  }
+}
+
+function openSaveDialog() {
+  saveDialog.name = ''
+  saveDialog.note = ''
+  saveDialog.visible = true
+}
+
+async function createSave() {
+  if (!saveDialog.name.trim()) { ElMessage.warning('请填写存档名称'); return }
+  saveDialog.creating = true
+  try {
+    await saveApi.create(worldId, { name: saveDialog.name.trim(), note: saveDialog.note.trim() })
+    ElMessage.success('存档已创建')
+    saveDialog.visible = false
+    await loadSaves()
+  } catch (e) {
+    ElMessage.error('创建存档失败：' + e.message)
+  } finally {
+    saveDialog.creating = false
+  }
+}
+
+async function restoreSave(row) {
+  try {
+    await ElMessageBox.confirm(
+      `恢复到存档「${row.name}」（第 ${row.round_count} 轮）？当前进度会先自动备份为一条自动存档。`,
+      '恢复存档',
+      { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    const r = await saveApi.restore(worldId, row.id)
+    ElMessage.success(r?.message || '已恢复')
+    await loadSaves()
+    await loadDetail()
+  } catch (e) {
+    ElMessage.error('恢复失败：' + e.message)
+  }
+}
+
+async function removeSave(row) {
+  try {
+    await ElMessageBox.confirm(`删除存档「${row.name}」不可恢复，确定继续？`, '删除存档', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  try {
+    await saveApi.remove(worldId, row.id)
+    ElMessage.success('已删除')
+    await loadSaves()
+  } catch (e) {
+    ElMessage.error('删除失败：' + e.message)
+  }
+}
+
 // ---------- 注入记录 ----------
 
 async function loadInjections() {
@@ -535,6 +894,8 @@ const JSON_WRITABLE = [
   ['characters', 'characters'],
   ['locations', 'locations'],
   ['factions', 'factions'],
+  ['items', 'items'],
+  ['storyline', 'storyline'],
   ['quests', 'quests'],
   ['hidden_info', 'hidden'],
   ['metrics', 'metrics'],
@@ -573,8 +934,7 @@ async function saveJson() {
     }
     ElMessage.success('可写分区已全部保存')
     await loadDetail()
-    loaded.scene = loaded.characters = loaded.locations = false
-    loaded.factions = loaded.quests = loaded.hidden = false
+    for (const k of Object.keys(loaded)) loaded[k] = false
   } catch (e) {
     ElMessage.error('保存失败：' + e.message)
   } finally {
@@ -591,6 +951,8 @@ onMounted(loadDetail)
 .overview-grid p { font-size: 13.5px; margin-top: 2px; }
 .danger-card { border-color: #f3c2c2; }
 
+.tab-toolbar { display: flex; gap: 10px; margin-bottom: 12px; }
+
 .npc-card {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -600,11 +962,29 @@ onMounted(loadDetail)
 }
 .npc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .npc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
-.goal-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-.goal-row { display: flex; gap: 8px; align-items: center; width: 100%; }
-.mood-row { display: flex; align-items: center; gap: 8px; }
 .quest-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .spacer { flex: 1; }
+
+.char-title { font-weight: 600; margin-right: 10px; }
+.char-ops { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.el-collapse :deep(.el-tag) { margin-right: 6px; }
+
+.sl-title { margin: 4px 0 6px; font-size: 15px; }
+.act-list { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; width: 100%; }
+.act-edit-card {
+  width: 100%; border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; background: var(--bg);
+}
+.act-edit-head { display: flex; align-items: center; gap: 8px; }
+.act-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.act-row:last-child { border-bottom: none; }
+.act-index {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--primary-soft); color: var(--primary);
+  font-size: 12px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.act-body { flex: 1; font-size: 13.5px; }
 
 .hit-group { margin-top: 8px; }
 .hit-group-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }

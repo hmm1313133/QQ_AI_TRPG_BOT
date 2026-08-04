@@ -41,6 +41,8 @@ type WorldState struct {
 	Characters map[string]*CharacterState `json:"characters"`           // name -> NPC（PC 经 CardRef 关联角色卡）
 	Locations  map[string]*Location       `json:"locations,omitempty"`
 	Factions   map[string]*Faction        `json:"factions,omitempty"`
+	Items      map[string]*Item           `json:"items,omitempty"`    // 物品/道具（设计 §3.2）
+	Storyline  *Storyline                 `json:"storyline,omitempty"` // 导演主线（设计 §3.4）
 	Quests     []QuestState               `json:"quests"`     // 旧 Objectives 演化
 	HiddenInfo []HiddenItem               `json:"hidden_info"`
 	EventQueue []ScheduledEvent           `json:"event_queue"` // 旧 PendingEvents 演化
@@ -52,9 +54,32 @@ type WorldState struct {
 	EventLog   []WorldEvent               `json:"event_log,omitempty"`
 	// SkillUses 待结算的技能成功使用记录（成长闭环，幕间统一结算）。
 	SkillUses  []SkillUseRecord           `json:"skill_uses,omitempty"`
+	// RecentTurns 最近对话回合（短期记忆窗口，环形保留最近 RecentTurnsCap 轮）。
+	// Narrator 是无状态调用，跨轮叙事连续性由本窗口 + CampaignSummary + 记忆层承载。
+	RecentTurns []DialogueTurn            `json:"recent_turns,omitempty"`
 	Metrics    Metrics                    `json:"metrics"`
 	RoundCount int                        `json:"round_count"`
 	LastUpdate string                     `json:"last_update"`
+}
+
+// RecentTurnsCap 短期对话窗口保留的回合数。
+const RecentTurnsCap = 10
+
+// DialogueTurn 一轮对话（玩家行动 + KP 叙事）。
+type DialogueTurn struct {
+	Round    int    `json:"round"`
+	Player   string `json:"player"`
+	Narrator string `json:"narrator"`
+}
+
+// AppendTurn 追加一轮对话到短期窗口（超出容量淘汰最旧）。
+func (ws *WorldState) AppendTurn(player, narrator string) {
+	ws.RecentTurns = append(ws.RecentTurns, DialogueTurn{
+		Round: ws.RoundCount, Player: player, Narrator: narrator,
+	})
+	if len(ws.RecentTurns) > RecentTurnsCap {
+		ws.RecentTurns = ws.RecentTurns[len(ws.RecentTurns)-RecentTurnsCap:]
+	}
 }
 
 // WorldClock 世界时钟（设计文档 4.2）。
@@ -96,7 +121,12 @@ type CharacterState struct {
 	DialogueStyle string   `json:"dialogue_style,omitempty"`
 	KeyDialogue   []string `json:"key_dialogue,omitempty"`
 	Traits        []string `json:"traits,omitempty"` // 性格特质标签（记仇/胆小/贪婪…）
-	Goals         []Goal   `json:"goals,omitempty"`  // NPC 目标（模拟层驱动）
+	// 玩家创作字段（《世界编辑器与素材联动设计.md》§3.1）：叙事软信息，不影响规则判定。
+	Appearance  string   `json:"appearance,omitempty"`  // 外貌描写
+	Personality string   `json:"personality,omitempty"` // 性格描述（长文；Traits 是短标签）
+	Backstory   string   `json:"backstory,omitempty"`   // 背景故事
+	Skills      []string `json:"skills,omitempty"`      // 能力/特长描述，如 "剑术(娴熟)"
+	Goals       []Goal   `json:"goals,omitempty"`       // NPC 目标（模拟层驱动）
 	Mood          MoodState `json:"mood,omitempty"`
 	Notes         string   `json:"notes,omitempty"`
 }
@@ -129,13 +159,46 @@ type Location struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
 	Exits       []string `json:"exits,omitempty"`
+	Atmosphere  string   `json:"atmosphere,omitempty"` // 氛围（设计 §3.3）
+	Danger      string   `json:"danger,omitempty"`     // 危险度
+	Points      []string `json:"points,omitempty"`     // 兴趣点/可调查处
 }
 
 // Faction 势力/组织。
 type Faction struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Reputation int    `json:"reputation"` // 玩家在该势力中的声誉 -100..100
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Reputation  int      `json:"reputation"` // 玩家在该势力中的声誉 -100..100
+	Description string   `json:"description,omitempty"` // 设计 §3.3
+	Goals       []string `json:"goals,omitempty"`       // 势力目标
+	Leader      string   `json:"leader,omitempty"`      // 领袖（可对应角色名）
+}
+
+// Item 世界内物品/道具（硬状态，可追踪与转移；设计 §3.2）。
+type Item struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Type        string   `json:"type,omitempty"` // weapon / consumable / key / material / other
+	Description string   `json:"description,omitempty"`
+	Location    string   `json:"location,omitempty"` // 所在地点名
+	Owner       string   `json:"owner,omitempty"`    // 持有者（角色名；"玩家" 表示玩家持有）
+	Tags        []string `json:"tags,omitempty"`
+}
+
+// Storyline 导演系统主线剧情脊柱（simrpg/roleplay 手工编排；
+// trpg 模式由 InitFromScript 从剧本时间轴派生镜像，设计 §11.2）。设计 §3.4。
+type Storyline struct {
+	Title   string     `json:"title"`
+	Premise string     `json:"premise,omitempty"` // 主线前提/悬念
+	Acts    []StoryAct `json:"acts,omitempty"`
+}
+
+// StoryAct 主线一幕。
+type StoryAct struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Summary string `json:"summary,omitempty"`
+	Status  string `json:"status"` // pending / active / done
 }
 
 // QuestState 任务/目标（旧 ObjectiveState 演化）。
@@ -223,6 +286,7 @@ func NewWorldState(worldID, mode string) *WorldState {
 		Characters: make(map[string]*CharacterState),
 		Locations:  make(map[string]*Location),
 		Factions:   make(map[string]*Faction),
+		Items:      make(map[string]*Item),
 		Quests:     []QuestState{},
 		HiddenInfo: []HiddenItem{},
 		EventQueue: []ScheduledEvent{},

@@ -421,6 +421,7 @@ func firstRunes(s string, n int) string {
 var sectionParts = map[string]bool{
 	"scene": true, "characters": true, "locations": true,
 	"factions": true, "quests": true, "hidden": true, "metrics": true,
+	"items": true, "storyline": true,
 }
 
 // handleSectionGet 按需返回指定分区 JSON。
@@ -445,6 +446,10 @@ func (a *adminAPI) handleSectionGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, ws.HiddenInfo)
 	case "metrics":
 		writeJSON(w, ws.Metrics)
+	case "items":
+		writeJSON(w, ws.Items)
+	case "storyline":
+		writeJSON(w, ws.Storyline)
 	default:
 		http.Error(w, "未知分区: "+part, http.StatusBadRequest)
 	}
@@ -542,6 +547,38 @@ func applySection(ws *world.WorldState, part string, data json.RawMessage) error
 			return fmt.Errorf("metrics 数据格式错误: %w", err)
 		}
 		ws.Metrics = v
+	case "items":
+		var v map[string]*world.Item
+		if err := json.Unmarshal(data, &v); err != nil {
+			return fmt.Errorf("items 数据格式错误: %w", err)
+		}
+		for name, it := range v {
+			if it == nil {
+				return fmt.Errorf("物品 %s 不能为 null", name)
+			}
+			if it.Name == "" {
+				it.Name = name // map 键即权威名称
+			}
+		}
+		ws.Items = v
+	case "storyline":
+		if string(data) == "null" {
+			ws.Storyline = nil // 允许清空主线
+			return nil
+		}
+		var v world.Storyline
+		if err := json.Unmarshal(data, &v); err != nil {
+			return fmt.Errorf("storyline 数据格式错误: %w", err)
+		}
+		if strings.TrimSpace(v.Title) == "" {
+			return fmt.Errorf("storyline.title 不能为空")
+		}
+		for i := range v.Acts {
+			if v.Acts[i].Status == "" {
+				v.Acts[i].Status = "pending"
+			}
+		}
+		ws.Storyline = &v
 	}
 	return nil
 }

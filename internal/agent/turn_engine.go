@@ -108,7 +108,7 @@ func (t *TurnEngine) Run(
 	if state == nil {
 		// 无世界状态（自由模式）-> 直接叙事
 		gameContext := t.narrator.buildGameContext(sessionID, userID)
-		userMessage := t.ctxBuilder.BuildNarratorMessage(nil, nil, nil, gameContext, "", playerMessage)
+		userMessage := t.ctxBuilder.BuildNarratorMessage(nil, nil, nil, gameContext, "", "", playerMessage)
 		return t.narrator.NarrateMessage(ctx.Ctx, userMessage, sessionID, userID)
 	}
 	eventLogBase := len(state.EventLog) // 本回合开始前的事件数，供 AfterTurn 取增量
@@ -150,13 +150,14 @@ func (t *TurnEngine) Run(
 		t.refreshPlan(ctx.Ctx, state, playerMessage, sessionID, scanText, loreBudget, loreRecursion)
 	}
 
-	// 5. ContextBuilder 按预算组装上下文包（含记忆检索块与世界事件）
+	// 5. ContextBuilder 按预算组装上下文包（含记忆检索块、近期对话窗口与世界事件）
 	gameContext := t.narrator.buildGameContext(sessionID, userID)
 	memoryBlock := worldEventsBlock
 	if mode.EnableMemory && t.memory != nil {
 		memoryBlock += t.memory.BuildMemoryBlock(state, playerMessage)
 	}
-	userMessage := t.ctxBuilder.BuildNarratorMessage(state, &lore, guidance, gameContext, memoryBlock, playerMessage)
+	dialogueBlock := buildDialogueBlock(state)
+	userMessage := t.ctxBuilder.BuildNarratorMessage(state, &lore, guidance, gameContext, memoryBlock, dialogueBlock, playerMessage)
 	log.Printf("[TurnEngine] 上下文包: %d 字符（预算 %d）", len(userMessage), t.ctxBuilder.Budget)
 
 	// 6. Narrator 无状态调用
@@ -165,8 +166,8 @@ func (t *TurnEngine) Run(
 		return "", fmt.Errorf("Narrator 执行失败: %w", err)
 	}
 
-	// 7. 记账 + 持久化（重新加载最新状态，叠加本轮增量）
-	saved := t.bookkeep(state, sessionID)
+	// 7. 记账 + 持久化（重新加载最新状态，叠加本轮增量；含短期对话窗口）
+	saved := t.bookkeep(state, sessionID, playerMessage, reply)
 
 	// 8. 异步记忆写入（本回合事件增量 + 对话）
 	if t.memory != nil && saved != nil {
@@ -183,9 +184,25 @@ func (t *TurnEngine) Run(
 	return reply, nil
 }
 
+// buildDialogueBlock 把短期对话窗口格式化为注入文本（无记录时返回空串）。
+// 这是 Narrator 无状态调用下的"近期聊天记录"：玩家上轮说了什么、KP 答了什么，
+// 保证"你刚才说的那个…"这类指代可解。远期由 CampaignSummary + 记忆层承载。
+func buildDialogueBlock(state *world.WorldState) string {
+	if state == nil || len(state.RecentTurns) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("【近期对话】\n")
+	for _, turn := range state.RecentTurns {
+		sb.WriteString("玩家: " + turn.Player + "\n")
+		sb.WriteString("KP: " + turn.Narrator + "\n")
+	}
+	return sb.String()
+}
+
 // buildLoreScanText 构建 lore 关键词层的扫描文本（设计文档 §4.2）：
 // 本回合玩家消息 + 最近 K 轮决策记录 + 当前场景名与在场 NPC 名。
-// （逐字对话历史不落 WorldState，决策记录是持久化的最近轮次代理。）
+// （近期逐字对话已由 RecentTurns 窗口承载，决策记录作为更远期的关键词来源。）
 func (t *TurnEngine) buildLoreScanText(state *world.WorldState, playerMessage string, rounds int) string {
 	var sb strings.Builder
 	sb.WriteString(playerMessage)
@@ -375,8 +392,8 @@ func (t *TurnEngine) advanceWorldClock(state *world.WorldState, mode world.GameM
 }
 
 // bookkeep 回合记账：重新加载最新状态（Narrator 工具可能已修改），
-// 叠加本轮指标/计划/轮次增量后持久化。返回保存后的状态快照。
-func (t *TurnEngine) bookkeep(state *world.WorldState, sessionID string) *world.WorldState {
+// 叠加本轮指标/计划/轮次增量与短期对话窗口后持久化。返回保存后的状态快照。
+func (t *TurnEngine) bookkeep(state *world.WorldState, sessionID, playerMessage, reply string) *world.WorldState {
 	if t.worldEngine == nil || state == nil {
 		return nil
 	}
@@ -392,6 +409,7 @@ func (t *TurnEngine) bookkeep(state *world.WorldState, sessionID string) *world.
 		latest.PlanNodeID = state.PlanNodeID
 		latest.PlanRound = state.PlanRound
 	}
+	latest.AppendTurn(playerMessage, reply)
 	latest.RoundCount++
 
 	// 合并世界时钟（本回合已推进）与事件触发标记（按 ID 合并，

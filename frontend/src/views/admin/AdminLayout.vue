@@ -35,6 +35,7 @@ const navItems = [
   { path: '/admin/scripts', icon: '📜', label: '剧本管理' },
   { path: '/admin/config', icon: '⚙️', label: 'AI 配置' },
   { path: '/admin/characters', icon: '🎭', label: '角色卡' },
+  { path: '/admin/assets', icon: '🧩', label: '素材库' },
   { path: '/admin/memory', icon: '🧠', label: '记忆查看' },
   { path: '/admin/logs', icon: '💬', label: '聊天记录' },
 ]

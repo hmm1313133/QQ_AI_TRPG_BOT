@@ -68,7 +68,7 @@ var KeyRegistry = []KeyMeta{
 	{Key: KeyLLMBaseURL, Label: "LLM Base URL", Group: "LLM", Type: "string", Scope: ScopeProcessRestart},
 	{Key: KeyNarratorTemp, Label: "Narrator 温度", Group: "LLM", Type: "number", Scope: ScopeProcessRestart},
 	{Key: KeyDirectorTemp, Label: "Planner 温度", Group: "LLM", Type: "number", Scope: ScopeProcessRestart},
-	{Key: KeyContextBudget, Label: "上下文预算·字符", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
+	{Key: KeyContextBudget, Label: "上下文预算·字符（默认45000≈3万token）", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
 	{Key: KeyLoreBudget, Label: "设定库预算·字符", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
 	{Key: KeyLoreScanRounds, Label: "设定库扫描轮数", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
 	{Key: KeyLoreRecursion, Label: "设定库递归扫描开关", Group: "上下文与记忆", Type: "bool", Scope: ScopeHot},

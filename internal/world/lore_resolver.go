@@ -18,7 +18,7 @@ import (
 
 // 配置默认值（config 注册表 seed 与 TurnEngine 兜底共用）。
 const (
-	DefaultLoreBudget     = 1500 // lore 分区预算（字符，从 context_budget 中切出）
+	DefaultLoreBudget     = 4000 // lore 分区预算（字符，从 context_budget 中切出）
 	DefaultLoreScanRounds = 4    // 关键词扫描的最近轮数
 	loreRecursionMaxSteps = 2    // 递归层最大步数
 )

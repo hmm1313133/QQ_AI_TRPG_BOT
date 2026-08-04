@@ -6,6 +6,7 @@
       closable
       size="small"
       class="tags-input-tag"
+      :title="t"
       @close="removeAt(i)"
     >{{ t }}</el-tag>
     <input

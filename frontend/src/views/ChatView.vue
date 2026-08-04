@@ -7,14 +7,46 @@
         <div class="dot"></div>
         <span>{{ connText }}</span>
       </div>
+      <button class="header-btn" @click="openSaves">存档</button>
       <router-link class="admin-link" to="/admin">管理后台 →</router-link>
     </header>
+
+    <!-- 游玩存档 -->
+    <el-dialog v-model="savesVisible" title="游玩存档" width="560px">
+      <div v-if="savesNoWorld" class="empty">当前会话还没有进行中的世界（先加载剧本或创建世界）</div>
+      <template v-else>
+        <div class="save-create">
+          <el-input v-model="saveName" size="small" placeholder="存档名称（必填）" style="width:180px" />
+          <el-input v-model="saveNote" size="small" placeholder="备注（可选）" style="flex:1" />
+          <el-button type="primary" size="small" :loading="saveCreating" @click="createSave">新建存档</el-button>
+        </div>
+        <div v-if="savesLoading" class="empty">加载中…</div>
+        <el-table v-else :data="saves" size="small" empty-text="暂无存档">
+          <el-table-column prop="name" label="名称" min-width="110">
+            <template #default="{ row }">
+              {{ row.name }}
+              <el-tag v-if="row.auto" size="small" type="info" effect="plain" style="margin-left:4px">自动</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="round_count" label="轮次" width="60" />
+          <el-table-column label="时间" width="145">
+            <template #default="{ row }">{{ fmtSaveTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column prop="note" label="备注" min-width="90" show-overflow-tooltip />
+          <el-table-column label="操作" width="80">
+            <template #default="{ row }">
+              <el-button size="small" @click="restoreSave(row)">恢复</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
+    </el-dialog>
 
     <div class="main">
       <div class="chat-wrap">
         <div class="messages" ref="messagesEl">
           <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.type">
-            <div class="bubble">{{ m.text }}</div>
+            <div class="bubble"><MarkdownText :text="m.text" /></div>
           </div>
           <div class="msg thinking" :class="{ show: thinking }">
             <div class="bubble"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
@@ -69,6 +101,9 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { playerSaveReq } from '../api/admin'
+import MarkdownText from '../components/MarkdownText.vue'
 
 const messagesEl = ref(null)
 const inputEl = ref(null)
@@ -92,6 +127,9 @@ const quickCmds = ['.help', '.script list', '.progress', '.timeline', '.r 1d100'
 let ws = null
 let token = localStorage.getItem('trpg_token') || ''
 let destroyed = false
+
+// 聊天访问令牌（部署方开启 ChatToken 时通过 ?auth= 带入，与 WS 鉴权参数一致）
+const chatAuth = new URLSearchParams(location.search).get('auth') || ''
 
 function setConn(on, text) {
   connClass.value = on ? 'on' : 'off'
@@ -121,6 +159,23 @@ async function ensureToken() {
   token = data.token
   localStorage.setItem('trpg_token', token)
   return token
+}
+
+// 加载历史消息（后端按时间升序返回最近 200 条）
+async function loadHistory() {
+  const t = await ensureToken()
+  let url = '/api/chat/history?token=' + encodeURIComponent(t)
+  if (chatAuth) url += '&auth=' + encodeURIComponent(chatAuth)
+  const resp = await fetch(url)
+  if (!resp.ok) throw new Error(await resp.text())
+  const list = await resp.json()
+  const typeMap = { reply: 'kp', user: 'user', push: 'push' }
+  messages.value = (list || [])
+    .filter((m) => typeMap[m.type])
+    .map((m) => ({ type: typeMap[m.type], text: m.text }))
+  nextTick(() => {
+    if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
+  })
 }
 
 function connect() {
@@ -208,11 +263,104 @@ async function onFileChange() {
   input.value = ''
 }
 
-onMounted(connect)
+// 先恢复历史再连 WS：历史请求在 connect 之前 await，天然无竞态
+onMounted(async () => {
+  try {
+    await loadHistory()
+  } catch (err) {
+    console.warn('加载历史消息失败:', err)
+  }
+  connect()
+})
 onBeforeUnmount(() => {
   destroyed = true
   if (ws) ws.close()
 })
+
+// ---------- 游玩存档 ----------
+
+const savesVisible = ref(false)
+const saves = ref([])
+const savesLoading = ref(false)
+const savesNoWorld = ref(false)
+const saveName = ref('')
+const saveNote = ref('')
+const saveCreating = ref(false)
+
+function fmtSaveTime(s) {
+  return (s || '').replace('T', ' ').slice(0, 16) || '-'
+}
+
+async function openSaves() {
+  savesVisible.value = true
+  await loadSaves()
+}
+
+async function loadSaves() {
+  savesLoading.value = true
+  savesNoWorld.value = false
+  try {
+    const t = await ensureToken()
+    saves.value = (await playerSaveReq('/api/saves', { token: t, auth: chatAuth })) || []
+  } catch (e) {
+    if (e.status === 404) {
+      savesNoWorld.value = true
+      saves.value = []
+    } else {
+      ElMessage.error('加载存档失败：' + e.message)
+    }
+  } finally {
+    savesLoading.value = false
+  }
+}
+
+async function createSave() {
+  const name = saveName.value.trim()
+  if (!name) { ElMessage.warning('请填写存档名称'); return }
+  saveCreating.value = true
+  try {
+    const t = await ensureToken()
+    await playerSaveReq('/api/saves', {
+      token: t,
+      auth: chatAuth,
+      method: 'POST',
+      body: JSON.stringify({ name, note: saveNote.value.trim() }),
+    })
+    ElMessage.success('存档已创建')
+    saveName.value = ''
+    saveNote.value = ''
+    await loadSaves()
+  } catch (e) {
+    if (e.status === 404) {
+      savesNoWorld.value = true
+    } else {
+      ElMessage.error('创建存档失败：' + e.message)
+    }
+  } finally {
+    saveCreating.value = false
+  }
+}
+
+async function restoreSave(row) {
+  try {
+    await ElMessageBox.confirm(
+      `恢复到存档「${row.name}」（第 ${row.round_count} 轮）？当前进度会先自动备份。`,
+      '恢复存档',
+      { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    const t = await ensureToken()
+    const r = await playerSaveReq(`/api/saves/${row.id}/restore`, { token: t, auth: chatAuth, method: 'POST' })
+    ElMessage.success(r?.message || '已恢复')
+    savesVisible.value = false
+    addMsg('system', `📦 ${r?.message || '已恢复存档'}`)
+  } catch (e) {
+    ElMessage.error('恢复失败：' + e.message)
+  }
+}
 </script>
 
 <style scoped>
@@ -241,6 +389,14 @@ onBeforeUnmount(() => {
   padding: 6px 12px; border-radius: 8px; transition: all .2s;
 }
 .admin-link:hover { background: var(--bg); color: var(--text); }
+.header-btn {
+  font: inherit; font-size: 13px; color: var(--text-secondary);
+  padding: 6px 12px; border-radius: 8px; border: none;
+  background: transparent; cursor: pointer; transition: all .2s;
+}
+.header-btn:hover { background: var(--bg); color: var(--text); }
+.save-create { display: flex; gap: 8px; margin-bottom: 12px; }
+.empty { padding: 24px 0; text-align: center; color: var(--text-secondary); font-size: 13px; }
 
 /* ===== 主体 ===== */
 .main { flex: 1; display: flex; min-height: 0; }
@@ -256,7 +412,7 @@ onBeforeUnmount(() => {
 .msg .bubble {
   padding: 12px 16px; border-radius: var(--radius);
   line-height: 1.75; font-size: 14.5px;
-  white-space: pre-wrap; word-break: break-word;
+  word-break: break-word;
   box-shadow: var(--shadow);
 }
 .msg.kp { align-self: flex-start; }
@@ -273,6 +429,59 @@ onBeforeUnmount(() => {
   background: #fff8e6; color: #92660a; box-shadow: none;
   font-size: 13px; border-radius: 10px; border: 1px solid #f5e3b3;
 }
+
+/* ===== 气泡内 markdown 内容 ===== */
+.msg .bubble :deep(.md-body) > :first-child { margin-top: 0; }
+.msg .bubble :deep(.md-body) > :last-child { margin-bottom: 0; }
+.msg .bubble :deep(.md-body p) { margin: 6px 0; }
+.msg .bubble :deep(.md-body h1),
+.msg .bubble :deep(.md-body h2),
+.msg .bubble :deep(.md-body h3),
+.msg .bubble :deep(.md-body h4) {
+  margin: 12px 0 6px; line-height: 1.4; font-weight: 700;
+}
+.msg .bubble :deep(.md-body h1) { font-size: 1.3em; }
+.msg .bubble :deep(.md-body h2) { font-size: 1.2em; }
+.msg .bubble :deep(.md-body h3) { font-size: 1.1em; }
+.msg .bubble :deep(.md-body h4) { font-size: 1em; }
+.msg .bubble :deep(.md-body ul),
+.msg .bubble :deep(.md-body ol) { margin: 6px 0; padding-left: 22px; }
+.msg .bubble :deep(.md-body li) { margin: 2px 0; }
+.msg .bubble :deep(.md-body code) {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .9em;
+  background: var(--primary-soft); color: var(--primary);
+  padding: 1px 6px; border-radius: 6px;
+}
+.msg .bubble :deep(.md-body pre) {
+  margin: 8px 0; padding: 10px 14px; overflow-x: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+}
+.msg .bubble :deep(.md-body pre code) { background: none; color: var(--text); padding: 0; }
+.msg .bubble :deep(.md-body blockquote) {
+  margin: 8px 0; padding: 2px 12px;
+  border-left: 3px solid var(--primary); color: var(--text-secondary);
+}
+.msg .bubble :deep(.md-body table) { margin: 8px 0; border-collapse: collapse; font-size: .95em; }
+.msg .bubble :deep(.md-body th),
+.msg .bubble :deep(.md-body td) { border: 1px solid var(--border); padding: 4px 10px; }
+.msg .bubble :deep(.md-body th) { background: var(--bg); }
+.msg .bubble :deep(.md-body tr:nth-child(even) td) { background: var(--bg); }
+.msg .bubble :deep(.md-body a) { color: var(--primary); text-decoration: none; }
+.msg .bubble :deep(.md-body a:hover) { text-decoration: underline; }
+.msg .bubble :deep(.md-body hr) { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+.msg .bubble :deep(.md-body img) { max-width: 100%; border-radius: 8px; }
+
+/* user 气泡为深色底，内部元素适配白字 */
+.msg.user .bubble :deep(.md-body code) { background: rgba(255, 255, 255, .18); color: #fff; }
+.msg.user .bubble :deep(.md-body pre) { background: rgba(0, 0, 0, .18); border-color: rgba(255, 255, 255, .25); }
+.msg.user .bubble :deep(.md-body pre code) { background: none; color: #fff; }
+.msg.user .bubble :deep(.md-body blockquote) { border-left-color: rgba(255, 255, 255, .6); color: rgba(255, 255, 255, .85); }
+.msg.user .bubble :deep(.md-body a) { color: #fff; text-decoration: underline; }
+.msg.user .bubble :deep(.md-body th),
+.msg.user .bubble :deep(.md-body td) { border-color: rgba(255, 255, 255, .35); }
+.msg.user .bubble :deep(.md-body th),
+.msg.user .bubble :deep(.md-body tr:nth-child(even) td) { background: rgba(255, 255, 255, .1); }
+.msg.user .bubble :deep(.md-body hr) { border-top-color: rgba(255, 255, 255, .35); }
 
 /* 思考动画 */
 .thinking { display: none; align-self: flex-start; }

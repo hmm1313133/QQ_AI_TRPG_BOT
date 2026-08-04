@@ -22,6 +22,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/agent"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/assetparse"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/bot"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
@@ -44,11 +45,23 @@ func main() {
 	// 2. Initialize TRPG engine (rulesets, sessions, character bindings)
 	trpgEngine := trpg.NewEngine()
 
-	// 3. Initialize character card manager (loads existing cards from disk)
+	// 2b. Open shared data DB（世界状态/人物卡/素材库/存档共用 data/app.db，见
+	// 《世界编辑器与素材联动设计.md》§9；与配置库各持连接，busy_timeout 错开写入）
+	dataDB, err := world.OpenSQLite(getEnv("CONFIG_DB", "./data/app.db"))
+	if err != nil {
+		log.Fatalf("打开数据库失败: %v", err)
+	}
+	defer dataDB.Close()
+
+	// 3. Initialize character card manager（SQLite 后端 + 旧 JSON 目录自动迁移）
 	charDir := getEnv("CHARACTER_DIR", "./data/characters")
-	charMgr, err := character.NewManager(charDir)
+	charMgr, err := character.NewSQLiteManager(dataDB)
 	if err != nil {
 		log.Fatalf("初始化角色卡管理器失败: %v", err)
+	}
+	migrateLog := func(format string, args ...any) { log.Infof(format, args...) }
+	if _, err := character.MigrateDirToSQLite(charMgr, charDir, migrateLog); err != nil {
+		log.Errorf("迁移旧人物卡失败: %v", err)
 	}
 
 	// 4. Create unified Service (shared by Handlers and AI Agent)
@@ -72,11 +85,22 @@ func main() {
 		Timeout: 10,
 	})
 
-	// 7. Initialize world engine (世界引擎：状态唯一真相)
+	// 7. Initialize world engine（世界引擎：状态唯一真相；SQLite 存储 + 旧 JSON 目录自动迁移）
 	worldDir := getEnv("WORLD_DIR", "./data/worlds")
-	worldRepo, err := world.NewJSONRepository(worldDir)
+	worldRepo, err := world.NewSQLiteRepository(dataDB)
 	if err != nil {
 		log.Fatalf("初始化世界状态存储失败: %v", err)
+	}
+	if _, err := world.MigrateJSONDir(worldRepo, worldDir, migrateLog); err != nil {
+		log.Errorf("迁移旧世界状态失败: %v", err)
+	}
+	assetStore, err := world.NewAssetStore(dataDB)
+	if err != nil {
+		log.Fatalf("初始化素材库失败: %v", err)
+	}
+	chatHistory, err := web.NewChatHistoryStore(dataDB)
+	if err != nil {
+		log.Fatalf("初始化聊天记录存储失败: %v", err)
 	}
 	worldEngine := world.NewEngine(worldRepo)
 
@@ -100,6 +124,18 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("初始化剧本识别 Agent 失败: %v", err)
+	}
+
+	// 8b. Initialize asset parser（素材 LLM 解析器，与剧本识别同模型配置；设计 §11.4）
+	assetParser, err := assetparse.NewParser(&assetparse.Config{
+		LLMModel:    getEnv("LLM_MODEL", "deepseek-chat"),
+		LLMAPIKey:   os.Getenv("LLM_API_KEY"),
+		LLMBaseURL:  getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
+		MaxTokens:   8192,
+		Temperature: 0.3,
+	})
+	if err != nil {
+		log.Errorf("初始化素材解析器失败（素材解析功能不可用）: %v", err)
 	}
 
 	// 9. Create script deps for KPAgent (含世界引擎与成长引擎)
@@ -206,8 +242,8 @@ func main() {
 	cfgStore.Seed(config.KeyLLMModel, getEnv("LLM_MODEL", "deepseek-chat"))
 	cfgStore.Seed(config.KeyNarratorTemp, "0.7")
 	cfgStore.Seed(config.KeyDirectorTemp, "0.2")
-	cfgStore.Seed(config.KeyContextBudget, "6000")
-	cfgStore.Seed(config.KeyLoreBudget, "1500")
+	cfgStore.Seed(config.KeyContextBudget, "45000")
+	cfgStore.Seed(config.KeyLoreBudget, "4000")
 	cfgStore.Seed(config.KeyLoreScanRounds, "4")
 	cfgStore.Seed(config.KeyLoreRecursion, "false")
 	cfgStore.Seed(config.KeyPlanInterval, "8")
@@ -244,6 +280,7 @@ func main() {
 		webServer = web.NewServer(web.Config{
 			ChatToken: os.Getenv("WEB_CHAT_TOKEN"),
 		}, router, sessions)
+		webServer.SetChatHistory(chatHistory)
 		webServer.SetAdmin(web.AdminDeps{
 			Sessions:    sessions,
 			Service:     svc,
@@ -251,6 +288,8 @@ func main() {
 			Archive:     scriptArchive,
 			Analyzer:    scriptAnalyzer,
 			CharMgr:     charMgr,
+			AssetStore:  assetStore,
+			AssetParser: assetParser,
 			MemoryStore: memoryStore,
 			GameLogger:  gameLogger,
 			ConfigStore: cfgStore,

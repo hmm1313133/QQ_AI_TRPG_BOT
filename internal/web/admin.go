@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/agent"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/assetparse"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
@@ -36,6 +37,8 @@ type AdminDeps struct {
 	Archive     *script.Archive
 	Analyzer    *script.ScriptAnalyzer
 	CharMgr     *character.Manager
+	AssetStore  *world.AssetStore // 全局素材库（设计 §9.3，可为 nil）
+	AssetParser *assetparse.Parser // 素材 LLM 解析器（设计 §11.4，可为 nil）
 	MemoryStore *world.MemoryStore
 	GameLogger  *gamelog.GameLogger
 	ConfigStore ConfigStore   // W4 接入，可为 nil
@@ -115,6 +118,8 @@ func (s *Server) registerAdmin(mux *http.ServeMux, deps AdminDeps, adminToken st
 	mux.HandleFunc("POST /api/admin/bot/stop", a.wrap(a.handleBotStop))
 	mux.HandleFunc("POST /api/admin/bot/restart", a.wrap(a.handleBotRestart))
 	mux.HandleFunc("GET /api/admin/tasks/{id}", a.wrap(a.handleTask))
+	// 素材联动与游玩存档（《世界编辑器与素材联动设计.md》§四/§9.4）
+	a.registerAssetRoutes(mux)
 }
 
 // wrap 鉴权中间件：Bearer Token；未配置 token 时仅允许本机访问。
@@ -235,6 +240,12 @@ func (a *adminAPI) handleWorldAdvance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "已是最后一个节点", http.StatusBadRequest)
 		return
 	}
+	// 推进前自动备份（设计 §9.4：高风险操作留回滚点）
+	if repo, ok := a.deps.WorldEngine.Repo().(*world.SQLiteRepository); ok {
+		if _, err := repo.CreateSave(ws, "自动备份-推进前", "推进时间轴到「"+next.Name+"」前的进度", true); err != nil {
+			log.Printf("[Admin] 推进前自动备份失败: %v", err)
+		}
+	}
 	if err := a.deps.WorldEngine.RefreshScene(id, scr, next.ID); err != nil {
 		http.Error(w, "推进失败: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -291,6 +302,13 @@ type worldCreateReq struct {
 	NPCs       []world.NPCSeed `json:"npcs"`
 	Locations  []string        `json:"locations"`
 	ScriptID   string          `json:"script_id"` // trpg 必填
+	// 结构化素材（《世界编辑器与素材联动设计.md》§4.3，全部可选）
+	Characters   []world.CharacterState `json:"characters"`
+	LocationDefs []world.Location       `json:"location_defs"` // 结构化地点（locations 名称列表之外的完整形态）
+	Items        []world.Item           `json:"items"`
+	Factions     []world.Faction        `json:"factions"`
+	Storyline    *world.Storyline       `json:"storyline"`
+	ImportCards  []string               `json:"import_cards"` // 创建即关联的全局人物卡 ID
 	// Lore 创建时随世界写入的手工设定条目（可选；校验与默认值同 POST /lore）。
 	Lore []loreUpsertReq `json:"lore"`
 }
@@ -344,6 +362,15 @@ func (a *adminAPI) handleWorldCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 创建即关联的人物卡 → 结构化角色（CardRef 关联，数值真相仍在卡）
+	for _, cardID := range req.ImportCards {
+		card, err := a.deps.CharMgr.Get(cardID)
+		if err != nil {
+			http.Error(w, "人物卡不存在: "+cardID, http.StatusBadRequest)
+			return
+		}
+		req.Characters = append(req.Characters, *world.CharacterStateFromCard(card))
+	}
 	state, err := a.deps.WorldEngine.SeedWorld(req.WorldID, world.SeedSpec{
 		Mode:       req.Mode,
 		Background: req.Background,
@@ -351,6 +378,11 @@ func (a *adminAPI) handleWorldCreate(w http.ResponseWriter, r *http.Request) {
 		NPCs:       req.NPCs,
 		Locations:  req.Locations,
 		ScriptID:   req.ScriptID,
+		Characters:   req.Characters,
+		LocationDefs: req.LocationDefs,
+		Items:        req.Items,
+		Factions:     req.Factions,
+		Storyline:    req.Storyline,
 	}, scr)
 	if err != nil {
 		http.Error(w, "创建失败: "+err.Error(), http.StatusBadRequest)

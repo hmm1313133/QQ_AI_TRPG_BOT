@@ -1,6 +1,6 @@
 // Package character provides character card creation, storage, and management.
-// Cards are persisted as JSON files in the configured directory.
-// The Manager is thread-safe; all public methods acquire the internal mutex.
+// Persistence is pluggable: JSON files (legacy) or SQLite (character_cards 表，
+// 见《世界编辑器与素材联动设计.md》§9）。The Manager is thread-safe.
 package character
 
 import (
@@ -12,22 +12,33 @@ import (
 	"sync"
 )
 
-// Manager manages all character cards.
-// Cards are stored both in memory (map) and on disk (JSON files).
-type Manager struct {
-	mu    sync.RWMutex
-	dir   string             // storage directory
-	cards map[string]*Card   // cardID -> character card
+// cardBackend 持久化后端（文件 / SQLite）。
+type cardBackend interface {
+	loadAll() ([]*Card, error)
+	save(c *Card) error
+	remove(c *Card) error
 }
 
-// NewManager creates a character card manager and loads existing cards from disk.
+// Manager manages all character cards.
+// Cards are stored both in memory (map) and via the configured backend.
+type Manager struct {
+	mu      sync.RWMutex
+	backend cardBackend
+	cards   map[string]*Card // cardID -> character card
+}
+
+// NewManager creates a character card manager with JSON file storage (legacy).
 func NewManager(dir string) (*Manager, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("创建角色卡目录失败: %w", err)
 	}
+	return newManagerWithBackend(&fileBackend{dir: dir})
+}
+
+func newManagerWithBackend(b cardBackend) (*Manager, error) {
 	m := &Manager{
-		dir:   dir,
-		cards: make(map[string]*Card),
+		backend: b,
+		cards:   make(map[string]*Card),
 	}
 	if err := m.loadAll(); err != nil {
 		return nil, fmt.Errorf("加载角色卡失败: %w", err)
@@ -45,7 +56,10 @@ type Card struct {
 	Skills    map[string]int    `json:"skills"`     // skill values
 	Status    map[string]int    `json:"status"`     // status values (HP, SAN, MP, etc.)
 	Backstory string            `json:"backstory"`  // background story
-	FilePath  string            `json:"-"`          // file storage path (not serialized)
+	// 创作字段（设计 §3.1）：roleplay 模式与导入世界时映射到 CharacterState。
+	Appearance  string `json:"appearance,omitempty"`  // 外貌描写
+	Personality string `json:"personality,omitempty"` // 性格描述
+	FilePath  string            `json:"-"`          // file storage path (not serialized; 仅文件后端使用)
 }
 
 // MakeID generates a card ID from playerID and character name.
@@ -69,9 +83,8 @@ func (m *Manager) Create(card *Card) error {
 		return fmt.Errorf("角色卡 %s 已存在", card.Name)
 	}
 
-	card.FilePath = filepath.Join(m.dir, cardFileName(card.ID))
 	m.cards[card.ID] = card
-	return m.saveLocked(card)
+	return m.backend.save(card)
 }
 
 // Get retrieves a card by ID.
@@ -123,7 +136,7 @@ func (m *Manager) Update(card *Card) error {
 	if _, exists := m.cards[card.ID]; !exists {
 		return fmt.Errorf("角色卡 %s 不存在", card.Name)
 	}
-	return m.saveLocked(card)
+	return m.backend.save(card)
 }
 
 // Delete removes a card by ID.
@@ -135,10 +148,7 @@ func (m *Manager) Delete(cardID string) error {
 		return fmt.Errorf("角色卡 %s 不存在", cardID)
 	}
 	delete(m.cards, cardID)
-	if card.FilePath != "" {
-		_ = os.Remove(card.FilePath) // best-effort cleanup
-	}
-	return nil
+	return m.backend.remove(card)
 }
 
 // DeleteByPlayerAndName removes a card by player ID and character name.
@@ -158,7 +168,7 @@ func (m *Manager) SetAttr(cardID, attr string, value int) error {
 		card.Attrs = make(map[string]int)
 	}
 	card.Attrs[attr] = value
-	return m.saveLocked(card)
+	return m.backend.save(card)
 }
 
 // SetSkill sets or updates a skill on a card and persists it.
@@ -173,7 +183,7 @@ func (m *Manager) SetSkill(cardID, skill string, value int) error {
 		card.Skills = make(map[string]int)
 	}
 	card.Skills[skill] = value
-	return m.saveLocked(card)
+	return m.backend.save(card)
 }
 
 // SetStatus sets or updates a status value (HP/SAN/MP) on a card and persists it.
@@ -188,10 +198,15 @@ func (m *Manager) SetStatus(cardID, key string, value int) error {
 		card.Status = make(map[string]int)
 	}
 	card.Status[key] = value
-	return m.saveLocked(card)
+	return m.backend.save(card)
 }
 
-// --- internal ---
+// --- internal: 文件后端（legacy） ---
+
+// fileBackend JSON 文件存储后端。
+type fileBackend struct {
+	dir string
+}
 
 // cardFileName 由角色卡 ID 派生文件名：替换 Windows 文件名非法字符（如 ID 中的冒号）。
 // 卡片内容里的 ID 保持不变，loadAll 从 JSON 恢复 ID，因此不影响按 ID 查找。
@@ -203,11 +218,10 @@ func cardFileName(cardID string) string {
 	return r.Replace(cardID) + ".json"
 }
 
-// saveLocked serializes the card to JSON and writes it atomically.
-// Caller must hold m.mu.
-func (m *Manager) saveLocked(card *Card) error {
+// save serializes the card to JSON and writes it atomically.
+func (b *fileBackend) save(card *Card) error {
 	if card.FilePath == "" {
-		card.FilePath = filepath.Join(m.dir, cardFileName(card.ID))
+		card.FilePath = filepath.Join(b.dir, cardFileName(card.ID))
 	}
 	data, err := json.MarshalIndent(card, "", "  ")
 	if err != nil {
@@ -226,17 +240,26 @@ func (m *Manager) saveLocked(card *Card) error {
 	return nil
 }
 
-// loadAll loads all character cards from the storage directory on startup.
-func (m *Manager) loadAll() error {
-	entries, err := os.ReadDir(m.dir)
-	if err != nil {
-		return nil // directory might not have any files yet
+// remove 删除卡片文件（best-effort）。
+func (b *fileBackend) remove(card *Card) error {
+	if card.FilePath != "" {
+		_ = os.Remove(card.FilePath)
 	}
+	return nil
+}
+
+// loadAll loads all character cards from the storage directory.
+func (b *fileBackend) loadAll() ([]*Card, error) {
+	entries, err := os.ReadDir(b.dir)
+	if err != nil {
+		return nil, nil // directory might not have any files yet
+	}
+	var out []*Card
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		path := filepath.Join(m.dir, entry.Name())
+		path := filepath.Join(b.dir, entry.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue // skip unreadable files
@@ -246,7 +269,19 @@ func (m *Manager) loadAll() error {
 			continue // skip invalid JSON
 		}
 		card.FilePath = path
-		m.cards[card.ID] = &card
+		out = append(out, &card)
+	}
+	return out, nil
+}
+
+// loadAll 从后端加载全部卡片到内存。
+func (m *Manager) loadAll() error {
+	cards, err := m.backend.loadAll()
+	if err != nil {
+		return err
+	}
+	for _, c := range cards {
+		m.cards[c.ID] = c
 	}
 	return nil
 }

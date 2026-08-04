@@ -352,18 +352,20 @@ func (e *Engine) InitFromScript(worldID string, scr *script.Script) (*WorldState
 	}
 
 	for _, ch := range scr.Characters {
-		state.Characters[ch.Name] = &CharacterState{
-			ID:            ch.ID,
-			Name:          ch.Name,
-			Kind:          "npc",
-			Role:          ch.Role,
-			Alive:         true,
-			Disposition:   "neutral",
-			Motivation:    ch.Motivation,
-			Secrets:       ch.Secrets,
-			DialogueStyle: ch.DialogueStyle,
-			KeyDialogue:   ch.KeyDialogue,
-			Notes:         ch.Notes,
+		state.Characters[ch.Name] = CharacterFromScript(ch)
+	}
+
+	// 模组素材派生（设计 §11.2）：时间轴→主线、场景→地点、关键组织→势力，
+	// 创建 trpg 世界即开箱完整，无需再手动搬运。
+	state.Storyline = StorylineFromScript(scr)
+	for _, loc := range LocationsFromScript(scr) {
+		if _, exists := state.Locations[loc.Name]; !exists {
+			state.Locations[loc.Name] = loc
+		}
+	}
+	for _, fac := range FactionsFromScript(scr) {
+		if _, exists := state.Factions[fac.Name]; !exists {
+			state.Factions[fac.Name] = fac
 		}
 	}
 
@@ -371,8 +373,8 @@ func (e *Engine) InitFromScript(worldID string, scr *script.Script) (*WorldState
 		return nil, fmt.Errorf("保存初始 WorldState 失败: %w", err)
 	}
 
-	log.Printf("[World] 初始化 WorldState: world=%s, script=%s, scene=%s, npcs=%d, lore=%d",
-		worldID, scr.Name, state.Scene.NodeName, len(state.Characters), len(state.Lore))
+	log.Printf("[World] 初始化 WorldState: world=%s, script=%s, scene=%s, npcs=%d, lore=%d, locations=%d, factions=%d",
+		worldID, scr.Name, state.Scene.NodeName, len(state.Characters), len(state.Lore), len(state.Locations), len(state.Factions))
 	return state, nil
 }
 
@@ -408,12 +410,7 @@ func (e *Engine) RefreshScene(worldID string, scr *script.Script, nodeID string)
 	// 补充新 NPC
 	for _, ch := range scr.Characters {
 		if _, exists := state.Characters[ch.Name]; !exists {
-			state.Characters[ch.Name] = &CharacterState{
-				ID: ch.ID, Name: ch.Name, Kind: "npc", Role: ch.Role,
-				Alive: true, Disposition: "neutral",
-				Motivation: ch.Motivation, Secrets: ch.Secrets,
-				DialogueStyle: ch.DialogueStyle, KeyDialogue: ch.KeyDialogue, Notes: ch.Notes,
-			}
+			state.Characters[ch.Name] = CharacterFromScript(ch)
 		}
 	}
 

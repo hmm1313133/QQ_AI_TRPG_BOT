@@ -24,9 +24,10 @@
         <el-table-column prop="system" label="规则" />
         <el-table-column prop="nodes" label="节点" width="80" />
         <el-table-column prop="characters" label="角色" width="80" />
-        <el-table-column label="操作" width="160">
+        <el-table-column label="操作" width="260">
           <template #default="{ row }">
             <el-button size="small" @click="openEdit(row.id)">编辑</el-button>
+            <el-button size="small" plain @click="collectAssets(row)">收藏到素材库</el-button>
             <el-button type="danger" plain size="small" @click="remove(row.id)">删除</el-button>
           </template>
         </el-table-column>
@@ -40,7 +41,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { adminApi, getAdminToken } from '../../api/admin'
+import { adminApi, getAdminToken, scriptApi } from '../../api/admin'
 import ScriptEditor from '../../components/ScriptEditor.vue'
 
 const scripts = ref([])
@@ -76,6 +77,29 @@ async function remove(id) {
   })
   ElMessage.success('已删除')
   loadScripts()
+}
+
+async function collectAssets(row) {
+  try {
+    await ElMessageBox.confirm(
+      `将把剧本「${row.name}」的背景、角色、场景、组织与主线派生素材写入素材库并打上标签，重复操作会自动跳过已入库素材。确定继续？`,
+      '收藏到素材库',
+      { type: 'info', confirmButtonText: '收藏', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    const res = await scriptApi.collectAssets(row.id)
+    const errs = res?.errors || []
+    if (errs.length) {
+      ElMessage.warning(`已入库 ${res?.created || 0} 条，跳过 ${res?.skipped || 0} 条，失败 ${errs.length} 条：${errs.join('；')}`)
+    } else {
+      ElMessage.success(`已入库 ${res?.created || 0} 条，跳过 ${res?.skipped || 0} 条`)
+    }
+  } catch (e) {
+    ElMessage.error('收藏失败：' + e.message)
+  }
 }
 
 async function upload() {

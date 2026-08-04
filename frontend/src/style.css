@@ -42,3 +42,12 @@ body {
 .card-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
 .page-title { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
 .page-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 22px; }
+
+/* el-tag 超长文本省略号截断，避免撑破表格/表单布局（悬停 title 查看全文） */
+.el-tag { max-width: 240px; }
+.el-tag .el-tag__content {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

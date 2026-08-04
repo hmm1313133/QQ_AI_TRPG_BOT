@@ -18,7 +18,7 @@ func TestBuildNarratorMessage_LegacyWorldEquivalence(t *testing.T) {
 	world.MigrateLegacyBackground(ws)
 
 	lore := world.Resolve(ws, "玩家四下张望", world.DefaultLoreBudget, false)
-	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, &lore, nil, "", "", "我四处看看")
+	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, &lore, nil, "", "", "", "我四处看看")
 
 	if !strings.Contains(msg, ws.Background) {
 		t.Fatal("迁移后背景全文应经 lore front 分区注入")
@@ -45,7 +45,7 @@ func TestBuildNarratorMessage_LoreFrontTailPosition(t *testing.T) {
 			Position: "tail", Priority: 60, Enabled: true, Content: "始终保持冷峻语气", Source: "manual"},
 	}
 	lore := world.Resolve(ws, "玩家踏入北境", world.DefaultLoreBudget, false)
-	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, &lore, nil, "", "", "我走进城门")
+	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, &lore, nil, "", "", "", "我走进城门")
 
 	iFront := strings.Index(msg, "北境常年积雪")
 	iState := strings.Index(msg, "【当前游戏运行态摘要】")

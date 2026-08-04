@@ -3,6 +3,7 @@ package agent
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
@@ -74,6 +75,51 @@ func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) stri
 		sb.WriteString(fmt.Sprintf("KP备注: %s\n", state.Scene.KPNotes))
 	}
 
+	// 同名地点的结构化字段补充（设计 §5：氛围/危险度/兴趣点，场景自带值优先）
+	if loc, ok := state.Locations[state.Scene.NodeName]; ok && loc != nil {
+		if loc.Atmosphere != "" && state.Scene.Atmosphere == "" {
+			sb.WriteString(fmt.Sprintf("地点氛围: %s\n", loc.Atmosphere))
+		}
+		if loc.Danger != "" && state.Scene.DangerLevel == "" {
+			sb.WriteString(fmt.Sprintf("地点危险度: %s\n", loc.Danger))
+		}
+		if len(loc.Points) > 0 {
+			sb.WriteString(fmt.Sprintf("兴趣点: %s\n", strings.Join(loc.Points, "、")))
+		}
+	}
+
+	// 导演主线（simrpg/roleplay 恒定注入当前幕，相当于 trpg 的节点指引；设计 §3.4/§5）
+	if sl := state.Storyline; sl != nil && sl.Title != "" {
+		sb.WriteString(fmt.Sprintf("\n【主线剧情】%s\n", sl.Title))
+		if sl.Premise != "" {
+			sb.WriteString(fmt.Sprintf("主线前提: %s\n", sl.Premise))
+		}
+		var active, next *world.StoryAct
+		for i := range sl.Acts {
+			a := &sl.Acts[i]
+			switch a.Status {
+			case "active":
+				if active == nil {
+					active = a
+				}
+			case "pending":
+				if next == nil {
+					next = a
+				}
+			}
+		}
+		if active != nil {
+			if active.Summary != "" {
+				sb.WriteString(fmt.Sprintf("当前幕: %s — %s\n", active.Title, active.Summary))
+			} else {
+				sb.WriteString(fmt.Sprintf("当前幕: %s\n", active.Title))
+			}
+		}
+		if next != nil {
+			sb.WriteString(fmt.Sprintf("下一幕: %s\n", next.Title))
+		}
+	}
+
 	// NPC 状态（在场 + lore 命中角色条目；含情绪与性格特质，供拟人化扮演）
 	present := make(map[string]bool)
 	for _, n := range world.PresentNPCNames(state) {
@@ -82,7 +128,8 @@ func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) stri
 	loreChars := loreHitCharacterNames(state, lore)
 	if len(state.Characters) > 0 {
 		var npcBlock strings.Builder
-		for name, npc := range state.Characters {
+		for _, name := range sortedKeys(state.Characters) {
+			npc := state.Characters[name]
 			if !present[name] && !loreChars[name] {
 				continue
 			}
@@ -101,10 +148,51 @@ func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) stri
 				npcBlock.WriteString(moodDesc + "]")
 			}
 			npcBlock.WriteString("\n")
+			// 创作字段（设计 §5）：截断防膨胀，完整长文经 lore 条目按需召回
+			if npc.Appearance != "" {
+				npcBlock.WriteString(fmt.Sprintf("    外貌: %s\n", truncateRunes(npc.Appearance, 80)))
+			}
+			if npc.Personality != "" {
+				npcBlock.WriteString(fmt.Sprintf("    性格: %s\n", truncateRunes(npc.Personality, 80)))
+			}
+			if len(npc.Skills) > 0 {
+				npcBlock.WriteString(fmt.Sprintf("    能力: %s\n", strings.Join(npc.Skills, "、")))
+			}
+			if npc.Backstory != "" {
+				npcBlock.WriteString(fmt.Sprintf("    背景: %s\n", truncateRunes(npc.Backstory, 120)))
+			}
 		}
 		if npcBlock.Len() > 0 {
 			sb.WriteString("\nNPC状态:\n")
 			sb.WriteString(npcBlock.String())
+		}
+	}
+
+	// 物品（设计 §5）：当前场景内 + 玩家持有的物品
+	if len(state.Items) > 0 {
+		var itemBlock strings.Builder
+		for _, name := range sortedKeys(state.Items) {
+			it := state.Items[name]
+			inScene := it.Location != "" && it.Location == state.Scene.NodeName
+			withPlayer := it.Owner == "玩家"
+			if !inScene && !withPlayer {
+				continue
+			}
+			itemBlock.WriteString(fmt.Sprintf("  - %s", it.Name))
+			if it.Type != "" {
+				itemBlock.WriteString(fmt.Sprintf("(%s)", it.Type))
+			}
+			if withPlayer {
+				itemBlock.WriteString(" [玩家持有]")
+			}
+			if it.Description != "" {
+				itemBlock.WriteString(fmt.Sprintf(": %s", truncateRunes(it.Description, 60)))
+			}
+			itemBlock.WriteString("\n")
+		}
+		if itemBlock.Len() > 0 {
+			sb.WriteString("\n物品:\n")
+			sb.WriteString(itemBlock.String())
 		}
 	}
 
@@ -159,7 +247,25 @@ func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) stri
 	return sb.String()
 }
 
-// loreHitCharacterNames 返回 lore 命中的角色类条目所指向的 NPC 名集合
+// sortedKeys 返回 map 键的排序副本（注入顺序确定，保前缀缓存稳定）。
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// truncateRunes 截断到 n 个字符（超出追加省略号）。
+func truncateRunes(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[:n]) + "…"
+}
+
 // （条目 Title/Keys 与 NPC 名双向子串匹配，≥2 字防误命中）。
 // 只统计实际注入的 front/tail 命中，Dropped 不算。
 func loreHitCharacterNames(state *world.WorldState, lore *world.LoreResult) map[string]bool {

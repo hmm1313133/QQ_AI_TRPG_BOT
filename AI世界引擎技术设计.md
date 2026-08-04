@@ -721,3 +721,13 @@ type GameMode struct {
 ### 遗留事项
 
 见项目根目录《待决策事项.md》（剩余 8 项：OpenViking 联调、便宜模型、模式入口 UX、主动推送、时间比例、上下文预算、归档摘要、Planner 新事件类型；后果传播已完成）。
+
+### P6 短期对话窗口（RecentTurns，2026-08-04）✅
+
+**问题**：Narrator 为无状态调用（防 token 爆炸的既定设计），但此前 AI 完全看不到近期逐字对话——"你刚才说的那个…"这类指代无解，叙事连续性受损。
+
+- `WorldState.RecentTurns`（`DialogueTurn{Round, Player, Narrator}`，环形保留最近 10 轮）：TurnEngine 每轮 bookkeep 时追加，随世界持久化（存档/读档语义天然一致；QQ 与 Web 渠道同走 TurnEngine，均受益）。
+- ContextBuilder 新增 `recent_turns` 可选分区（priority 5，场景计划之后、玩家消息之前——变动最频繁的内容靠后，保住前缀缓存）。
+- **三层记忆分工**（不变更远期机制）：近期逐字 = RecentTurns 窗口；中期事实 = MemoryService（框架 extractor 每轮异步抽取）；远期剧情 = CampaignSummary（时间轴推进时滚动更新）。lore 扫描文本的关键词来源改用 RecentDecisions 之外的窗口不需要——窗口与决策记录互补。
+- 未采用框架 session.Service 做上下文：Narrator 无状态是防 token 爆炸的根因设计，重新启用累积会话会回退该修复。
+- 测试：`dialogue_window_test.go`（环形容量、块格式、预算裁剪保护）。

@@ -15,8 +15,8 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
-// DefaultContextBudget 默认上下文预算（字符数，约 4000 tokens）。
-const DefaultContextBudget = 6000
+// DefaultContextBudget 默认上下文预算（字符数，约 30000 tokens，按 1 token ≈ 1.5 字符）。
+const DefaultContextBudget = 45000
 
 // contextSection 一个待装配的上下文分区。
 type contextSection struct {
@@ -41,26 +41,47 @@ func NewContextBuilder(budget int) *ContextBuilder {
 
 // BuildNarratorMessage 组装 Narrator 的每轮用户消息。
 //
-// 分区优先级（必需分区始终保留，可选分区超预算时从低到高裁剪）：
-//   1. 玩家消息（必需）
-//   2. 游戏运行态摘要 + 锁定事实（必需）
-//   3. 规则叙事指导（必需）
-//   4. 场景计划 ScenePlan（可选）
-//   5. 游戏上下文：角色卡/骰点/规则集（可选）
-//   6. 记忆检索块（可选，P3 接入）
+// 分区按"相对稳定 → 每轮剧变"排序（Narrator 为无状态调用，请求 = 系统提示词
+// + 单条用户消息；厂商前缀缓存按请求前缀命中，稳定分区靠前可让连续回合的
+// 用户消息共享前缀缓存块，降低成本）：
+//   1. 规则叙事指导（必需；整局不变）
+//   2. 游戏上下文：规则集/角色卡（基本稳定，尾部骰点等小幅波动）
+//   3. lore front 世界观区（恒定条目稳定，关键词命中随回合变化）
+//   4. 记忆检索块（随回合检索结果变化）
+//   5. 游戏运行态摘要 + 锁定事实（必需；每轮都变）
+//   6. 场景计划 ScenePlan（按计划间隔刷新）
+//   7. 近期对话窗口（每轮追加一轮，短记忆）
+//   8. 玩家消息（必需；每轮必变，最靠后）
+//   9. lore tail 风格指令区（Author's Note 位置，玩家消息之后）
 //
-// lore 分区（《世界设定库与按需加载设计.md》§4.3）：front 条目放状态摘要之前
-// （世界观区），tail 条目放玩家消息之后（风格指令区，对应 Author's Note 位置）。
-// lore 已经 LoreResolver 按 lore_budget 裁剪，此处作为高优先级可选分区接入。
+// 裁剪优先级与位置对齐：超预算时优先裁尾部可选分区，保住稳定前缀。
+// lore 已经 LoreResolver 按 lore_budget 裁剪，此处作为可选分区接入。
 func (b *ContextBuilder) BuildNarratorMessage(
 	state *world.WorldState,
 	lore *world.LoreResult,
 	guidance *RuleGuidance,
 	gameContext string,
 	memoryBlock string,
+	dialogueBlock string,
 	playerMessage string,
 ) string {
 	var sections []contextSection
+
+	// 必需：规则指导（整局稳定，放最前）
+	if guidance != nil {
+		sections = append(sections, contextSection{
+			priority: 1, name: "guidance",
+			content: guidance.String(), required: true,
+		})
+	}
+
+	// 可选：游戏上下文（角色卡/规则集，基本稳定）
+	if gameContext != "" {
+		sections = append(sections, contextSection{
+			priority: 3, name: "game_context",
+			content: gameContext,
+		})
+	}
 
 	// 可选：lore front（世界观区，状态摘要之前）
 	if lore != nil && len(lore.Front) > 0 {
@@ -70,47 +91,39 @@ func (b *ContextBuilder) BuildNarratorMessage(
 		})
 	}
 
-	// 必需：运行态摘要（含锁定事实）
-	if state != nil {
+	// 可选：记忆检索块
+	if memoryBlock != "" {
 		sections = append(sections, contextSection{
-			priority: 2, name: "state_summary",
-			content: buildGameStateSummary(state, lore), required: true,
+			priority: 4, name: "memory",
+			content: memoryBlock,
 		})
 	}
 
-	// 必需：规则指导
-	if guidance != nil {
+	// 必需：运行态摘要（含锁定事实，每轮变化）
+	if state != nil {
 		sections = append(sections, contextSection{
-			priority: 3, name: "guidance",
-			content: guidance.String(), required: true,
+			priority: 1, name: "state_summary",
+			content: buildGameStateSummary(state, lore), required: true,
 		})
 	}
 
 	// 可选：场景计划
 	if state != nil && state.ScenePlan != "" {
 		sections = append(sections, contextSection{
-			priority: 4, name: "scene_plan",
+			priority: 5, name: "scene_plan",
 			content: "【场景计划】\n" + state.ScenePlan + "\n",
 		})
 	}
 
-	// 可选：游戏上下文
-	if gameContext != "" {
+	// 可选：近期对话窗口（短记忆，承接上文；每轮追加，靠后放置）
+	if dialogueBlock != "" {
 		sections = append(sections, contextSection{
-			priority: 5, name: "game_context",
-			content: gameContext,
+			priority: 5, name: "recent_turns",
+			content: dialogueBlock,
 		})
 	}
 
-	// 可选：记忆检索块（P3）
-	if memoryBlock != "" {
-		sections = append(sections, contextSection{
-			priority: 6, name: "memory",
-			content: memoryBlock,
-		})
-	}
-
-	// 必需：玩家消息
+	// 必需：玩家消息（每轮必变，放最后）
 	sections = append(sections, contextSection{
 		priority: 1, name: "player",
 		content: "\n玩家: " + playerMessage, required: true,
@@ -119,7 +132,7 @@ func (b *ContextBuilder) BuildNarratorMessage(
 	// 可选：lore tail（风格指令区，玩家消息之后，Author's Note 位置）
 	if lore != nil && len(lore.Tail) > 0 {
 		sections = append(sections, contextSection{
-			priority: 2, name: "lore_tail",
+			priority: 6, name: "lore_tail",
 			content: formatLoreHits("【补充设定】", lore.Tail),
 		})
 	}

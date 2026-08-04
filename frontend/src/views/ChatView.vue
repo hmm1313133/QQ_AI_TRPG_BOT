@@ -85,6 +85,18 @@
           </div>
         </div>
         <div class="side-block">
+          <div class="side-title">回复长度</div>
+          <div class="mode-list">
+            <div
+              v-for="l in lengths"
+              :key="l.key"
+              class="mode-item"
+              :class="{ active: currentLength === l.key }"
+              @click="switchLength(l.key)"
+            >{{ l.label }}</div>
+          </div>
+        </div>
+        <div class="side-block">
           <div class="side-title">快捷指令</div>
           <div class="quick-cmds">
             <span v-for="c in quickCmds" :key="c" class="qcmd" @click="sendQuick(c)">{{ c }}</span>
@@ -116,11 +128,17 @@ const connText = ref('连接中…')
 const inputText = ref('')
 const showCmdHint = ref(false)
 const currentMode = ref('')
+const currentLength = ref('standard')
 
 const modes = [
   { key: 'normal', label: '普通模式' },
   { key: 'trpg', label: '跑团模式' },
   { key: 'freechat', label: '自由聊天' },
+]
+const lengths = [
+  { key: 'short', label: '简短（≤150字）' },
+  { key: 'standard', label: '标准（~300字）' },
+  { key: 'detailed', label: '详细（~600字）' },
 ]
 const quickCmds = ['.help', '.script list', '.progress', '.timeline', '.r 1d100', '.log start', '.log end']
 
@@ -234,6 +252,13 @@ function onInput() {
 function switchMode(mode) {
   currentMode.value = mode
   inputText.value = '.mode ' + mode
+  send()
+}
+
+// 回复长度复用指令链路（.length xxx），无需新 API
+function switchLength(key) {
+  currentLength.value = key
+  inputText.value = '.length ' + key
   send()
 }
 
@@ -356,6 +381,12 @@ async function restoreSave(row) {
     const r = await playerSaveReq(`/api/saves/${row.id}/restore`, { token: t, auth: chatAuth, method: 'POST' })
     ElMessage.success(r?.message || '已恢复')
     savesVisible.value = false
+    // 重新加载历史：存档带对话快照时服务端已回放，聊天窗口显示存档时刻的记录
+    try {
+      await loadHistory()
+    } catch (err) {
+      console.warn('恢复后加载历史失败:', err)
+    }
     addMsg('system', `📦 ${r?.message || '已恢复存档'}`)
   } catch (e) {
     ElMessage.error('恢复失败：' + e.message)

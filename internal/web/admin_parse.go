@@ -29,7 +29,8 @@ type assetParseTextReq struct {
 }
 
 // handleAssetParse 解析文本/文件为素材草稿（不落库，前端确认后走 batch 入库）。
-// 支持：multipart 文件（.png/.json 先走 SillyTavern 卡程序化解析，失败降级 LLM；
+// 支持：multipart 文件（.png/.json 先走 SillyTavern 卡程序化解码；
+// 解码成功且有 LLM 时走 ParseCard 混合解析（LLM 整理回写字段），否则纯程序化直映；
 // .txt/.md 直接走 LLM）或 JSON {"text": "..."}（直接 LLM）。
 func (a *adminAPI) handleAssetParse(w http.ResponseWriter, r *http.Request) {
 	var filename string
@@ -62,30 +63,22 @@ func (a *adminAPI) handleAssetParse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1) 程序化路径：SillyTavern 角色卡（PNG 内嵌 / JSON）
+	// 1) 角色卡路径：SillyTavern 角色卡（PNG 内嵌 / JSON）程序化解码，
+	//    有 LLM 时走混合解析整理内容，否则纯程序化直映
 	lower := strings.ToLower(filename)
 	if strings.HasSuffix(lower, ".png") || hasPNGSignature(data) {
-		res, err := assetparse.ParseCardPNG(data)
-		if err != nil {
-			http.Error(w, "解析 PNG 角色卡失败: "+err.Error(), http.StatusBadRequest)
+		card := assetparse.DecodeCardPNG(data)
+		if card == nil {
+			http.Error(w, "该 PNG 中未找到角色卡数据（需要含 chara/ccv3 文本块的 SillyTavern 角色卡）", http.StatusBadRequest)
 			return
 		}
-		if res != nil {
-			writeJSON(w, res)
-			return
-		}
-		http.Error(w, "该 PNG 中未找到角色卡数据（需要含 chara/ccv3 文本块的 SillyTavern 角色卡）", http.StatusBadRequest)
+		a.writeCardDrafts(w, r, card)
 		return
 	}
 	trimmed := strings.TrimSpace(string(data))
 	if strings.HasSuffix(lower, ".json") || strings.HasPrefix(trimmed, "{") {
-		res, err := assetparse.ParseCardJSON(data)
-		if err != nil {
-			http.Error(w, "解析 JSON 角色卡失败: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if res != nil {
-			writeJSON(w, res)
+		if card := assetparse.DecodeCardJSON(data); card != nil {
+			a.writeCardDrafts(w, r, card)
 			return
 		}
 		// 不是角色卡 JSON：有 LLM 则按自由文本降级，否则报无法识别
@@ -103,6 +96,21 @@ func (a *adminAPI) handleAssetParse(w http.ResponseWriter, r *http.Request) {
 	res, err := a.deps.AssetParser.ParseText(r.Context(), string(data))
 	if err != nil {
 		http.Error(w, "LLM 解析失败: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, res)
+}
+
+// writeCardDrafts 输出角色卡草稿：有 LLM 时走混合解析（LLM 整理回写字段），
+// 否则纯程序化直映。
+func (a *adminAPI) writeCardDrafts(w http.ResponseWriter, r *http.Request, card *assetparse.CharaCardData) {
+	if a.deps.AssetParser == nil {
+		writeJSON(w, assetparse.CardToDrafts(card))
+		return
+	}
+	res, err := a.deps.AssetParser.ParseCard(r.Context(), card)
+	if err != nil {
+		http.Error(w, "角色卡解析失败: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, res)

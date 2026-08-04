@@ -75,8 +75,9 @@ func (r *loreUpsertReq) applyTo(e *world.LoreEntry, isCreate bool) {
 }
 
 // newLoreID 生成世界内唯一的条目 ID（lor_ 前缀）。
+// 追加进程内原子序号：Windows 下 UnixNano 粒度粗，批量创建时会重复。
 func newLoreID() string {
-	return fmt.Sprintf("lor_%d", time.Now().UnixNano())
+	return fmt.Sprintf("lor_%d_%d", time.Now().UnixNano(), idSeq.Add(1))
 }
 
 // saveWithAuditNote 保存世界并追加一条 note 审计事件（GM 修正留痕，设计文档 §4.4）。
@@ -421,7 +422,7 @@ func firstRunes(s string, n int) string {
 var sectionParts = map[string]bool{
 	"scene": true, "characters": true, "locations": true,
 	"factions": true, "quests": true, "hidden": true, "metrics": true,
-	"items": true, "storyline": true,
+	"items": true, "storyline": true, "style": true,
 }
 
 // handleSectionGet 按需返回指定分区 JSON。
@@ -450,6 +451,8 @@ func (a *adminAPI) handleSectionGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, ws.Items)
 	case "storyline":
 		writeJSON(w, ws.Storyline)
+	case "style":
+		writeJSON(w, ws.ReplyStyle)
 	default:
 		http.Error(w, "未知分区: "+part, http.StatusBadRequest)
 	}
@@ -579,6 +582,12 @@ func applySection(ws *world.WorldState, part string, data json.RawMessage) error
 			}
 		}
 		ws.Storyline = &v
+	case "style":
+		var v string
+		if err := json.Unmarshal(data, &v); err != nil {
+			return fmt.Errorf("style 数据格式错误: %w", err)
+		}
+		ws.ReplyStyle = strings.TrimSpace(v)
 	}
 	return nil
 }

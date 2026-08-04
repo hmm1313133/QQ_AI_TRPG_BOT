@@ -77,7 +77,14 @@ func (s *Server) handleChatSaveCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ws := s.adminDeps.WorldEngine.LoadOrNil(worldID)
-	info, err := repo.CreateSave(ws, req.Name, req.Note, false)
+	// 快照当前会话对话历史随档存入（恢复时回放；存储未配置则不带）
+	var historyJSON []byte
+	if s.history != nil {
+		if msgs, err := s.history.List(worldID, chatHistoryKeep); err == nil && len(msgs) > 0 {
+			historyJSON, _ = json.Marshal(msgs)
+		}
+	}
+	info, err := repo.CreateSaveWithHistory(ws, req.Name, req.Note, false, historyJSON)
 	if err != nil {
 		http.Error(w, "保存失败: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -86,7 +93,7 @@ func (s *Server) handleChatSaveCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleChatSaveRestore(w http.ResponseWriter, r *http.Request) {
-	worldID, repo, ok := s.chatSaveContext(w, r)
+	worldID, _, ok := s.chatSaveContext(w, r)
 	if !ok {
 		return
 	}
@@ -95,10 +102,24 @@ func (s *Server) handleChatSaveRestore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "存档 ID 无效", http.StatusBadRequest)
 		return
 	}
-	info, err := restoreWorldSave(s.adminDeps.WorldEngine, repo, worldID, saveID, "player")
+	info, history, err := restoreWorldSave(s.adminDeps.WorldEngine, worldID, saveID, "player")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// 存档带对话历史快照时同步回放（QQ 创建的档为 NULL 跳过）
+	replaySaveHistory(s.history, worldID, history)
 	writeJSON(w, map[string]string{"message": fmt.Sprintf("已恢复到存档「%s」（轮次 %d）", info.Name, info.RoundCount)})
+}
+
+// replaySaveHistory 用存档快照整体覆盖会话聊天记录（无快照或存储不可用时静默跳过）。
+func replaySaveHistory(h ChatLogger, sessionID string, data []byte) {
+	if h == nil || len(data) == 0 {
+		return
+	}
+	var msgs []ChatMessage
+	if err := json.Unmarshal(data, &msgs); err != nil || len(msgs) == 0 {
+		return
+	}
+	_ = h.Replace(sessionID, msgs) // 回放失败不影响恢复主流程
 }

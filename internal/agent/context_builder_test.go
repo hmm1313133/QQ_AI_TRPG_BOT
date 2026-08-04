@@ -18,7 +18,7 @@ func TestBuildNarratorMessage_LegacyWorldEquivalence(t *testing.T) {
 	world.MigrateLegacyBackground(ws)
 
 	lore := world.Resolve(ws, "玩家四下张望", world.DefaultLoreBudget, false)
-	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, &lore, nil, "", "", "", "我四处看看")
+	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, &lore, nil, "", "", "", "我四处看看", "")
 
 	if !strings.Contains(msg, ws.Background) {
 		t.Fatal("迁移后背景全文应经 lore front 分区注入")
@@ -45,7 +45,7 @@ func TestBuildNarratorMessage_LoreFrontTailPosition(t *testing.T) {
 			Position: "tail", Priority: 60, Enabled: true, Content: "始终保持冷峻语气", Source: "manual"},
 	}
 	lore := world.Resolve(ws, "玩家踏入北境", world.DefaultLoreBudget, false)
-	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, &lore, nil, "", "", "", "我走进城门")
+	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, &lore, nil, "", "", "", "我走进城门", "")
 
 	iFront := strings.Index(msg, "北境常年积雪")
 	iState := strings.Index(msg, "【当前游戏运行态摘要】")
@@ -83,5 +83,52 @@ func TestBuildGameStateSummary_NPCOnDemand(t *testing.T) {
 	msg2 := buildGameStateSummary(ws, lore)
 	if !strings.Contains(msg2, "远方者") {
 		t.Fatalf("lore 命中的角色条目对应 NPC 应注入:\n%s", msg2)
+	}
+}
+
+// 回复风格分区：ReplyStyle 非空时注入且位于玩家消息之后；空值不注入。
+func TestBuildNarratorMessage_ReplyStyleInjection(t *testing.T) {
+	ws := world.NewWorldState("w", world.ModeSimRPG)
+	ws.ReplyStyle = "冷峻克苏鲁风，重对话少环境铺陈"
+	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, nil, nil, "", "", "", "我推开门", "")
+
+	if !strings.Contains(msg, "【回复风格要求】") || !strings.Contains(msg, ws.ReplyStyle) {
+		t.Fatalf("应注入回复风格分区:\n%s", msg)
+	}
+	if strings.Index(msg, ws.ReplyStyle) < strings.Index(msg, "玩家: 我推开门") {
+		t.Fatal("回复风格应位于玩家消息之后（Author's Note 位置）")
+	}
+
+	// 空值不注入
+	ws.ReplyStyle = ""
+	msg2 := NewContextBuilder(6000).BuildNarratorMessage(ws, nil, nil, "", "", "", "我推开门", "")
+	if strings.Contains(msg2, "【回复风格要求】") {
+		t.Fatal("ReplyStyle 为空时不应注入回复风格分区")
+	}
+}
+
+// 回复长度 hint：注入且必需（超预算也不裁剪）。
+func TestBuildNarratorMessage_LengthHint(t *testing.T) {
+	ws := world.NewWorldState("w", world.ModeSimRPG)
+	hint := LengthHint(ReplyLengthShort)
+	if hint == "" {
+		t.Fatal("short 档位应有注入文本")
+	}
+
+	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, nil, nil, "", "", "", "我推开门", hint)
+	if !strings.Contains(msg, hint) {
+		t.Fatalf("应注入长度 hint:\n%s", msg)
+	}
+	if strings.Index(msg, hint) < strings.Index(msg, "玩家: 我推开门") {
+		t.Fatal("长度 hint 应位于玩家消息之后")
+	}
+
+	// 必需分区豁免裁剪：预算为 1 时可选分区全裁，hint 仍保留
+	tiny := NewContextBuilder(1).BuildNarratorMessage(ws, nil, nil, "可选上下文", "", "", "我推开门", hint)
+	if !strings.Contains(tiny, hint) {
+		t.Fatal("长度 hint 为必需分区，超预算也不应被裁剪")
+	}
+	if strings.Contains(tiny, "可选上下文") {
+		t.Fatal("超预算时可选分区应被裁剪")
 	}
 }

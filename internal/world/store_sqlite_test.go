@@ -95,12 +95,15 @@ func TestSQLiteRepository_Saves(t *testing.T) {
 	// 推进后恢复
 	ws.RoundCount = 10
 	_ = repo.Save(ws)
-	_, snap, err := repo.LoadSave(info.ID)
+	_, snap, hist, err := repo.LoadSave(info.ID)
 	if err != nil {
 		t.Fatalf("LoadSave: %v", err)
 	}
 	if snap.RoundCount != 3 {
 		t.Fatalf("快照应为 RoundCount=3，实际 %d", snap.RoundCount)
+	}
+	if hist != nil {
+		t.Fatalf("CreateSave 不带历史，LoadSave 应返回 nil，实际 %q", hist)
 	}
 
 	listed, err := repo.ListSaves("w2")
@@ -130,6 +133,68 @@ func TestSQLiteRepository_Saves(t *testing.T) {
 	}
 	if err := repo.DeleteSave(info.ID); err == nil {
 		t.Fatal("重复删除应报错")
+	}
+}
+
+// 存档带对话历史快照的写入/读取 roundtrip。
+func TestSQLiteRepository_SaveHistoryRoundtrip(t *testing.T) {
+	repo := newTestSQLiteRepo(t)
+	ws := NewWorldState("w3", ModeSimRPG)
+	if err := repo.Save(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	history := []byte(`[{"id":1,"type":"user","text":"我四处看看","created_at":"2026-08-04 12:00:00"}]`)
+	info, err := repo.CreateSaveWithHistory(ws, "带历史的档", "", false, history)
+	if err != nil {
+		t.Fatalf("CreateSaveWithHistory: %v", err)
+	}
+	_, _, got, err := repo.LoadSave(info.ID)
+	if err != nil {
+		t.Fatalf("LoadSave: %v", err)
+	}
+	if string(got) != string(history) {
+		t.Fatalf("历史快照 roundtrip 不一致: %q", got)
+	}
+}
+
+// 旧库 saves 表无 history_json 列时，NewSQLiteRepository 应自动补列。
+func TestNewSQLiteRepository_MigrateHistoryColumn(t *testing.T) {
+	db, err := OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	// 模拟旧版表结构（无 history_json）
+	if _, err := db.Exec(`CREATE TABLE saves (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		world_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		note TEXT,
+		mode TEXT,
+		round_count INTEGER,
+		auto INTEGER DEFAULT 0,
+		created_at TEXT,
+		state_json TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+
+	repo, err := NewSQLiteRepository(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteRepository 应自动迁移: %v", err)
+	}
+	ws := NewWorldState("w4", ModeSimRPG)
+	if err := repo.Save(ws); err != nil {
+		t.Fatal(err)
+	}
+	info, err := repo.CreateSaveWithHistory(ws, "迁移后的档", "", false, []byte(`[]`))
+	if err != nil {
+		t.Fatalf("迁移后 CreateSaveWithHistory: %v", err)
+	}
+	if _, _, got, err := repo.LoadSave(info.ID); err != nil || string(got) != `[]` {
+		t.Fatalf("迁移后 LoadSave: %q %v", got, err)
 	}
 }
 

@@ -27,6 +27,9 @@ type WorldState struct {
 	Background string `json:"background"`
 	// CampaignSummary 是滚动更新的战役摘要（不再覆盖 Background）。
 	CampaignSummary string `json:"campaign_summary,omitempty"`
+	// ReplyStyle 是本世界的回复风格指令（自由文本，如"冷峻克苏鲁风，重对话少环境铺陈"），
+	// 非空时每轮经 ContextBuilder 注入 Narrator（Author's Note 位置）。
+	ReplyStyle string `json:"reply_style,omitempty"`
 
 	// Lore 世界设定库（Lorebook 条目，设计文档《世界设定库与按需加载设计.md》§4.1）。
 	// 内嵌进 WorldState：条目与世界强绑定，沿用每世界单 JSON 文件存储。

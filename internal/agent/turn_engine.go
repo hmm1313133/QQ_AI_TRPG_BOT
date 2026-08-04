@@ -108,7 +108,8 @@ func (t *TurnEngine) Run(
 	if state == nil {
 		// 无世界状态（自由模式）-> 直接叙事
 		gameContext := t.narrator.buildGameContext(sessionID, userID)
-		userMessage := t.ctxBuilder.BuildNarratorMessage(nil, nil, nil, gameContext, "", "", playerMessage)
+		userMessage := t.ctxBuilder.BuildNarratorMessage(nil, nil, nil, gameContext, "", "", playerMessage,
+			LengthHintFromSession(session))
 		return t.narrator.NarrateMessage(ctx.Ctx, userMessage, sessionID, userID)
 	}
 	eventLogBase := len(state.EventLog) // 本回合开始前的事件数，供 AfterTurn 取增量
@@ -157,7 +158,8 @@ func (t *TurnEngine) Run(
 		memoryBlock += t.memory.BuildMemoryBlock(state, playerMessage)
 	}
 	dialogueBlock := buildDialogueBlock(state)
-	userMessage := t.ctxBuilder.BuildNarratorMessage(state, &lore, guidance, gameContext, memoryBlock, dialogueBlock, playerMessage)
+	userMessage := t.ctxBuilder.BuildNarratorMessage(state, &lore, guidance, gameContext, memoryBlock, dialogueBlock, playerMessage,
+		LengthHintFromSession(session))
 	log.Printf("[TurnEngine] 上下文包: %d 字符（预算 %d）", len(userMessage), t.ctxBuilder.Budget)
 
 	// 6. Narrator 无状态调用

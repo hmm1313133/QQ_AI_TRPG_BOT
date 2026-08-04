@@ -197,7 +197,7 @@ export QQ_BOT_SECRET=your_client_secret
 
 # LLM 配置（默认 DeepSeek）
 export LLM_PROVIDER=deepseek
-export LLM_MODEL=deepseek-chat
+export LLM_MODEL=deepseek-v4-flash
 export LLM_API_KEY=your_api_key
 export LLM_BASE_URL=https://api.deepseek.com
 

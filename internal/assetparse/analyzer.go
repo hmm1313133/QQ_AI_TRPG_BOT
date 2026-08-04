@@ -71,27 +71,33 @@ func NewParser(cfg *Config) (*Parser, error) {
 	}, nil
 }
 
+// extractedCharacter LLM 提取的单个角色（角色卡整理回写时按名字匹配）。
+type extractedCharacter struct {
+	Name        string   `json:"name"`
+	Summary     string   `json:"summary"`
+	Appearance  string   `json:"appearance"`
+	Personality string   `json:"personality"`
+	Backstory   string   `json:"backstory"`
+	Skills      []string `json:"skills"`
+	Tags        []string `json:"tags"`
+}
+
+// extractedWorldview LLM 提取的世界观。
+type extractedWorldview struct {
+	Name       string   `json:"name"`
+	Setting    string   `json:"setting"`
+	Era        string   `json:"era"`
+	Location   string   `json:"location"`
+	Atmosphere string   `json:"atmosphere"`
+	Tone       string   `json:"tone"`
+	Backstory  string   `json:"backstory"`
+	Themes     []string `json:"themes"`
+}
+
 // extractionOutput LLM 提取输出的 JSON 结构。
 type extractionOutput struct {
-	Characters []struct {
-		Name        string   `json:"name"`
-		Summary     string   `json:"summary"`
-		Appearance  string   `json:"appearance"`
-		Personality string   `json:"personality"`
-		Backstory   string   `json:"backstory"`
-		Skills      []string `json:"skills"`
-		Tags        []string `json:"tags"`
-	} `json:"characters"`
-	Worldview *struct {
-		Name       string   `json:"name"`
-		Setting    string   `json:"setting"`
-		Era        string   `json:"era"`
-		Location   string   `json:"location"`
-		Atmosphere string   `json:"atmosphere"`
-		Tone       string   `json:"tone"`
-		Backstory  string   `json:"backstory"`
-		Themes     []string `json:"themes"`
-	} `json:"worldview"`
+	Characters []extractedCharacter `json:"characters"`
+	Worldview  *extractedWorldview  `json:"worldview"`
 	Locations []struct {
 		Name        string   `json:"name"`
 		Description string   `json:"description"`
@@ -123,6 +129,21 @@ type extractionOutput struct {
 
 // ParseText 用 LLM 从自由文本中提取素材草稿。
 func (p *Parser) ParseText(ctx context.Context, text string) (*Result, error) {
+	out, err := p.parseStructured(ctx, text)
+	if err != nil {
+		return nil, err
+	}
+	res := &Result{Parser: "llm"}
+	res.Drafts = outputToDrafts(out)
+	if len(res.Drafts) == 0 {
+		return nil, fmt.Errorf("未能从文本中识别出任何素材")
+	}
+	return res, nil
+}
+
+// parseStructured 单次 LLM 调用，把自由文本提取为结构化结果（不转草稿）。
+// 角色卡混合解析（Parser.ParseCard）复用此入口。
+func (p *Parser) parseStructured(ctx context.Context, text string) (*extractionOutput, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, fmt.Errorf("文本为空")
 	}
@@ -165,13 +186,7 @@ func (p *Parser) ParseText(ctx context.Context, text string) (*Result, error) {
 	if err := json.Unmarshal([]byte(jsonStr), &out); err != nil {
 		return nil, fmt.Errorf("LLM 输出 JSON 解析失败: %w", err)
 	}
-
-	res := &Result{Parser: "llm"}
-	res.Drafts = outputToDrafts(&out)
-	if len(res.Drafts) == 0 {
-		return nil, fmt.Errorf("未能从文本中识别出任何素材")
-	}
-	return res, nil
+	return &out, nil
 }
 
 // outputToDrafts 把 LLM 提取结果转换为素材草稿（payload 用世界实体结构序列化）。

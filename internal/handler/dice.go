@@ -103,6 +103,10 @@ func (h *HelpHandler) Execute(ctx *core.MessageContext, reply core.ReplyFunc) er
   .set coc|dnd       切换规则集
   .set <面数>        设置默认骰子面数
   .mode <模式>       切换会话模式 (normal/trpg/freechat)
+  .length <档位>     回复长度 (short 简短/standard 标准/detailed 详细)
+  .save [名字]       创建游玩存档
+  .saves             列出当前世界存档
+  .restore <ID>      恢复存档（当前进度自动备份）
   .log <操作>        跑团日志 (start/end/show/export)
   .help              显示此帮助
 

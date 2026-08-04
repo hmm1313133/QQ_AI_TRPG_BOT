@@ -116,7 +116,7 @@ func main() {
 
 	// 8. Initialize script analyzer Agent
 	scriptAnalyzer, err := script.NewScriptAnalyzer(&script.AnalyzerConfig{
-		LLMModel:    getEnv("LLM_MODEL", "deepseek-chat"),
+		LLMModel:    getEnv("LLM_MODEL", "deepseek-v4-flash"),
 		LLMAPIKey:   os.Getenv("LLM_API_KEY"),
 		LLMBaseURL:  getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
 		MaxTokens:   16384,
@@ -128,7 +128,7 @@ func main() {
 
 	// 8b. Initialize asset parser（素材 LLM 解析器，与剧本识别同模型配置；设计 §11.4）
 	assetParser, err := assetparse.NewParser(&assetparse.Config{
-		LLMModel:    getEnv("LLM_MODEL", "deepseek-chat"),
+		LLMModel:    getEnv("LLM_MODEL", "deepseek-v4-flash"),
 		LLMAPIKey:   os.Getenv("LLM_API_KEY"),
 		LLMBaseURL:  getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
 		MaxTokens:   8192,
@@ -150,7 +150,7 @@ func main() {
 	// 11. Initialize AI Agent (trpc-agent-go + DeepSeek)
 	kpAgent, err := agent.NewKPAgent(&agent.Config{
 		LLMProvider:  getEnv("LLM_PROVIDER", "deepseek"),
-		LLMModel:     getEnv("LLM_MODEL", "deepseek-chat"),
+		LLMModel:     getEnv("LLM_MODEL", "deepseek-v4-flash"),
 		LLMAPIKey:    os.Getenv("LLM_API_KEY"),
 		LLMBaseURL:   getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
 		MaxTokens:    4096,
@@ -164,7 +164,7 @@ func main() {
 	// 11b. Initialize turn engine (规则指导 + 低频 Planner + Narrator)
 	metricsEvaluator := agent.NewMetricsEvaluator(svc)
 	director, err := agent.NewDirector(&agent.Config{
-		LLMModel:            getEnv("LLM_MODEL", "deepseek-chat"),
+		LLMModel:            getEnv("LLM_MODEL", "deepseek-v4-flash"),
 		LLMAPIKey:           os.Getenv("LLM_API_KEY"),
 		LLMBaseURL:          getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
 		DirectorTemperature: 0.2,
@@ -175,7 +175,7 @@ func main() {
 	}
 
 	narrator, err := agent.NewNarrator(&agent.Config{
-		LLMModel:            getEnv("LLM_MODEL", "deepseek-chat"),
+		LLMModel:            getEnv("LLM_MODEL", "deepseek-v4-flash"),
 		LLMAPIKey:           os.Getenv("LLM_API_KEY"),
 		LLMBaseURL:          getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
 		NarratorTemperature: 0.7,
@@ -197,7 +197,7 @@ func main() {
 	var memExtractor extractor.MemoryExtractor
 	if getEnv("MEMORY_EXTRACTOR_ENABLED", "true") == "true" {
 		memExtractor = extractor.NewExtractor(
-			openai.New(getEnv("LLM_MODEL", "deepseek-chat"),
+			openai.New(getEnv("LLM_MODEL", "deepseek-v4-flash"),
 				openai.WithVariant(openai.VariantDeepSeek)),
 			extractor.WithPrompt(agent.TRPGMemoryExtractPrompt),
 		)
@@ -228,6 +228,10 @@ func main() {
 	handlerCount++
 	plugins.RegisterHandler(handler.NewModeHandler(sessions))
 	handlerCount++
+	plugins.RegisterHandler(handler.NewLengthHandler(sessions))
+	handlerCount++
+	plugins.RegisterHandler(handler.NewSaveHandler(worldEngine))
+	handlerCount++
 	plugins.RegisterHandler(handler.NewLogHandler(gameLogger))
 	handlerCount++
 	plugins.RegisterHandler(handler.NewScriptHandler(
@@ -239,7 +243,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化配置存储失败: %v", err)
 	}
-	cfgStore.Seed(config.KeyLLMModel, getEnv("LLM_MODEL", "deepseek-chat"))
+	cfgStore.Seed(config.KeyLLMModel, getEnv("LLM_MODEL", "deepseek-v4-flash"))
 	cfgStore.Seed(config.KeyNarratorTemp, "0.7")
 	cfgStore.Seed(config.KeyDirectorTemp, "0.2")
 	cfgStore.Seed(config.KeyContextBudget, "45000")

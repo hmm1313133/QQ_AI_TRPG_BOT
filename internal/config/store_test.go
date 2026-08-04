@@ -19,10 +19,10 @@ func TestStore_Basic(t *testing.T) {
 	}
 
 	// 写入与读取
-	if err := s.Set("llm_model", "deepseek-chat"); err != nil {
+	if err := s.Set("llm_model", "deepseek-v4-flash"); err != nil {
 		t.Fatalf("写入失败: %v", err)
 	}
-	if got := s.Get("llm_model", ""); got != "deepseek-chat" {
+	if got := s.Get("llm_model", ""); got != "deepseek-v4-flash" {
 		t.Fatalf("读取失败: %s", got)
 	}
 

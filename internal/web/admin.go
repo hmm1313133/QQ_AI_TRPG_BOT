@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/agent"
@@ -28,6 +29,10 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/pkg"
 )
+
+// idSeq 进程内单调序号：Windows 下 time.Now() 粒度粗（约 15.6ms 一档），
+// 紧循环里 UnixNano 会重复，凡以时间戳生成的 ID 都追加该序号防主键冲突。
+var idSeq atomic.Uint64
 
 // AdminDeps 管理后台依赖。
 type AdminDeps struct {
@@ -58,6 +63,7 @@ type ConfigStore interface {
 type adminAPI struct {
 	deps       AdminDeps
 	adminToken string
+	history    ChatLogger // 聊天记录存储（存档恢复时回放对话历史，可为 nil）
 	tasks      map[string]*taskStatus
 	tasksMu    sync.Mutex
 }
@@ -77,6 +83,7 @@ func (s *Server) registerAdmin(mux *http.ServeMux, deps AdminDeps, adminToken st
 	a := &adminAPI{
 		deps:       deps,
 		adminToken: adminToken,
+		history:    s.history,
 		tasks:      make(map[string]*taskStatus),
 	}
 
@@ -329,7 +336,7 @@ func (a *adminAPI) handleWorldCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.WorldID == "" {
-		req.WorldID = fmt.Sprintf("world_%d", time.Now().UnixNano())
+		req.WorldID = fmt.Sprintf("world_%d_%d", time.Now().UnixNano(), idSeq.Add(1))
 	}
 
 	// trpg 模式先按 script_id 取剧本，取不到视为请求参数错误

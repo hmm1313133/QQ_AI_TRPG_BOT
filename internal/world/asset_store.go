@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -63,8 +64,15 @@ func NewAssetStore(db *sql.DB) (*AssetStore, error) {
 
 func nowString() string { return time.Now().Format("2006-01-02 15:04:05") }
 
+// assetIDSeq 进程内单调序号，见 NewAssetID。
+var assetIDSeq atomic.Uint64
+
 // NewAssetID 生成素材 ID。
-func NewAssetID() string { return fmt.Sprintf("ast_%d", time.Now().UnixNano()) }
+// Windows 下 time.Now() 粒度粗（约 15.6ms 一档），紧循环批量入库时 UnixNano
+// 会重复导致主键冲突，故追加进程内原子序号兜底。
+func NewAssetID() string {
+	return fmt.Sprintf("ast_%d_%d", time.Now().UnixNano(), assetIDSeq.Add(1))
+}
 
 func encodeTags(tags []string) string {
 	if len(tags) == 0 {

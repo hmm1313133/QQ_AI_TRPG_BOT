@@ -31,6 +31,8 @@ type ChatLogger interface {
 	Add(sessionID, typ, text string)
 	// List 取会话最近 limit 条消息（按时间升序；limit <= 0 用默认值）。
 	List(sessionID string, limit int) ([]ChatMessage, error)
+	// Replace 用给定消息整体覆盖会话聊天记录（存档恢复回放用；保留原 type/text/created_at 顺序）。
+	Replace(sessionID string, msgs []ChatMessage) error
 }
 
 // ChatMessage 一条聊天记录。
@@ -108,6 +110,33 @@ func (s *ChatHistoryStore) List(sessionID string, limit int) ([]ChatMessage, err
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// Replace 用给定消息整体覆盖会话聊天记录（删该会话全部行 + 事务内批量插入）。
+func (s *ChatHistoryStore) Replace(sessionID string, msgs []ChatMessage) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM chat_messages WHERE session_id = ?`, sessionID); err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO chat_messages (session_id, type, text, created_at) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, m := range msgs {
+		createdAt := m.CreatedAt
+		if createdAt == "" {
+			createdAt = time.Now().Format("2006-01-02 15:04:05")
+		}
+		if _, err := stmt.Exec(sessionID, m.Type, m.Text, createdAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // SetChatHistory 配置聊天记录存储（Start 前调用；nil 则历史功能关闭）。

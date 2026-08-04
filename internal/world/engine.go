@@ -98,6 +98,47 @@ func (e *Engine) ListWorlds() ([]string, error) {
 }
 
 // ============================================================
+// 存档恢复（管理端/玩家端/QQ 指令共用的恢复核心）
+// ============================================================
+
+// RestoreSave 恢复存档：校验归属 → 世界锁内自动备份当前进度 → 快照记恢复事件 → 覆盖落库。
+// 返回存档元数据与对话历史快照（无快照为 nil；历史回放由调用方按渠道决定）。
+func (e *Engine) RestoreSave(worldID string, saveID int64, actor string) (*SaveInfo, []byte, error) {
+	repo, ok := e.repo.(*SQLiteRepository)
+	if !ok {
+		return nil, nil, fmt.Errorf("存档功能需要 SQLite 存储")
+	}
+	info, snapshot, history, err := repo.LoadSave(saveID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("存档不存在")
+	}
+	if info.WorldID != worldID {
+		return nil, nil, fmt.Errorf("存档不属于该世界")
+	}
+
+	e.Lock(worldID)
+	defer e.Unlock(worldID)
+
+	// 恢复前自动备份当前进度
+	if current := e.LoadOrNil(worldID); current != nil {
+		if _, err := repo.CreateSave(current, "自动备份-恢复前", "恢复存档「"+info.Name+"」前的进度", true); err != nil {
+			return nil, nil, fmt.Errorf("自动备份失败: %w", err)
+		}
+	}
+
+	if _, err := e.ApplyEvent(snapshot, WorldEvent{
+		Type: "note", Actor: actor, Target: "save:restore",
+		Value: fmt.Sprintf("从存档「%s」恢复（原存档轮次 %d）", info.Name, info.RoundCount),
+	}); err != nil {
+		return nil, nil, fmt.Errorf("恢复失败: %w", err)
+	}
+	if err := e.Save(snapshot); err != nil {
+		return nil, nil, fmt.Errorf("保存失败: %w", err)
+	}
+	return info, history, nil
+}
+
+// ============================================================
 // ApplyEvent：状态变更唯一入口
 // ============================================================
 

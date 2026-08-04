@@ -15,7 +15,7 @@ import (
 // Config 是 AI Agent 的配置。
 type Config struct {
 	LLMProvider  string  // deepseek / openai / hunyuan
-	LLMModel     string  // 模型名称 (如 deepseek-chat, deepseek-reasoner)
+	LLMModel     string  // 模型名称 (如 deepseek-v4-flash, deepseek-reasoner)
 	LLMAPIKey    string  // API 密钥 (DeepSeek: sk-xxx)
 	LLMBaseURL   string  // API 地址 (DeepSeek: https://api.deepseek.com)
 	MaxTokens    int     // 最大 token 数
@@ -39,6 +39,11 @@ func DefaultKPPrompt() string {
 3. 根据玩家行动推进剧情
 4. 在需要时要求玩家进行骰点判定
 请保持沉浸感和趣味性，尊重玩家的选择。
+
+【回复风格基线】
+1. 篇幅服务当前互动：简单动作简短回应，关键场景充分展开，不一味铺陈
+2. 环境描写适度，不堆砌辞藻，信息密度优先
+3. 叙述风格须与世界题材/剧本背景保持一致，不出戏
 
 你可以使用 roll_dice 工具来为玩家投掷骰子。
 当需要技能检定时，主动调用 roll_dice 工具或 skill_check 工具并告知玩家结果。

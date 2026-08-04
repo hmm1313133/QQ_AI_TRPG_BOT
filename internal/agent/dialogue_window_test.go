@@ -45,7 +45,7 @@ func TestContextBuilderWithDialogue(t *testing.T) {
 	ws := world.NewWorldState("w1", world.ModeSimRPG)
 	lore := &world.LoreResult{}
 	dialogue := "【近期对话】\n玩家: 我检查书桌\nKP: 桌上有一封信。\n"
-	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, lore, nil, "", "", dialogue, "我读信")
+	msg := NewContextBuilder(6000).BuildNarratorMessage(ws, lore, nil, "", "", dialogue, "我读信", "")
 	if !strings.Contains(msg, dialogue) {
 		t.Fatal("上下文应包含近期对话块")
 	}
@@ -55,7 +55,7 @@ func TestContextBuilderWithDialogue(t *testing.T) {
 	}
 
 	// 超预算时对话块作为可选分区被裁剪（不 panic、必需分区保留）
-	tiny := NewContextBuilder(10).BuildNarratorMessage(ws, lore, nil, "", "", dialogue, "我读信")
+	tiny := NewContextBuilder(10).BuildNarratorMessage(ws, lore, nil, "", "", dialogue, "我读信", "")
 	if !strings.Contains(tiny, "玩家: 我读信") {
 		t.Fatal("必需分区（玩家消息）不应被裁掉")
 	}

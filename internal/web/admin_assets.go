@@ -672,7 +672,7 @@ func (a *adminAPI) handleSaveRestore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "存档 ID 无效", http.StatusBadRequest)
 		return
 	}
-	info, err := restoreWorldSave(a.deps.WorldEngine, repo, r.PathValue("id"), saveID, "admin")
+	info, history, err := restoreWorldSave(a.deps.WorldEngine, r.PathValue("id"), saveID, "admin")
 	if err != nil {
 		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "不存在") || strings.Contains(err.Error(), "不属于") || strings.Contains(err.Error(), "无效") {
@@ -681,40 +681,16 @@ func (a *adminAPI) handleSaveRestore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), status)
 		return
 	}
+	// 存档带对话历史快照时同步回放（仅 Web 会话世界有历史；QQ 创建的档为 NULL 跳过）
+	replaySaveHistory(a.history, r.PathValue("id"), history)
 	writeJSON(w, map[string]string{"message": fmt.Sprintf("已恢复到存档「%s」（轮次 %d）", info.Name, info.RoundCount)})
 }
 
-// restoreWorldSave 恢复存档的共享实现（管理端/玩家端共用）：
-// 校验归属 → 自动备份当前进度 → 快照记恢复事件 → 覆盖落库。
-func restoreWorldSave(engine *world.Engine, repo *world.SQLiteRepository, worldID string, saveID int64, actor string) (*world.SaveInfo, error) {
-	info, snapshot, err := repo.LoadSave(saveID)
-	if err != nil {
-		return nil, fmt.Errorf("存档不存在")
-	}
-	if info.WorldID != worldID {
-		return nil, fmt.Errorf("存档不属于该世界")
-	}
-
-	engine.Lock(worldID)
-	defer engine.Unlock(worldID)
-
-	// 恢复前自动备份当前进度
-	if current := engine.LoadOrNil(worldID); current != nil {
-		if _, err := repo.CreateSave(current, "自动备份-恢复前", "恢复存档「"+info.Name+"」前的进度", true); err != nil {
-			return nil, fmt.Errorf("自动备份失败: %w", err)
-		}
-	}
-
-	if _, err := engine.ApplyEvent(snapshot, world.WorldEvent{
-		Type: "note", Actor: actor, Target: "save:restore",
-		Value: fmt.Sprintf("从存档「%s」恢复（原存档轮次 %d）", info.Name, info.RoundCount),
-	}); err != nil {
-		return nil, fmt.Errorf("恢复失败: %w", err)
-	}
-	if err := engine.Save(snapshot); err != nil {
-		return nil, fmt.Errorf("保存失败: %w", err)
-	}
-	return info, nil
+// restoreWorldSave 恢复存档的共享薄封装（管理端/玩家端共用）：
+// 核心逻辑（加锁/归属校验/自动备份/写回）在 world.Engine.RestoreSave，
+// 这里保留原有返回形态并带出对话历史快照（回放由调用方决定）。
+func restoreWorldSave(engine *world.Engine, worldID string, saveID int64, actor string) (*world.SaveInfo, []byte, error) {
+	return engine.RestoreSave(worldID, saveID, actor)
 }
 
 func (a *adminAPI) handleSaveDelete(w http.ResponseWriter, r *http.Request) {

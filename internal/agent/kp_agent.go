@@ -151,6 +151,10 @@ func (a *KPAgent) chatSingleAgent(ctx *core.MessageContext) (string, error) {
 	} else {
 		userMessage = ctx.Content
 	}
+	// 会话级回复长度偏好注入（与 TurnEngine 路径同一机制）
+	if hint := LengthHintFromSession(a.sessionMgr.GetSession(ctx.SessionID)); hint != "" {
+		userMessage += "\n" + hint
+	}
 
 	// Inject sessionID and userID into context for FunctionTools
 	agentCtx := withSessionID(ctx.Ctx, ctx.SessionID)

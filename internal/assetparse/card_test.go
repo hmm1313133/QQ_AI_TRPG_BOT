@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -140,5 +141,73 @@ func TestParseCardPNG(t *testing.T) {
 	// 非 PNG
 	if res, _ := ParseCardPNG([]byte("not a png")); res != nil {
 		t.Fatalf("非 PNG 应返回 nil: %+v", res)
+	}
+}
+
+func TestCleanCardText(t *testing.T) {
+	in := "<character_design_complex>\n姓名：{{char}}\n同伴：{{user}}\n</character_design_complex>\n\n\n\n外貌：银发"
+	got := cleanCardText("艾拉", in)
+	if got == in {
+		t.Fatalf("应发生清理: %q", got)
+	}
+	for _, bad := range []string{"<character_design_complex>", "</character_design_complex>", "{{char}}", "{{user}}"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("清理后不应残留 %q: %q", bad, got)
+		}
+	}
+	if !strings.Contains(got, "姓名：艾拉") || !strings.Contains(got, "同伴：用户") {
+		t.Fatalf("宏应替换为角色名/用户: %q", got)
+	}
+	if !strings.Contains(got, "外貌：银发") {
+		t.Fatalf("tag 内文本应保留: %q", got)
+	}
+	if strings.Contains(got, "\n\n\n") {
+		t.Fatalf("多余空行应被压缩: %q", got)
+	}
+}
+
+func TestBuildCardText(t *testing.T) {
+	card := DecodeCardJSON([]byte(v2CardJSON))
+	if card == nil {
+		t.Fatal("v2 卡应解码成功")
+	}
+	text := buildCardText(card)
+	for _, want := range []string{"艾拉", "【角色描述】", "【性格】", "【场景设定】", "魔法衰微的边境大陆"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("LLM 输入应包含 %q: %q", want, text)
+		}
+	}
+
+	// 三个自由文本字段全空时应返回空串（ParseCard 据此直接走程序化直映）
+	empty := &CharaCardData{Name: "空卡"}
+	if got := buildCardText(empty); got != "" {
+		t.Fatalf("无自由文本时应返回空串: %q", got)
+	}
+}
+
+func TestParseCard_NoFreeText(t *testing.T) {
+	// 无自由文本时 ParseCard 不调用 LLM，直接程序化直映（不依赖 LLM 配置）
+	p := &Parser{}
+	res, err := p.ParseCard(t.Context(), &CharaCardData{Name: "空卡", Tags: []string{"t"}})
+	if err != nil || res == nil {
+		t.Fatalf("应直映成功: res=%v err=%v", res, err)
+	}
+	if res.Parser != "sillytavern" || len(res.Drafts) != 1 || res.Drafts[0].Name != "空卡" {
+		t.Fatalf("应降级为 sillytavern 程序化直映: %+v", res)
+	}
+}
+
+func TestMatchExtractedCharacter(t *testing.T) {
+	out := &extractionOutput{Characters: []extractedCharacter{
+		{Name: "别人"}, {Name: "艾拉"},
+	}}
+	if c := matchExtractedCharacter(out, "艾拉"); c == nil || c.Name != "艾拉" {
+		t.Fatalf("应按名字精确匹配: %+v", c)
+	}
+	if c := matchExtractedCharacter(out, "不存在"); c == nil || c.Name != "别人" {
+		t.Fatalf("无匹配时应取第一个: %+v", c)
+	}
+	if c := matchExtractedCharacter(&extractionOutput{}, "艾拉"); c != nil {
+		t.Fatalf("空列表应返回 nil: %+v", c)
 	}
 }

@@ -77,6 +77,32 @@ func NewSQLiteRepository(db *sql.DB) (*SQLiteRepository, error) {
 			return nil, fmt.Errorf("建表失败: %w", err)
 		}
 	}
+	// saves 表 history_json 列（存档时刻的对话历史快照，Web 恢复时回放）：
+	// 旧库缺列则补，可空（旧档/QQ 创建的档为 NULL）。
+	var hasHistory bool
+	rows, err := db.Query(`PRAGMA table_info(saves)`)
+	if err != nil {
+		return nil, fmt.Errorf("检查 saves 表结构失败: %w", err)
+	}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("检查 saves 表结构失败: %w", err)
+		}
+		if name == "history_json" {
+			hasHistory = true
+		}
+	}
+	rows.Close()
+	if !hasHistory {
+		if _, err := db.Exec(`ALTER TABLE saves ADD COLUMN history_json TEXT`); err != nil {
+			return nil, fmt.Errorf("saves 表加 history_json 列失败: %w", err)
+		}
+	}
 	return &SQLiteRepository{db: db}, nil
 }
 
@@ -247,6 +273,11 @@ type SaveInfo struct {
 
 // CreateSave 为当前世界状态创建存档快照；auto=true 时滚动保留最近 autoSaveKeep 条。
 func (r *SQLiteRepository) CreateSave(state *WorldState, name, note string, auto bool) (*SaveInfo, error) {
+	return r.CreateSaveWithHistory(state, name, note, auto, nil)
+}
+
+// CreateSaveWithHistory 同 CreateSave，附带对话历史快照（nil 表示无，旧档/QQ 创建的档为 NULL）。
+func (r *SQLiteRepository) CreateSaveWithHistory(state *WorldState, name, note string, auto bool, history []byte) (*SaveInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -262,9 +293,13 @@ func (r *SQLiteRepository) CreateSave(state *WorldState, name, note string, auto
 	if auto {
 		autoInt = 1
 	}
-	res, err := r.db.Exec(`INSERT INTO saves (world_id, name, note, mode, round_count, auto, created_at, state_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		info.WorldID, info.Name, info.Note, info.Mode, info.RoundCount, autoInt, info.CreatedAt, string(data))
+	var historyVal any
+	if len(history) > 0 {
+		historyVal = string(history)
+	}
+	res, err := r.db.Exec(`INSERT INTO saves (world_id, name, note, mode, round_count, auto, created_at, state_json, history_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		info.WorldID, info.Name, info.Note, info.Mode, info.RoundCount, autoInt, info.CreatedAt, string(data), historyVal)
 	if err != nil {
 		return nil, fmt.Errorf("写入存档失败: %w", err)
 	}
@@ -303,8 +338,8 @@ func (r *SQLiteRepository) ListSaves(worldID string) ([]SaveInfo, error) {
 	return out, rows.Err()
 }
 
-// LoadSave 读取存档内容（恢复用）。
-func (r *SQLiteRepository) LoadSave(id int64) (*SaveInfo, *WorldState, error) {
+// LoadSave 读取存档内容（恢复用）；history 为对话历史快照（NULL -> nil）。
+func (r *SQLiteRepository) LoadSave(id int64) (*SaveInfo, *WorldState, []byte, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var (
@@ -312,19 +347,24 @@ func (r *SQLiteRepository) LoadSave(id int64) (*SaveInfo, *WorldState, error) {
 		auto       int
 		note, mode sql.NullString
 		raw        string
+		history    sql.NullString
 	)
-	err := r.db.QueryRow(`SELECT id, world_id, name, note, mode, round_count, auto, created_at, state_json
+	err := r.db.QueryRow(`SELECT id, world_id, name, note, mode, round_count, auto, created_at, state_json, history_json
 		FROM saves WHERE id = ?`, id).
-		Scan(&info.ID, &info.WorldID, &info.Name, &note, &mode, &info.RoundCount, &auto, &info.CreatedAt, &raw)
+		Scan(&info.ID, &info.WorldID, &info.Name, &note, &mode, &info.RoundCount, &auto, &info.CreatedAt, &raw, &history)
 	if err != nil {
-		return nil, nil, fmt.Errorf("存档不存在: %w", err)
+		return nil, nil, nil, fmt.Errorf("存档不存在: %w", err)
 	}
 	info.Note, info.Mode, info.Auto = note.String, mode.String, auto == 1
 	state, err := decodeWorldState([]byte(raw))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return &info, state, nil
+	var historyBytes []byte
+	if history.Valid {
+		historyBytes = []byte(history.String)
+	}
+	return &info, state, historyBytes, nil
 }
 
 // DeleteSave 删除存档。

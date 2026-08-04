@@ -106,6 +106,24 @@
         </div>
       </el-tab-pane>
 
+      <!-- 回复风格 -->
+      <el-tab-pane label="回复风格" name="style" lazy>
+        <div class="card">
+          <div class="card-title">回复风格要求</div>
+          <div v-if="sections.style === null" class="empty">加载中…</div>
+          <template v-else>
+            <div class="muted" style="margin-bottom:10px">
+              自由文本风格指令（如"冷峻克苏鲁风，重对话少环境铺陈"），每轮注入 AI 叙事；留空则使用默认基线风格。
+            </div>
+            <el-input v-model="sections.style" type="textarea" :rows="6"
+              placeholder="如：冷峻克苏鲁风，重对话少环境铺陈，禁止现代词汇" />
+            <div style="margin-top:12px">
+              <el-button type="primary" size="small" :loading="saving.style" @click="saveSection('style')">保存风格</el-button>
+            </div>
+          </template>
+        </div>
+      </el-tab-pane>
+
       <!-- 角色 -->
       <el-tab-pane label="角色" name="characters" lazy>
         <div class="card">
@@ -432,10 +450,11 @@ const sections = reactive({
   hidden: null,
   items: null,
   storyline: null,
+  style: null,
 })
 const saving = reactive({
   scene: false, characters: false, locations: false, factions: false,
-  quests: false, hidden: false, items: false, storyline: false, json: false,
+  quests: false, hidden: false, items: false, storyline: false, style: false, json: false,
 })
 const loaded = reactive({})
 const injections = ref(null)
@@ -609,6 +628,7 @@ async function ensureTabData(tab) {
   const need = {
     scene: ['scene'],
     storyline: ['storyline'],
+    style: ['style'],
     characters: ['characters'],
     items: ['items', 'locations', 'characters'],
     places: ['locations', 'factions'],

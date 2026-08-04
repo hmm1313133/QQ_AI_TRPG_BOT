@@ -52,7 +52,9 @@ func NewContextBuilder(budget int) *ContextBuilder {
 //   6. 场景计划 ScenePlan（按计划间隔刷新）
 //   7. 近期对话窗口（每轮追加一轮，短记忆）
 //   8. 玩家消息（必需；每轮必变，最靠后）
-//   9. lore tail 风格指令区（Author's Note 位置，玩家消息之后）
+//   9. 回复长度要求（必需；会话级偏好，玩家消息之后）
+//   10. 回复风格要求（必需；世界配置 ReplyStyle，Author's Note 位置）
+//   11. lore tail 风格指令区（Author's Note 位置，玩家消息之后）
 //
 // 裁剪优先级与位置对齐：超预算时优先裁尾部可选分区，保住稳定前缀。
 // lore 已经 LoreResolver 按 lore_budget 裁剪，此处作为可选分区接入。
@@ -64,6 +66,7 @@ func (b *ContextBuilder) BuildNarratorMessage(
 	memoryBlock string,
 	dialogueBlock string,
 	playerMessage string,
+	lengthHint string,
 ) string {
 	var sections []contextSection
 
@@ -128,6 +131,22 @@ func (b *ContextBuilder) BuildNarratorMessage(
 		priority: 1, name: "player",
 		content: "\n玩家: " + playerMessage, required: true,
 	})
+
+	// 必需：回复长度要求（会话级偏好，玩家消息之后）
+	if lengthHint != "" {
+		sections = append(sections, contextSection{
+			priority: 1, name: "length_hint",
+			content: lengthHint, required: true,
+		})
+	}
+
+	// 必需：回复风格要求（世界配置，Author's Note 位置）
+	if state != nil && state.ReplyStyle != "" {
+		sections = append(sections, contextSection{
+			priority: 1, name: "reply_style",
+			content: "【回复风格要求】\n" + state.ReplyStyle, required: true,
+		})
+	}
 
 	// 可选：lore tail（风格指令区，玩家消息之后，Author's Note 位置）
 	if lore != nil && len(lore.Tail) > 0 {

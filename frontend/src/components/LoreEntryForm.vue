@@ -16,7 +16,7 @@
       </el-form-item>
 
       <el-form-item label="分类">
-        <el-select v-model="entry.category" style="width:200px">
+        <el-select v-model="entry.category" style="width:200px" @change="onCategoryChange">
           <el-option v-for="c in LORE_CATEGORIES" :key="c.value" :label="c.label" :value="c.value" />
         </el-select>
       </el-form-item>
@@ -100,6 +100,13 @@ const emit = defineEmits(['save', 'remove', 'cancel'])
 const shortKeys = computed(() =>
   (props.entry.keys || []).filter((k) => [...k].length < 2)
 )
+
+// 风格条目（文风/描写修饰）适合近底部注入，选中时默认切到 tail
+function onCategoryChange(v) {
+  if (v === 'style') {
+    props.entry.position = 'tail'
+  }
+}
 
 function onSave() {
   const e = props.entry

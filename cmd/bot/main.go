@@ -27,6 +27,7 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/handler"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/store"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
@@ -101,6 +102,10 @@ func main() {
 	chatHistory, err := web.NewChatHistoryStore(dataDB)
 	if err != nil {
 		log.Fatalf("初始化聊天记录存储失败: %v", err)
+	}
+	personaStore, err := persona.NewStore(dataDB)
+	if err != nil {
+		log.Fatalf("初始化玩家人设存储失败: %v", err)
 	}
 	worldEngine := world.NewEngine(worldRepo)
 
@@ -206,6 +211,8 @@ func main() {
 	turnEngine.SetMemory(memoryService)
 
 	kpAgent.SetTurnEngine(turnEngine)
+	turnEngine.SetPersonaStore(personaStore)
+	kpAgent.SetPersonaStore(personaStore)
 
 	// 12. Register AI Agent
 	if err := plugins.RegisterAgent(kpAgent); err != nil {
@@ -231,6 +238,10 @@ func main() {
 	plugins.RegisterHandler(handler.NewLengthHandler(sessions))
 	handlerCount++
 	plugins.RegisterHandler(handler.NewSaveHandler(worldEngine))
+	handlerCount++
+	plugins.RegisterHandler(handler.NewPersonaHandler(worldEngine, personaStore))
+	handlerCount++
+	plugins.RegisterHandler(handler.NewWorldHandler(worldEngine, sessions))
 	handlerCount++
 	plugins.RegisterHandler(handler.NewLogHandler(gameLogger))
 	handlerCount++

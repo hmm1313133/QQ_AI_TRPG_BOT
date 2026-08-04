@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -24,14 +25,15 @@ import (
 //
 // 多层架构：Chat() 委托给 TurnEngine（规则指导 + 低频 Planner + Narrator）。
 type KPAgent struct {
-	config     *Config
-	agent      agent.Agent
-	runner     runner.Runner
-	tools      []tool.Tool
-	sessionMgr *core.SessionManager
-	svc        *trpg.Service
-	scriptDeps *ScriptDeps // 剧本相关依赖（可选，nil 表示无剧本模式）
-	turnEngine *TurnEngine // 回合引擎（可选，nil 时回退到单 agent 模式）
+	config       *Config
+	agent        agent.Agent
+	runner       runner.Runner
+	tools        []tool.Tool
+	sessionMgr   *core.SessionManager
+	svc          *trpg.Service
+	scriptDeps   *ScriptDeps    // 剧本相关依赖（可选，nil 表示无剧本模式）
+	turnEngine   *TurnEngine    // 回合引擎（可选，nil 时回退到单 agent 模式）
+	personaStore *persona.Store // 全局默认人设存储（可为 nil）
 }
 
 // NewKPAgent creates a KP/DM agent.
@@ -115,6 +117,12 @@ func (a *KPAgent) SetTurnEngine(engine *TurnEngine) {
 	log.Printf("[KPAgent] 回合引擎已注入")
 }
 
+// SetPersonaStore 注入全局人设存储（由 main.go 在装配阶段调用）。
+func (a *KPAgent) SetPersonaStore(s *persona.Store) {
+	a.personaStore = s
+	log.Printf("[KPAgent] 玩家人设已接入")
+}
+
 // AgentID implements core.AgentHandler.
 func (a *KPAgent) AgentID() string {
 	return "kp"
@@ -151,6 +159,14 @@ func (a *KPAgent) chatSingleAgent(ctx *core.MessageContext) (string, error) {
 	} else {
 		userMessage = ctx.Content
 	}
+	// 全局默认人设注入（回退路径无世界覆盖概念）
+	if a.personaStore != nil {
+		if p, err := a.personaStore.Get(ctx.UserID); err == nil {
+			if block := buildPersonaBlock(p); block != "" {
+				userMessage = block + "\n" + userMessage
+			}
+		}
+	}
 	// 会话级回复长度偏好注入（与 TurnEngine 路径同一机制）
 	if hint := LengthHintFromSession(a.sessionMgr.GetSession(ctx.SessionID)); hint != "" {
 		userMessage += "\n" + hint
@@ -184,7 +200,8 @@ func (a *KPAgent) chatSingleAgent(ctx *core.MessageContext) (string, error) {
 		}
 	}
 
-	reply := replyBuilder.String()
+	// 剥离 CoT 思考段（未启用 CoT 时是无害 no-op）
+	reply := StripThinking(replyBuilder.String())
 	if reply == "" {
 		reply = "（KP 沉思中...未生成回复）"
 	}

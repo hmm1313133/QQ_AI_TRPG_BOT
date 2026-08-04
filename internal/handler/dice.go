@@ -107,6 +107,8 @@ func (h *HelpHandler) Execute(ctx *core.MessageContext, reply core.ReplyFunc) er
   .save [名字]       创建游玩存档
   .saves             列出当前世界存档
   .restore <ID>      恢复存档（当前进度自动备份）
+  .persona <操作>    玩家人设 (set/set world/clear)
+  .world <操作>      进入世界 (list/enter/reset)
   .log <操作>        跑团日志 (start/end/show/export)
   .help              显示此帮助
 

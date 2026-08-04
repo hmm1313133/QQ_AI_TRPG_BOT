@@ -16,6 +16,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite 驱动（零 CGO）
+
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
 )
 
 // OpenSQLite 打开共享数据库连接（世界状态/人物卡/素材库/存档共用）。
@@ -140,6 +142,9 @@ func (ws *WorldState) ensureMaps() {
 	}
 	if ws.Items == nil {
 		ws.Items = make(map[string]*Item)
+	}
+	if ws.Personas == nil {
+		ws.Personas = make(map[string]*persona.Profile)
 	}
 }
 

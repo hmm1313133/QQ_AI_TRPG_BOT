@@ -259,6 +259,8 @@ async function onOpen() {
 function confirm() {
   emit('confirm', {
     library: selLibrary.value.map((a) => a.id),
+    // library_rows 完整行对象（含 kind/name），供创建向导区分角色类素材；library 保持 id 数组不变
+    library_rows: selLibrary.value.map((a) => ({ id: a.id, kind: a.kind, name: a.name })),
     cards: selCards.value.map((c) => c.id),
     copy: [...copySet.value.values()],
     script_characters: [...scriptCharSet.value.values()],

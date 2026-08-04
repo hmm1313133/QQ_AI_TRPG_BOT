@@ -452,7 +452,15 @@ func (a *adminAPI) handleSectionGet(w http.ResponseWriter, r *http.Request) {
 	case "storyline":
 		writeJSON(w, ws.Storyline)
 	case "style":
-		writeJSON(w, ws.ReplyStyle)
+		// 返回结构化的输出风格配置；Core 做空值回退合并（ReplyStyle），前端直接显示生效值
+		v := world.StyleConfig{}
+		if ws.Style != nil {
+			v = *ws.Style
+		}
+		if strings.TrimSpace(v.Core) == "" {
+			v.Core = ws.ReplyStyle
+		}
+		writeJSON(w, v)
 	default:
 		http.Error(w, "未知分区: "+part, http.StatusBadRequest)
 	}
@@ -583,11 +591,14 @@ func applySection(ws *world.WorldState, part string, data json.RawMessage) error
 		}
 		ws.Storyline = &v
 	case "style":
-		var v string
+		var v world.StyleConfig
 		if err := json.Unmarshal(data, &v); err != nil {
 			return fmt.Errorf("style 数据格式错误: %w", err)
 		}
-		ws.ReplyStyle = strings.TrimSpace(v)
+		v.Tone = strings.TrimSpace(v.Tone)
+		v.Core = strings.TrimSpace(v.Core)
+		v.CoTGuide = strings.TrimSpace(v.CoTGuide)
+		ws.Style = &v // 只写 Style，不动旧 ReplyStyle 字段（保留作兼容回退）
 	}
 	return nil
 }

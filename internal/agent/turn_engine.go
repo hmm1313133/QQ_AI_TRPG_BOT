@@ -24,6 +24,7 @@ import (
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
@@ -40,8 +41,9 @@ type TurnEngine struct {
 	metrics      *MetricsEvaluator
 	worldEngine  *world.Engine
 	ctxBuilder   *ContextBuilder
-	memory       *MemoryService // 记忆服务（可为 nil 禁用）
-	cfgStore     *config.Store  // 运行时配置（热更新项每回合读取，可为 nil）
+	memory       *MemoryService  // 记忆服务（可为 nil 禁用）
+	cfgStore     *config.Store   // 运行时配置（热更新项每回合读取，可为 nil）
+	personaStore *persona.Store  // 全局默认人设存储（可为 nil，nil 时人设功能关闭）
 	planInterval int
 
 	// injections 世界 ID -> 最近 N 回合 lore 注入清单（内存环形缓存）。
@@ -87,6 +89,12 @@ func (t *TurnEngine) SetConfigStore(s *config.Store) {
 	log.Printf("[TurnEngine] 运行时配置已接入")
 }
 
+// SetPersonaStore 注入全局人设存储（由 main.go 在装配阶段调用）。
+func (t *TurnEngine) SetPersonaStore(s *persona.Store) {
+	t.personaStore = s
+	log.Printf("[TurnEngine] 玩家人设已接入")
+}
+
 // Run 执行一回合。返回叙事文本。
 func (t *TurnEngine) Run(
 	ctx *core.MessageContext,
@@ -106,10 +114,10 @@ func (t *TurnEngine) Run(
 	// 1. 加载 WorldState
 	state := t.loadOrCreateState(sessionID, session)
 	if state == nil {
-		// 无世界状态（自由模式）-> 直接叙事
+		// 无世界状态（自由模式）-> 直接叙事（人设只有全局默认一档）
 		gameContext := t.narrator.buildGameContext(sessionID, userID)
 		userMessage := t.ctxBuilder.BuildNarratorMessage(nil, nil, nil, gameContext, "", "", playerMessage,
-			LengthHintFromSession(session))
+			LengthHintFromSession(session), t.globalPersonaBlock(userID))
 		return t.narrator.NarrateMessage(ctx.Ctx, userMessage, sessionID, userID)
 	}
 	eventLogBase := len(state.EventLog) // 本回合开始前的事件数，供 AfterTurn 取增量
@@ -158,8 +166,9 @@ func (t *TurnEngine) Run(
 		memoryBlock += t.memory.BuildMemoryBlock(state, playerMessage)
 	}
 	dialogueBlock := buildDialogueBlock(state)
+	personaBlock := buildPersonaBlock(state.EffectivePersona(userID, t.personaStore))
 	userMessage := t.ctxBuilder.BuildNarratorMessage(state, &lore, guidance, gameContext, memoryBlock, dialogueBlock, playerMessage,
-		LengthHintFromSession(session))
+		LengthHintFromSession(session), personaBlock)
 	log.Printf("[TurnEngine] 上下文包: %d 字符（预算 %d）", len(userMessage), t.ctxBuilder.Budget)
 
 	// 6. Narrator 无状态调用
@@ -184,6 +193,18 @@ func (t *TurnEngine) Run(
 		time.Since(start).Seconds(), sessionID, state.RoundCount)
 
 	return reply, nil
+}
+
+// globalPersonaBlock 读取玩家全局默认人设并格式化（存储未配置或为空返回空串）。
+func (t *TurnEngine) globalPersonaBlock(userID string) string {
+	if t.personaStore == nil {
+		return ""
+	}
+	p, err := t.personaStore.Get(userID)
+	if err != nil {
+		return ""
+	}
+	return buildPersonaBlock(p)
 }
 
 // buildDialogueBlock 把短期对话窗口格式化为注入文本（无记录时返回空串）。

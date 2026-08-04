@@ -145,8 +145,8 @@ func (n *Narrator) NarrateMessage(
 		return "", fmt.Errorf("Narrator 执行失败: %w", err)
 	}
 
-	// Collect reply
-	reply := collectAgentReply(events)
+	// Collect reply（剥离 CoT 思考段；未启用 CoT 时是无害 no-op）
+	reply := StripThinking(collectAgentReply(events))
 	if reply == "" {
 		reply = "（KP 沉思中...未生成回复）"
 	}

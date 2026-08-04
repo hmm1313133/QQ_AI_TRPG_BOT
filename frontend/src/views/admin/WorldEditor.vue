@@ -109,14 +109,30 @@
       <!-- 回复风格 -->
       <el-tab-pane label="回复风格" name="style" lazy>
         <div class="card">
-          <div class="card-title">回复风格要求</div>
+          <div class="card-title">输出风格配置</div>
           <div v-if="sections.style === null" class="empty">加载中…</div>
           <template v-else>
             <div class="muted" style="margin-bottom:10px">
-              自由文本风格指令（如"冷峻克苏鲁风，重对话少环境铺陈"），每轮注入 AI 叙事；留空则使用默认基线风格。
+              分层注入：世界基调进恒定前部（稳定吃缓存），风格核心近底部注入；全部留空则使用默认基线风格。
             </div>
-            <el-input v-model="sections.style" type="textarea" :rows="6"
-              placeholder="如：冷峻克苏鲁风，重对话少环境铺陈，禁止现代词汇" />
+            <el-form label-width="90px" label-position="left">
+              <el-form-item label="世界基调">
+                <el-input v-model="sections.style.tone" type="textarea" :rows="3"
+                  placeholder="题材/氛围基调，恒定区注入（如：维多利亚蒸汽朋克，阴霾压抑）" />
+              </el-form-item>
+              <el-form-item label="风格核心">
+                <el-input v-model="sections.style.core" type="textarea" :rows="3"
+                  placeholder="高浓度短文本，如：冷峻、克制、以对话推进" />
+              </el-form-item>
+              <el-form-item label="思维链">
+                <el-switch v-model="sections.style.enable_cot" />
+                <span class="muted" style="margin-left:8px">先输出思考段再输出正文（思考段不展示给玩家）</span>
+              </el-form-item>
+              <el-form-item v-if="sections.style.enable_cot" label="思维链指导">
+                <el-input v-model="sections.style.cot_guide" type="textarea" :rows="4"
+                  placeholder="自定义思维链指导；留空则使用内置默认三段式（检查判断 / 核心推演 / 描写渲染）" />
+              </el-form-item>
+            </el-form>
             <div style="margin-top:12px">
               <el-button type="primary" size="small" :loading="saving.style" @click="saveSection('style')">保存风格</el-button>
             </div>
@@ -581,6 +597,14 @@ async function loadSection(part) {
           }
         : null
       loaded.storylineDone = true
+    } else if (part === 'style') {
+      // 结构化风格配置：omitempty 可能缺键，补齐供表单 v-model
+      sections.style = {
+        tone: data?.tone || '',
+        core: data?.core || '',
+        enable_cot: data?.enable_cot || false,
+        cot_guide: data?.cot_guide || '',
+      }
     }
   } catch (e) {
     ElMessage.error(`加载分区 ${part} 失败：` + e.message)

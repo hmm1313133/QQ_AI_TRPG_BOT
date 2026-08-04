@@ -138,6 +138,13 @@
               @close="form.import_cards = form.import_cards.filter((x) => x.id !== c.id)"
             >{{ c.name || c.id }}</el-tag>
           </div>
+          <!-- 待导入素材（素材库/跨世界/剧本角色，创建成功后自动导入） -->
+          <div v-if="!assetSelEmpty" style="margin-top:10px">
+            <div class="muted">待导入素材（创建后自动导入）：</div>
+            <div v-for="(line, i) in assetSelSummary" :key="i" class="muted" style="margin-top:2px">· {{ line }}</div>
+            <el-button size="small" text type="danger" style="margin-top:4px"
+              @click="form.asset_sel = { library_rows: [], copy: [], script_characters: [], on_conflict: 'skip' }">清空待导入素材</el-button>
+          </div>
         </div>
 
         <div class="block">
@@ -264,6 +271,10 @@
           <div class="summary-row"><span class="muted">背景</span><span>{{ form.background ? form.background.slice(0, 60) + (form.background.length > 60 ? '…' : '') : '（未填写）' }}</span></div>
           <div class="summary-row"><span class="muted">设定条目</span><span>{{ validLore.length }} 条</span></div>
           <div class="summary-row"><span class="muted">人物卡</span><span>{{ form.import_cards.length ? form.import_cards.map((c) => c.name || c.id).join('、') : '无' }}</span></div>
+          <div class="summary-row">
+            <span class="muted">待导入素材</span>
+            <span>{{ assetSelEmpty ? '无' : assetSelSummary.join('；') }}</span>
+          </div>
           <div class="summary-row"><span class="muted">结构化 NPC</span><span>{{ namedNpcs.length ? namedNpcs.map((n) => n.name).join('、') : '无' }}</span></div>
           <div class="summary-row"><span class="muted">地点</span><span>{{ validLocations.length ? validLocations.map((l) => l.name).join('、') : '无' }}</span></div>
           <div class="summary-row"><span class="muted">物品</span><span>{{ validItems.length ? validItems.map((x) => x.name).join('、') : '无' }}</span></div>
@@ -283,7 +294,7 @@
       </template>
     </el-dialog>
 
-    <!-- 素材选择（创建向导中仅人物卡会随创建关联） -->
+    <!-- 素材选择（人物卡创建时直接关联，其余三类创建成功后经 assets/import 导入） -->
     <AssetPicker v-model:visible="pickerVisible" @confirm="onPickAssets" />
   </div>
 </template>
@@ -317,6 +328,8 @@ const form = reactive({
   locations: [],
   npcs: [],
   import_cards: [], // [{id, name}]
+  // 待创建后导入的素材（素材库/跨世界复制/剧本角色；人物卡经 import_cards 创建时关联，不在此列）
+  asset_sel: { library_rows: [], copy: [], script_characters: [], on_conflict: 'skip' },
   items: [],
   factions: [],
   storyline: { title: '', premise: '', acts: [] },
@@ -329,7 +342,7 @@ const splitDrafts = ref([])
 const MODE_DESC = {
   trpg: '按已有剧本跑团：完整规则 + 时间轴推进，需选择剧本。',
   simrpg: '开放世界模拟：无固定剧本，轻量规则，离线后世界继续演化，需填世界设定与初始地点。',
-  roleplay: '纯角色扮演：无规则无剧本，以 NPC 互动为核心，至少需要 1 个 NPC（结构化 NPC 或人物卡）。',
+  roleplay: '纯角色扮演：无规则无剧本，以 NPC 互动为核心，至少需要 1 个角色（结构化 NPC / 人物卡 / 角色类素材）。',
 }
 
 function newCharacter() {
@@ -393,26 +406,71 @@ function confirmSplit() {
 // ---------- 素材选择 ----------
 
 async function onPickAssets(sel) {
-  // 创建向导只直接关联人物卡；其它来源需世界存在后才能导入
-  if (sel.library.length || sel.copy.length || sel.script_characters.length) {
-    ElMessage.info('创建向导中仅人物卡会直接关联，其它素材请创建后在世界编辑器中导入')
-  }
-  if (!sel.cards.length) return
-  // 解析人物卡名称（用于预览与 roleplay 校验兜底）
-  try {
-    const catalog = await assetApi.catalog()
-    const byId = new Map((catalog?.cards || []).map((c) => [c.id, c]))
-    for (const id of sel.cards) {
-      if (!form.import_cards.some((c) => c.id === id)) {
-        form.import_cards.push({ id, name: byId.get(id)?.name || '' })
+  // 人物卡：创建时随 import_cards 直接关联（逻辑不变）
+  if (sel.cards.length) {
+    // 解析人物卡名称（用于预览与 roleplay 校验兜底）
+    try {
+      const catalog = await assetApi.catalog()
+      const byId = new Map((catalog?.cards || []).map((c) => [c.id, c]))
+      for (const id of sel.cards) {
+        if (!form.import_cards.some((c) => c.id === id)) {
+          form.import_cards.push({ id, name: byId.get(id)?.name || '' })
+        }
+      }
+    } catch {
+      for (const id of sel.cards) {
+        if (!form.import_cards.some((c) => c.id === id)) form.import_cards.push({ id, name: '' })
       }
     }
-  } catch {
-    for (const id of sel.cards) {
-      if (!form.import_cards.some((c) => c.id === id)) form.import_cards.push({ id, name: '' })
-    }
   }
+  // 其余三类：存入 asset_sel，创建成功后经 assets/import 导入（按 id/name 去重累加）
+  const asel = form.asset_sel
+  for (const r of sel.library_rows || []) {
+    if (!asel.library_rows.some((x) => x.id === r.id)) asel.library_rows.push(r)
+  }
+  for (const c of sel.copy || []) {
+    if (!asel.copy.some((x) => x.world_id === c.world_id && x.kind === c.kind && x.name === c.name)) asel.copy.push(c)
+  }
+  for (const s of sel.script_characters || []) {
+    if (!asel.script_characters.some((x) => x.script_id === s.script_id && x.name === s.name)) asel.script_characters.push(s)
+  }
+  asel.on_conflict = sel.on_conflict || 'skip'
 }
+
+// 待导入素材是否为空
+const assetSelEmpty = computed(() =>
+  !form.asset_sel.library_rows.length && !form.asset_sel.copy.length && !form.asset_sel.script_characters.length
+)
+
+// 角色类素材来源（roleplay 校验与种子镜像用）：素材库角色 / 跨世界角色 / 剧本角色
+const assetCharacterNames = computed(() => {
+  const names = []
+  for (const r of form.asset_sel.library_rows) {
+    if (r.kind === 'character' && r.name) names.push(r.name)
+  }
+  for (const c of form.asset_sel.copy) {
+    if (c.kind === 'character' && c.name) names.push(c.name)
+  }
+  for (const s of form.asset_sel.script_characters) {
+    if (s.name) names.push(s.name)
+  }
+  return names
+})
+
+// 待导入素材摘要（向导素材区与确认步汇总展示）
+const assetSelSummary = computed(() => {
+  const parts = []
+  if (form.asset_sel.library_rows.length) {
+    parts.push(`素材库 ${form.asset_sel.library_rows.length} 项（${form.asset_sel.library_rows.map((r) => r.name || r.id).join('、')}）`)
+  }
+  if (form.asset_sel.copy.length) {
+    parts.push(`跨世界复制 ${form.asset_sel.copy.length} 项（${form.asset_sel.copy.map((c) => c.name).join('、')}）`)
+  }
+  if (form.asset_sel.script_characters.length) {
+    parts.push(`剧本角色 ${form.asset_sel.script_characters.length} 项（${form.asset_sel.script_characters.map((s) => s.name).join('、')}）`)
+  }
+  return parts
+})
 
 // ---------- 向导流程 ----------
 
@@ -431,7 +489,9 @@ function nextStep() {
 async function openCreate() {
   Object.assign(form, {
     mode: 'trpg', world_id: '', script_id: '', background: '', scene: '',
-    locations: [], npcs: [], import_cards: [], items: [], factions: [],
+    locations: [], npcs: [], import_cards: [],
+    asset_sel: { library_rows: [], copy: [], script_characters: [], on_conflict: 'skip' },
+    items: [], factions: [],
     storyline: { title: '', premise: '', acts: [] }, lore: [],
   })
   step.value = 0
@@ -452,8 +512,8 @@ async function createWorld() {
   const f = form
   if (f.mode === 'trpg' && !f.script_id) { ElMessage.warning('trpg 模式必须选择剧本'); return }
   if (f.mode === 'simrpg' && !f.background.trim()) { ElMessage.warning('simrpg 模式必须填写世界设定'); return }
-  if (f.mode === 'roleplay' && namedNpcs.value.length === 0 && f.import_cards.length === 0) {
-    ElMessage.warning('roleplay 模式至少需要 1 个 NPC（结构化 NPC 或人物卡）')
+  if (f.mode === 'roleplay' && namedNpcs.value.length === 0 && f.import_cards.length === 0 && assetCharacterNames.value.length === 0) {
+    ElMessage.warning('roleplay 模式至少需要 1 个角色（结构化 NPC / 人物卡 / 角色类素材）')
     return
   }
   // 重名检查
@@ -469,6 +529,7 @@ async function createWorld() {
 
   // roleplay 服务端要求 npcs 非空：把结构化 NPC / 人物卡镜像为简易种子（同名会与结构化角色合并）
   let npcSeeds = []
+  let mirrored = false // 仅靠素材角色镜像占位种子时置真（导入时强制 overwrite 覆盖占位）
   if (f.mode === 'roleplay') {
     npcSeeds = namedNpcs.value.map((n) => ({
       name: n.name.trim(), kind: n.kind, disposition: n.disposition, personality: n.personality,
@@ -479,8 +540,18 @@ async function createWorld() {
         npcSeeds.push({ name: c.name, kind: 'pc', disposition: 'neutral', personality: '', card_ref: c.id })
       }
     }
+    // 结构化 NPC 与人物卡都为空、只能靠素材角色满足校验时：
+    // 把选中角色类素材的名字镜像为简易占位种子，创建后导入用完整素材覆盖
+    if (!npcSeeds.length && assetCharacterNames.value.length) {
+      for (const name of assetCharacterNames.value) {
+        if (!npcSeeds.some((n) => n.name === name)) {
+          npcSeeds.push({ name, kind: 'npc', disposition: 'neutral' })
+        }
+      }
+      mirrored = true
+    }
     if (!npcSeeds.length) {
-      ElMessage.warning('roleplay 模式至少需要一个可命名的 NPC（人物卡名称未能解析，请改加结构化 NPC）')
+      ElMessage.warning('roleplay 模式至少需要一个可命名的角色（素材/人物卡名称未能解析，请改加结构化 NPC）')
       return
     }
   }
@@ -518,9 +589,36 @@ async function createWorld() {
   creating.value = true
   try {
     const state = await adminReq('/api/admin/worlds', { method: 'POST', body: JSON.stringify(body) })
-    ElMessage.success('世界已创建')
-    createVisible.value = false
     const id = state?.world_id || f.world_id.trim()
+    ElMessage.success(`世界已创建，聊天中发送 .world enter ${id || '<id>'} 进入`)
+
+    // 创建成功后导入待导入素材（人物卡已随创建关联，不重复传）。
+    // 导入失败不影响世界已创建的事实，warning 提示后仍正常跳转编辑器。
+    if (id && !assetSelEmpty.value) {
+      try {
+        const res = await assetApi.import(id, {
+          library: f.asset_sel.library_rows.map((r) => r.id),
+          cards: [],
+          copy: f.asset_sel.copy,
+          script_characters: f.asset_sel.script_characters,
+          // 素材角色镜像占位种子时强制覆盖：占位种子无数据，以导入的完整素材为准
+          on_conflict: mirrored ? 'overwrite' : f.asset_sel.on_conflict,
+        })
+        const imported = res?.imported ?? 0
+        if (res?.conflicts?.length || res?.errors?.length) {
+          const parts = [`成功导入 ${imported} 项`]
+          if (res.conflicts?.length) parts.push(`跳过冲突 ${res.conflicts.length} 项`)
+          if (res.errors?.length) parts.push(`失败 ${res.errors.length} 项：${res.errors.join('；')}`)
+          ElMessage.warning(parts.join('，'))
+        } else {
+          ElMessage.success(`素材导入完成：${imported} 项`)
+        }
+      } catch (e) {
+        ElMessage.warning('世界已创建，但素材导入失败（可在世界编辑器中重试）：' + e.message)
+      }
+    }
+
+    createVisible.value = false
     if (id) {
       router.push(`/admin/worlds/${encodeURIComponent(id)}`)
     } else {

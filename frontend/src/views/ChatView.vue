@@ -42,6 +42,49 @@
       </template>
     </el-dialog>
 
+    <!-- 玩家人设 -->
+    <el-dialog v-model="personaVisible" title="玩家人设" width="480px">
+      <el-form label-width="70px" label-position="left">
+        <el-form-item label="名字">
+          <el-input v-model="personaName" placeholder="你在游戏中扮演的角色名" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="personaDesc" type="textarea" :rows="4"
+            placeholder="自由描述：性格/外貌/行事风格等（换行会转为空格，请勿使用 | 字符）" />
+        </el-form-item>
+        <el-form-item label="范围">
+          <el-radio-group v-model="personaScope">
+            <el-radio value="global">全局默认</el-radio>
+            <el-radio value="world">仅本世界</el-radio>
+          </el-radio-group>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="personaVisible = false">取消</el-button>
+        <el-button type="primary" size="small" @click="applyPersona">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 进入世界 -->
+    <el-dialog v-model="worldsVisible" title="进入世界" width="520px">
+      <div v-if="currentWorldId" class="empty" style="padding:0 0 10px">
+        当前会话已有进行中的世界，进入新世界前会先退出当前世界（清除当前进度）
+      </div>
+      <div v-if="worldsLoading" class="empty">加载中…</div>
+      <div v-else-if="!worldList.length" class="empty">暂无可进入的世界（请先在管理后台创建）</div>
+      <el-radio-group v-else v-model="selectedWorldId" class="world-list">
+        <el-radio v-for="w in worldList" :key="w.id" :value="w.id" class="world-item">
+          <b>{{ w.id }}</b> <span class="muted">[{{ w.mode }}]</span>
+          {{ w.script_name || w.background || '（无描述）' }}
+          <span class="muted">轮次 {{ w.round_count }} · 角色 {{ w.character_count }}</span>
+        </el-radio>
+      </el-radio-group>
+      <template #footer>
+        <el-button size="small" @click="worldsVisible = false">取消</el-button>
+        <el-button type="primary" size="small" :disabled="!selectedWorldId" @click="enterWorld">进入</el-button>
+      </template>
+    </el-dialog>
+
     <div class="main">
       <div class="chat-wrap">
         <div class="messages" ref="messagesEl">
@@ -95,6 +138,16 @@
               @click="switchLength(l.key)"
             >{{ l.label }}</div>
           </div>
+        </div>
+        <div class="side-block">
+          <div class="side-title">进入世界</div>
+          <button class="header-btn persona-btn" @click="openWorlds">选择世界…</button>
+          <div class="side-note" style="margin-top:6px">进入管理后台创建的世界（实例化复制到本会话）。</div>
+        </div>
+        <div class="side-block">
+          <div class="side-title">玩家人设</div>
+          <button class="header-btn persona-btn" @click="personaVisible = true">设置人设…</button>
+          <div class="side-note" style="margin-top:6px">告诉 AI「你是谁」，支持全局默认或仅本世界生效。</div>
         </div>
         <div class="side-block">
           <div class="side-title">快捷指令</div>
@@ -262,6 +315,77 @@ function switchLength(key) {
   send()
 }
 
+// ---------- 玩家人设 ----------
+
+const personaVisible = ref(false)
+const personaName = ref('')
+const personaDesc = ref('')
+const personaScope = ref('global')
+
+// 组装 .persona 指令发送（复用指令链路，无需新 API）
+function applyPersona() {
+  const name = personaName.value.trim().replace(/\s+/g, ' ')
+  const desc = personaDesc.value.trim().replace(/\s+/g, ' ')
+  if (!name || !desc) { ElMessage.warning('名字和描述都不能为空'); return }
+  if (name.includes('|') || desc.includes('|')) {
+    ElMessage.warning('名字/描述请勿使用 | 字符（它是指令的分隔符）')
+    return
+  }
+  inputText.value = (personaScope.value === 'world' ? '.persona set world ' : '.persona set ') + name + '|' + desc
+  personaVisible.value = false
+  send()
+}
+
+// ---------- 进入世界 ----------
+
+const worldsVisible = ref(false)
+const worldsLoading = ref(false)
+const worldList = ref([])
+const currentWorldId = ref('')
+const selectedWorldId = ref('')
+
+async function openWorlds() {
+  worldsVisible.value = true
+  worldsLoading.value = true
+  selectedWorldId.value = ''
+  try {
+    const t = await ensureToken()
+    const data = await playerSaveReq('/api/worlds', { token: t, auth: chatAuth })
+    worldList.value = data?.worlds || []
+    currentWorldId.value = data?.current_world_id || ''
+  } catch (e) {
+    ElMessage.error('加载世界列表失败：' + e.message)
+    worldList.value = []
+  } finally {
+    worldsLoading.value = false
+  }
+}
+
+// 确认进入：复用指令链路（.world enter），回复自然出现在聊天流；
+// 已有进行中世界时二次确认后先 .world reset 再进入（会清除当前进度）
+async function enterWorld() {
+  const id = selectedWorldId.value
+  if (!id) return
+  if (currentWorldId.value) {
+    try {
+      await ElMessageBox.confirm(
+        '进入新世界会先退出当前世界并清除当前进度（存档快照见 .saves）。继续？',
+        '进入世界',
+        { type: 'warning', confirmButtonText: '退出并进入', cancelButtonText: '取消' }
+      )
+    } catch {
+      return
+    }
+  }
+  worldsVisible.value = false
+  if (currentWorldId.value) {
+    inputText.value = '.world reset'
+    send()
+  }
+  inputText.value = '.world enter ' + id
+  send()
+}
+
 function sendQuick(cmd) {
   inputText.value = cmd
   send()
@@ -426,6 +550,10 @@ async function restoreSave(row) {
   background: transparent; cursor: pointer; transition: all .2s;
 }
 .header-btn:hover { background: var(--bg); color: var(--text); }
+.persona-btn { width: 100%; border: 1px solid var(--border); text-align: center; }
+.world-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.world-item { width: 100%; margin-right: 0 !important; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.world-item :deep(.el-radio__label) { white-space: normal; line-height: 1.6; }
 .save-create { display: flex; gap: 8px; margin-bottom: 12px; }
 .empty { padding: 24px 0; text-align: center; color: var(--text-secondary); font-size: 13px; }
 

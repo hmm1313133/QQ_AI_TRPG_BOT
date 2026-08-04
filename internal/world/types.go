@@ -8,6 +8,12 @@
 //     与 Progress（宏观进度），一个世界实例对应一份持久化文档。
 package world
 
+import (
+	"strings"
+
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
+)
+
 // 游戏模式（见设计文档第九章）。
 const (
 	ModeTRPG     = "trpg"     // AI 跑团（剧本驱动）
@@ -29,7 +35,12 @@ type WorldState struct {
 	CampaignSummary string `json:"campaign_summary,omitempty"`
 	// ReplyStyle 是本世界的回复风格指令（自由文本，如"冷峻克苏鲁风，重对话少环境铺陈"），
 	// 非空时每轮经 ContextBuilder 注入 Narrator（Author's Note 位置）。
+	// 兼容回退：Style 为 nil 或 Style.Core 为空时，本字段充当 Style.Core。
 	ReplyStyle string `json:"reply_style,omitempty"`
+	// Style 输出风格分层配置（恒定基调 front + 风格核心 tail + 思维链开关）。
+	Style *StyleConfig `json:"style,omitempty"`
+	// Personas 每世界玩家人设覆盖（key=UserID；优先级高于全局默认人设）。
+	Personas map[string]*persona.Profile `json:"personas,omitempty"`
 
 	// Lore 世界设定库（Lorebook 条目，设计文档《世界设定库与按需加载设计.md》§4.1）。
 	// 内嵌进 WorldState：条目与世界强绑定，沿用每世界单 JSON 文件存储。
@@ -63,6 +74,36 @@ type WorldState struct {
 	Metrics    Metrics                    `json:"metrics"`
 	RoundCount int                        `json:"round_count"`
 	LastUpdate string                     `json:"last_update"`
+}
+
+// StyleConfig 每世界输出风格配置（管理后台编辑；空值不注入）。
+type StyleConfig struct {
+	Tone      string `json:"tone,omitempty"`       // 世界基调：front 恒定区注入（题材/氛围，稳定吃前缀缓存）
+	Core      string `json:"core,omitempty"`       // 风格核心：tail 近底部注入（高浓度短文本）
+	EnableCoT bool   `json:"enable_cot,omitempty"` // 三段式思维链开关
+	CoTGuide  string `json:"cot_guide,omitempty"`  // 自定义思维链指导（空则用内置默认结构）
+}
+
+// EffectiveStyleCore 返回生效的风格核心：Style.Core 优先，空则回退旧 ReplyStyle 字段。
+func (ws *WorldState) EffectiveStyleCore() string {
+	if ws.Style != nil && strings.TrimSpace(ws.Style.Core) != "" {
+		return ws.Style.Core
+	}
+	return ws.ReplyStyle
+}
+
+// EffectivePersona 解析玩家的生效人设：本世界覆盖 > 全局默认（global 可为 nil）。
+// 均无设置时返回 nil。
+func (ws *WorldState) EffectivePersona(userID string, global *persona.Store) *persona.Profile {
+	if p := ws.Personas[userID]; !p.Empty() {
+		return p
+	}
+	if global != nil {
+		if p, err := global.Get(userID); err == nil && !p.Empty() {
+			return p
+		}
+	}
+	return nil
 }
 
 // RecentTurnsCap 短期对话窗口保留的回合数。
@@ -290,6 +331,7 @@ func NewWorldState(worldID, mode string) *WorldState {
 		Locations:  make(map[string]*Location),
 		Factions:   make(map[string]*Faction),
 		Items:      make(map[string]*Item),
+		Personas:   make(map[string]*persona.Profile),
 		Quests:     []QuestState{},
 		HiddenInfo: []HiddenItem{},
 		EventQueue: []ScheduledEvent{},

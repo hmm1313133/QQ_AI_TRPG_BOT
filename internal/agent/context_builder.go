@@ -12,6 +12,7 @@ package agent
 import (
 	"strings"
 
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
@@ -45,16 +46,19 @@ func NewContextBuilder(budget int) *ContextBuilder {
 // + 单条用户消息；厂商前缀缓存按请求前缀命中，稳定分区靠前可让连续回合的
 // 用户消息共享前缀缓存块，降低成本）：
 //   1. 规则叙事指导（必需；整局不变）
-//   2. 游戏上下文：规则集/角色卡（基本稳定，尾部骰点等小幅波动）
-//   3. lore front 世界观区（恒定条目稳定，关键词命中随回合变化）
-//   4. 记忆检索块（随回合检索结果变化）
-//   5. 游戏运行态摘要 + 锁定事实（必需；每轮都变）
-//   6. 场景计划 ScenePlan（按计划间隔刷新）
-//   7. 近期对话窗口（每轮追加一轮，短记忆）
-//   8. 玩家消息（必需；每轮必变，最靠后）
-//   9. 回复长度要求（必需；会话级偏好，玩家消息之后）
-//   10. 回复风格要求（必需；世界配置 ReplyStyle，Author's Note 位置）
-//   11. lore tail 风格指令区（Author's Note 位置，玩家消息之后）
+//   2. 世界基调（必需；Style.Tone，恒定稳定，吃前缀缓存）
+//   3. 游戏上下文：规则集/角色卡（基本稳定，尾部骰点等小幅波动）
+//   4. lore front 世界观区（恒定条目稳定，关键词命中随回合变化）
+//   5. 记忆检索块（随回合检索结果变化）
+//   6. 游戏运行态摘要 + 锁定事实（必需；每轮都变）
+//   7. 场景计划 ScenePlan（按计划间隔刷新）
+//   8. 近期对话窗口（每轮追加一轮，短记忆）
+//   9. 玩家人设（必需；本世界覆盖 > 全局默认，玩家消息之前）
+//   10. 玩家消息（必需；每轮必变，最靠后）
+//   11. 回复长度要求（必需；会话级偏好，玩家消息之后）
+//   12. 回复风格要求（必需；Style.Core，空则回退旧 ReplyStyle 字段，Author's Note 位置）
+//   13. 输出格式要求（必需；Style.EnableCoT 时的思维链指导）
+//   14. lore tail 风格指令区（Author's Note 位置，玩家消息之后）
 //
 // 裁剪优先级与位置对齐：超预算时优先裁尾部可选分区，保住稳定前缀。
 // lore 已经 LoreResolver 按 lore_budget 裁剪，此处作为可选分区接入。
@@ -67,6 +71,7 @@ func (b *ContextBuilder) BuildNarratorMessage(
 	dialogueBlock string,
 	playerMessage string,
 	lengthHint string,
+	personaBlock string,
 ) string {
 	var sections []contextSection
 
@@ -75,6 +80,14 @@ func (b *ContextBuilder) BuildNarratorMessage(
 		sections = append(sections, contextSection{
 			priority: 1, name: "guidance",
 			content: guidance.String(), required: true,
+		})
+	}
+
+	// 必需：世界基调（恒定稳定，紧跟 guidance 保前缀缓存）
+	if state != nil && state.Style != nil && strings.TrimSpace(state.Style.Tone) != "" {
+		sections = append(sections, contextSection{
+			priority: 1, name: "style_tone",
+			content: "【世界基调】\n" + state.Style.Tone, required: true,
 		})
 	}
 
@@ -126,6 +139,14 @@ func (b *ContextBuilder) BuildNarratorMessage(
 		})
 	}
 
+	// 必需：玩家人设（玩家消息之前，紧邻其指代的"玩家"）
+	if personaBlock != "" {
+		sections = append(sections, contextSection{
+			priority: 1, name: "persona",
+			content: personaBlock, required: true,
+		})
+	}
+
 	// 必需：玩家消息（每轮必变，放最后）
 	sections = append(sections, contextSection{
 		priority: 1, name: "player",
@@ -140,11 +161,21 @@ func (b *ContextBuilder) BuildNarratorMessage(
 		})
 	}
 
-	// 必需：回复风格要求（世界配置，Author's Note 位置）
-	if state != nil && state.ReplyStyle != "" {
+	// 必需：回复风格要求（Style.Core，空则回退旧 ReplyStyle 字段，Author's Note 位置）
+	if state != nil {
+		if core := strings.TrimSpace(state.EffectiveStyleCore()); core != "" {
+			sections = append(sections, contextSection{
+				priority: 1, name: "reply_style",
+				content: "【回复风格要求】\n" + core, required: true,
+			})
+		}
+	}
+
+	// 必需：输出格式要求（思维链指导，回复风格之后；自定义 CoTGuide 覆盖内置默认）
+	if state != nil && state.Style != nil && state.Style.EnableCoT {
 		sections = append(sections, contextSection{
-			priority: 1, name: "reply_style",
-			content: "【回复风格要求】\n" + state.ReplyStyle, required: true,
+			priority: 1, name: "cot_guide",
+			content: CoTGuideFor(state.Style.CoTGuide), required: true,
 		})
 	}
 
@@ -171,6 +202,21 @@ func formatLoreHits(header string, hits []world.LoreHit) string {
 		sb.WriteString(h.Entry.Content + "\n")
 	}
 	return sb.String()
+}
+
+// buildPersonaBlock 把生效人设格式化为注入文本（nil 或全空返回空串）。
+// 形如：【玩家人设】林月: 冷静果断的私家侦探，短发（名字为空则省略名字段）。
+func buildPersonaBlock(p *persona.Profile) string {
+	if p.Empty() {
+		return ""
+	}
+	if p.Name == "" {
+		return "【玩家人设】\n" + p.Description
+	}
+	if p.Description == "" {
+		return "【玩家人设】\n" + p.Name
+	}
+	return "【玩家人设】\n" + p.Name + ": " + p.Description
 }
 
 // assemble 按优先级贪心装配分区，超预算的可选分区被裁剪（高数值优先级先裁）。

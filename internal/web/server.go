@@ -114,6 +114,7 @@ func (s *Server) buildMux() *http.ServeMux {
 	mux.HandleFunc("GET /ws/chat", s.handleChatWS)
 	mux.HandleFunc("GET /api/chat/history", s.handleChatHistory)
 	s.registerChatSaveRoutes(mux) // 玩家侧存档（设计 §9.4）
+	s.registerChatWorldRoutes(mux) // 玩家侧进入世界选择器
 	if s.adminReady {
 		s.registerAdmin(mux, s.adminDeps, s.adminToken)
 	}

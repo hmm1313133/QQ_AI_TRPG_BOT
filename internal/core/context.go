@@ -13,9 +13,8 @@ import (
 type SessionMode int
 
 const (
-	ModeNormal  SessionMode = iota // 普通模式：仅响应指令
-	ModeTRPG                       // 跑团模式：AI KP 主持 + 指令 + 日志记录
-	ModeFreeChat                   // 自由聊天模式：所有消息交给 AI Agent
+	ModeNormal   SessionMode = iota // 普通模式：纯对话，不注入世界上下文
+	ModeFreeChat                    // 自由聊天模式：世界内扮演，注入世界引擎上下文
 )
 
 // String 返回模式的可读名称。
@@ -23,8 +22,6 @@ func (m SessionMode) String() string {
 	switch m {
 	case ModeNormal:
 		return "normal"
-	case ModeTRPG:
-		return "trpg"
 	case ModeFreeChat:
 		return "freechat"
 	default:

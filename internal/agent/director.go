@@ -65,7 +65,7 @@ func NewDirector(
 		llmagent.WithGenerationConfig(genConfig),
 	)
 
-	r := runner.NewRunner("trpg-director", a)
+	r := runner.NewRunner("voyage-director", a)
 
 	log.Printf("[Director] 初始化完成, model=%s, temp=%.1f, maxTokens=%d",
 		cfg.LLMModel, temp, maxTokens)
@@ -90,7 +90,7 @@ func (d *Director) Decide(
 	start := time.Now()
 
 	// 1. 规则化预评估
-	state.Metrics = d.metrics.Evaluate(state, sessionID)
+	state.Metrics = d.metrics.Evaluate(state)
 	log.Printf("[Director] 预评估: scene=%s, round=%d, metrics=T%d/C%d/A%d/P%d",
 		state.Scene.NodeName, state.RoundCount,
 		state.Metrics.TensionLevel, state.Metrics.ChaosLevel,
@@ -167,7 +167,7 @@ func (d *Director) fallbackDirective(state *world.WorldState, playerMessage stri
 			Pacing:      d.recommendPacing(state),
 			FocusPoints: "推进当前场景的叙事，响应玩家行动",
 			NPCBehavior: "NPC 按既定性格行动",
-			Constraints: "遵循剧本设定，不编造新元素",
+			Constraints: "遵循世界设定，不编造新元素",
 		},
 		Actions:      []DirectorAction{},
 		StateUpdates: []StateUpdate{},

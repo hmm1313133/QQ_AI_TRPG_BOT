@@ -23,8 +23,8 @@ func newConfigTestServer(t *testing.T) (*httptest.Server, *config.Store) {
 	t.Cleanup(func() { cfgStore.Close() })
 
 	sessions := core.NewSessionManager()
-	router := core.NewRouter(core.NewPluginManager(), sessions, nil)
-	srv := NewServer(Config{UploadDir: t.TempDir()}, router, sessions)
+	router := core.NewRouter(core.NewPluginManager(), sessions)
+	srv := NewServer(Config{}, router, sessions)
 	srv.SetAdmin(AdminDeps{Sessions: sessions, ConfigStore: cfgStore, StartTime: time.Now()}, "tok")
 	return httptest.NewServer(srv.Handler()), cfgStore
 }
@@ -54,7 +54,7 @@ func TestAdmin_ConfigGetMasksSecrets(t *testing.T) {
 	defer ts.Close()
 
 	cfgStore.Set(config.KeyLLMModel, "deepseek-v4-flash")
-	cfgStore.Set(config.KeyQQSecret, "real-secret-value")
+	cfgStore.Set(config.KeyLLMAPIKey, "real-secret-value")
 
 	resp := adminReq(t, "GET", ts.URL+"/api/admin/config", "")
 	defer resp.Body.Close()
@@ -75,16 +75,16 @@ func TestAdmin_ConfigGetMasksSecrets(t *testing.T) {
 	if got := byKey[config.KeyLLMModel]["value"]; got != "deepseek-v4-flash" {
 		t.Fatalf("普通键应返回明文: %v", got)
 	}
-	if got := byKey[config.KeyQQSecret]["value"]; got != config.SecretMask {
+	if got := byKey[config.KeyLLMAPIKey]["value"]; got != config.SecretMask {
 		t.Fatalf("敏感键应掩码: %v", got)
 	}
 	// 未设置值的敏感键返回空串而非掩码
-	if got := byKey[config.KeyLLMAPIKey]["value"]; got != "" {
+	if got := byKey[config.KeyWebChatToken]["value"]; got != "" {
 		t.Fatalf("空敏感值应返回空串: %v", got)
 	}
 	// 元数据齐全
-	if byKey[config.KeyQQSecret]["secret"] != true || byKey[config.KeyQQSecret]["scope"] != config.ScopeBotRestart {
-		t.Fatalf("敏感键元数据缺失: %+v", byKey[config.KeyQQSecret])
+	if byKey[config.KeyLLMAPIKey]["secret"] != true || byKey[config.KeyLLMAPIKey]["scope"] != config.ScopeProcessRestart {
+		t.Fatalf("敏感键元数据缺失: %+v", byKey[config.KeyLLMAPIKey])
 	}
 }
 
@@ -110,27 +110,27 @@ func TestAdmin_ConfigSetWhitelistAndSecretSkip(t *testing.T) {
 	}
 
 	// 敏感键：掩码原样传回 → 跳过不修改
-	cfgStore.Set(config.KeyQQSecret, "real-secret-value")
-	resp = adminReq(t, "PUT", ts.URL+"/api/admin/config", `{"qq_secret":"`+config.SecretMask+`"}`)
+	cfgStore.Set(config.KeyLLMAPIKey, "real-secret-value")
+	resp = adminReq(t, "PUT", ts.URL+"/api/admin/config", `{"llm_api_key":"`+config.SecretMask+`"}`)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("掩码跳过应 200: %d", resp.StatusCode)
 	}
-	if got := cfgStore.Get(config.KeyQQSecret, ""); got != "real-secret-value" {
+	if got := cfgStore.Get(config.KeyLLMAPIKey, ""); got != "real-secret-value" {
 		t.Fatalf("掩码原样传回应不修改: %s", got)
 	}
 
 	// 敏感键：空值 → 跳过不修改
-	resp = adminReq(t, "PUT", ts.URL+"/api/admin/config", `{"qq_secret":""}`)
+	resp = adminReq(t, "PUT", ts.URL+"/api/admin/config", `{"llm_api_key":""}`)
 	resp.Body.Close()
-	if got := cfgStore.Get(config.KeyQQSecret, ""); got != "real-secret-value" {
+	if got := cfgStore.Get(config.KeyLLMAPIKey, ""); got != "real-secret-value" {
 		t.Fatalf("空值应不修改: %s", got)
 	}
 
 	// 敏感键：真实新值 → 覆盖
-	resp = adminReq(t, "PUT", ts.URL+"/api/admin/config", `{"qq_secret":"new-secret"}`)
+	resp = adminReq(t, "PUT", ts.URL+"/api/admin/config", `{"llm_api_key":"new-secret"}`)
 	resp.Body.Close()
-	if got := cfgStore.Get(config.KeyQQSecret, ""); got != "new-secret" {
+	if got := cfgStore.Get(config.KeyLLMAPIKey, ""); got != "new-secret" {
 		t.Fatalf("新值应覆盖: %s", got)
 	}
 }

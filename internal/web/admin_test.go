@@ -13,8 +13,8 @@ import (
 func newAdminTestServer(t *testing.T, adminToken string) *httptest.Server {
 	t.Helper()
 	sessions := core.NewSessionManager()
-	router := core.NewRouter(core.NewPluginManager(), sessions, nil)
-	srv := NewServer(Config{UploadDir: t.TempDir()}, router, sessions)
+	router := core.NewRouter(core.NewPluginManager(), sessions)
+	srv := NewServer(Config{}, router, sessions)
 	srv.SetAdmin(AdminDeps{Sessions: sessions, StartTime: time.Now()}, adminToken)
 	return httptest.NewServer(srv.Handler())
 }

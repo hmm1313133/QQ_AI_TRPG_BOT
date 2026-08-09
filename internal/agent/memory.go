@@ -89,8 +89,8 @@ func (m *MemoryService) SetEnabledFn(fn func() bool) {
 // worldMemoryEntity 世界级记忆的实体名。
 const worldMemoryEntity = "_world"
 
-// TRPGMemoryExtractPrompt 是对话记忆抽取器的自定义 prompt（框架 extractor）。
-const TRPGMemoryExtractPrompt = `你是 TRPG 跑团游戏的记忆提取器。从主持人（KP）与玩家的对话回合中，抽取值得长期记住的事实：
+// MemoryExtractPrompt 是对话记忆抽取器的自定义 prompt（框架 extractor）。
+const MemoryExtractPrompt = `你是角色扮演游戏的记忆提取器。从主持人与玩家的对话回合中，抽取值得长期记住的事实：
 - 玩家做出的重要决定、行动及其后果
 - NPC 透露的关键信息、NPC 与玩家关系的变化
 - 获得的物品、发现的线索、解锁的地点或区域

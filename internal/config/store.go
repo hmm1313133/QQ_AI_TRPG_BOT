@@ -30,8 +30,6 @@ const (
 	KeyLoreRecursion    = "lore_recursion"
 	KeyPlanInterval     = "plan_interval"
 	KeyExtractorEnabled = "extractor_enabled"
-	KeyQQAppID          = "qq_appid"
-	KeyQQSecret         = "qq_secret"
 	KeyLLMAPIKey        = "llm_api_key"
 	KeyLLMBaseURL       = "llm_base_url"
 	KeyWebChatToken     = "web_chat_token"
@@ -40,7 +38,6 @@ const (
 // 生效级别（修改后何时生效）。
 const (
 	ScopeHot            = "hot"             // 立即生效（下个回合读取）
-	ScopeBotRestart     = "bot-restart"     // 重启 QQ 机器人后生效
 	ScopeProcessRestart = "process-restart" // 重启进程后生效
 )
 
@@ -60,8 +57,6 @@ type KeyMeta struct {
 // KeyRegistry 配置键注册表（顺序即管理后台展示顺序）。
 // 注意：未注册的键不允许经管理后台 PUT 写入（白名单校验）。
 var KeyRegistry = []KeyMeta{
-	{Key: KeyQQAppID, Label: "QQ 机器人 AppID", Group: "QQ 机器人", Type: "string", Scope: ScopeBotRestart},
-	{Key: KeyQQSecret, Label: "QQ 机器人 Secret", Group: "QQ 机器人", Type: "string", Scope: ScopeBotRestart, Secret: true},
 	{Key: KeyWebChatToken, Label: "Web 聊天访问 Token", Group: "Web 渠道", Type: "string", Scope: ScopeProcessRestart, Secret: true},
 	{Key: KeyLLMModel, Label: "LLM 模型", Group: "LLM", Type: "string", Scope: ScopeProcessRestart},
 	{Key: KeyLLMAPIKey, Label: "LLM API Key", Group: "LLM", Type: "string", Scope: ScopeProcessRestart, Secret: true},

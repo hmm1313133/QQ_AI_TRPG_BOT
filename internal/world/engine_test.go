@@ -3,7 +3,7 @@ package world
 import "testing"
 
 func newTestWorldState() *WorldState {
-	ws := NewWorldState("test-world", ModeTRPG)
+	ws := NewWorldState("test-world", ModeSimRPG)
 	ws.Characters["老陈"] = &CharacterState{
 		Name: "老陈", Kind: "npc", Alive: true, Disposition: "neutral",
 	}

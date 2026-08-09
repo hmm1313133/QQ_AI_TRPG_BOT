@@ -1,7 +1,7 @@
 // Package web 实现 Web 渠道：HTTP 静态服务 + WebSocket 聊天 + 管理后台 API。
 //
-// 设计见《多渠道改造计划.md》。与 QQ 渠道共用 core.Router，
-// 指令与聊天同通道（.script 等指令在 Web 端零成本可用）。
+// 设计见《多渠道改造计划.md》。消息统一经 core.Router 转给 AI Agent，
+// 会话状态（模式/长度/人设/进出世界）走 /api/chat/* REST API。
 package web
 
 import (
@@ -10,16 +10,14 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"io/fs"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/agent"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 
 	"nhooyr.io/websocket"
@@ -34,7 +32,6 @@ var staticFS embed.FS
 // 监听地址/端口由 trpc_go.yaml 的 server.service 段配置，不在此处。
 type Config struct {
 	ChatToken string // 可选访问令牌（为空则开放）
-	UploadDir string // 上传文件目录
 }
 
 // Server 是 Web 渠道服务器。
@@ -63,18 +60,21 @@ type wsConn struct {
 
 // wsMessage 客户端/服务端消息帧。
 type wsMessage struct {
-	Type  string `json:"type"`            // chat / reply / status / push / progress / error / session
+	Type  string `json:"type"` // chat / regen / reply / status / push / progress / error / session
 	Text  string `json:"text,omitempty"`
 	State string `json:"state,omitempty"` // status: thinking / idle
 	Round int    `json:"round,omitempty"`
 	Token string `json:"token,omitempty"` // session 帧
+	// ID 普通 reply 帧的新行 id（chat_messages.id）。
+	ID int64 `json:"id,omitempty"`
+	// RefID regen 请求帧 / 重试 reply 帧引用的原消息 id（版本组所在行）。
+	RefID        int64 `json:"ref_id,omitempty"`
+	VersionNo    int   `json:"version_no,omitempty"`    // 重试 reply 帧：激活版本号
+	VersionCount int   `json:"version_count,omitempty"` // 重试 reply 帧：总版本数
 }
 
 // NewServer 创建 Web 渠道服务器。
 func NewServer(cfg Config, router *core.Router, sessions *core.SessionManager) *Server {
-	if cfg.UploadDir == "" {
-		cfg.UploadDir = "./data/uploads"
-	}
 	return &Server{
 		cfg:    cfg,
 		router: router,
@@ -110,11 +110,12 @@ func (s *Server) buildMux() *http.ServeMux {
 		}
 	}
 	mux.HandleFunc("GET /api/session", s.handleSession)
-	mux.HandleFunc("POST /api/upload", s.handleUpload)
 	mux.HandleFunc("GET /ws/chat", s.handleChatWS)
 	mux.HandleFunc("GET /api/chat/history", s.handleChatHistory)
-	s.registerChatSaveRoutes(mux) // 玩家侧存档（设计 §9.4）
-	s.registerChatWorldRoutes(mux) // 玩家侧进入世界选择器
+	s.registerChatSaveRoutes(mux)    // 玩家侧存档（设计 §9.4）
+	s.registerChatWorldRoutes(mux)   // 玩家侧进入世界选择器
+	s.registerChatSessionRoutes(mux) // 玩家侧会话状态（模式/长度/人设/进出世界）
+	s.registerChatMessageRoutes(mux) // 玩家侧消息编辑/多版本切换
 	if s.adminReady {
 		s.registerAdmin(mux, s.adminDeps, s.adminToken)
 	}
@@ -149,52 +150,6 @@ func newToken() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-// ============================================================
-// 文件上传（剧本等）
-// ============================================================
-
-// handleUpload 接收 multipart 文件，保存后返回路径（供 .script upload 使用）。
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.ChatToken != "" && r.URL.Query().Get("auth") != s.cfg.ChatToken {
-		http.Error(w, "未授权", http.StatusUnauthorized)
-		return
-	}
-	if err := r.ParseMultipartForm(50 << 20); err != nil { // 50MB
-		http.Error(w, "解析上传失败: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		http.Error(w, "缺少文件: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	// 文件名安全化
-	name := filepath.Base(header.Filename)
-	name = strings.Map(func(c rune) rune {
-		if c == '/' || c == '\\' || c == ':' {
-			return '_'
-		}
-		return c
-	}, name)
-	dst := filepath.Join(s.cfg.UploadDir, time.Now().Format("20060102150405")+"_"+name)
-
-	out, err := os.Create(dst)
-	if err != nil {
-		http.Error(w, "保存失败: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, file); err != nil {
-		http.Error(w, "写入失败: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("[Web] 文件上传: %s -> %s", header.Filename, dst)
-	writeJSON(w, map[string]string{"path": dst, "filename": header.Filename})
 }
 
 // ============================================================
@@ -239,13 +194,17 @@ func (s *Server) handleChatWS(w http.ResponseWriter, r *http.Request) {
 
 	// 连接即发送欢迎与当前模式
 	s.send(wc, wsMessage{Type: "session", Token: token,
-		Text: "已连接。发送 .help 查看指令，.mode trpg 进入跑团模式。"})
+		Text: "已连接。直接发送消息开始对话；左侧可进入世界、设置人设与回复长度。"})
 
 	for {
 		var msg wsMessage
 		err := wsjson.Read(r.Context(), conn, &msg)
 		if err != nil {
 			return // 连接关闭
+		}
+		if msg.Type == "regen" {
+			s.handleRegen(wc, sessionID, token, msg.RefID)
+			continue
 		}
 		if msg.Type != "chat" || strings.TrimSpace(msg.Text) == "" {
 			continue
@@ -267,21 +226,111 @@ func (s *Server) handleChatWS(w http.ResponseWriter, r *http.Request) {
 			Extra:     make(map[string]interface{}),
 		}
 
-		// 非指令消息先反馈"思考中"
-		if !strings.HasPrefix(mc.Content, ".") {
-			s.send(wc, wsMessage{Type: "status", State: "thinking"})
-		}
+		// 先反馈"思考中"
+		s.send(wc, wsMessage{Type: "status", State: "thinking"})
 
 		go s.router.Route(mc, s.makeReplyFunc(wc, sessionID))
 	}
 }
 
+// handleRegen 处理"AI 回复重试"请求：校验目标 → 回滚世界状态（有快照时）→ 用原用户输入重跑。
+// 校验失败回 error 帧；重试回复不新增 chat_messages 行，而是作为 ref_id 消息的新版本。
+func (s *Server) handleRegen(wc *wsConn, sessionID, token string, refID int64) {
+	fail := func(text string) {
+		s.send(wc, wsMessage{Type: "error", Text: text})
+	}
+	if s.history == nil {
+		fail("聊天记录存储不可用")
+		return
+	}
+	if refID <= 0 {
+		fail("缺少目标消息 id")
+		return
+	}
+	// 校验：目标存在、属于本会话、type=reply、是该会话最新一条 reply 且其后无更新的 user 消息
+	// （仅允许重试最新一条 AI 回复；更早的消息只能编辑或切版本）。
+	target, err := s.history.GetMessage(sessionID, refID)
+	if err != nil {
+		fail("消息不存在或不属于本会话")
+		return
+	}
+	if target.Type != "reply" {
+		fail("只能重试 AI 回复")
+		return
+	}
+	last, err := s.history.LastReplyOf(sessionID)
+	if err != nil || last == nil || last.ID != refID {
+		fail("只能重试最新一条回复")
+		return
+	}
+	if newer, err := s.history.HasNewerUserAfter(sessionID, refID); err != nil || newer {
+		fail("该回复之后已有新消息，无法重试")
+		return
+	}
+
+	// 世界状态回滚：freechat 且有快照则恢复（拿到当时的用户输入）；
+	// 无快照（normal 模式或老数据）取目标 reply 前最近一条 user 消息直接重跑（无状态/接受漂移）。
+	var userText string
+	ok := false
+	if s.adminReady && s.adminDeps.WorldEngine != nil {
+		ut, has, rerr := s.adminDeps.WorldEngine.RestoreTurnSnapshot(sessionID)
+		if rerr != nil {
+			log.Printf("[Web] 回合快照恢复失败（直接重跑）: %v", rerr)
+		}
+		userText, ok = ut, has
+	}
+	if !ok {
+		userText, ok = s.history.UserTextBefore(sessionID, refID)
+		if !ok || strings.TrimSpace(userText) == "" {
+			fail("找不到可重放的用户输入")
+			return
+		}
+	}
+
+	// 重试路径不重复记录 user 消息；Extra 标记让 TurnEngine 跳过回合快照写入。
+	mc := &core.MessageContext{
+		Ctx:       context.Background(),
+		Source:    core.SourceWeb,
+		SessionID: sessionID,
+		UserID:    sessionID,
+		OpenID:    token,
+		MsgID:     newToken()[:16],
+		Content:   userText,
+		IsGroup:   false,
+		Extra:     map[string]interface{}{agent.ExtraKeyRegenRetry: true},
+	}
+
+	s.send(wc, wsMessage{Type: "status", State: "thinking"})
+	go s.router.Route(mc, s.makeRegenReplyFunc(wc, refID))
+}
+
 // makeReplyFunc 创建 Web 渠道的回复函数（WS 推送 + 历史记录）。
+// reply 帧携带落库后的新行 id（历史存储未配置时为 0，前端按缺省处理）。
 func (s *Server) makeReplyFunc(wc *wsConn, sessionID string) core.ReplyFunc {
 	return func(ctx context.Context, openid, msgID, text string, isGroup bool) error {
-		s.send(wc, wsMessage{Type: "reply", Text: text})
+		var id int64
+		if s.history != nil {
+			id = s.history.Add(sessionID, "reply", text)
+		}
+		s.send(wc, wsMessage{Type: "reply", ID: id, Text: text})
 		s.send(wc, wsMessage{Type: "status", State: "idle"})
-		s.recordChat(sessionID, "reply", text)
+		return nil
+	}
+}
+
+// makeRegenReplyFunc 创建"重试"回复函数：回复文本落为 refID 消息的新版本
+// （不新增 chat_messages 行），reply 帧携带 ref_id / version_no / version_count。
+func (s *Server) makeRegenReplyFunc(wc *wsConn, refID int64) core.ReplyFunc {
+	return func(ctx context.Context, openid, msgID, text string, isGroup bool) error {
+		versionNo, count, err := s.history.AddReplyVersion(refID, text)
+		if err != nil {
+			log.Printf("[Web] 重试版本落库失败: %v", err)
+			s.send(wc, wsMessage{Type: "error", Text: "重试结果保存失败: " + err.Error()})
+			s.send(wc, wsMessage{Type: "status", State: "idle"})
+			return nil
+		}
+		s.send(wc, wsMessage{Type: "reply", RefID: refID, Text: text, VersionNo: versionNo, VersionCount: count})
+		s.send(wc, wsMessage{Type: "status", State: "idle"})
 		return nil
 	}
 }
@@ -297,7 +346,7 @@ func (s *Server) send(wc *wsConn, msg wsMessage) {
 	}
 }
 
-// PushToSession 主动向指定会话推送消息（TimelineEngine 提醒等）。
+// PushToSession 主动向指定会话推送消息。
 // sessionID 形如 "web:<token>"；无连接时静默忽略。
 func (s *Server) PushToSession(sessionID, text string) {
 	if !strings.HasPrefix(sessionID, "web:") {

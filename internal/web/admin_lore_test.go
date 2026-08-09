@@ -297,8 +297,8 @@ func TestAdmin_LoreInjections(t *testing.T) {
 
 	// 有 TurnEngine → 200（无回合记录时返回空数组）
 	sessions := core.NewSessionManager()
-	router := core.NewRouter(core.NewPluginManager(), sessions, nil)
-	srv := NewServer(Config{UploadDir: t.TempDir()}, router, sessions)
+	router := core.NewRouter(core.NewPluginManager(), sessions)
+	srv := NewServer(Config{}, router, sessions)
 	repo, err := world.NewJSONRepository(t.TempDir())
 	if err != nil {
 		t.Fatalf("创建世界仓库失败: %v", err)

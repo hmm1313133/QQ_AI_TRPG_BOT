@@ -73,6 +73,13 @@ func NewSQLiteRepository(db *sql.DB) (*SQLiteRepository, error) {
 			state_json TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_saves_world ON saves(world_id)`,
+		// 回合快照（"AI 回复重试"回滚基点）：每会话一行，回合前世界状态 + 用户输入。
+		`CREATE TABLE IF NOT EXISTS turn_snapshots (
+			session_id TEXT PRIMARY KEY,
+			state_json TEXT NOT NULL,
+			user_text TEXT,
+			created_at TEXT
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -173,7 +180,7 @@ func (r *SQLiteRepository) Save(state *WorldState) error {
 	return nil
 }
 
-// Delete 删除世界状态及其全部存档。
+// Delete 删除世界状态及其全部存档、回合快照。
 func (r *SQLiteRepository) Delete(worldID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -186,6 +193,9 @@ func (r *SQLiteRepository) Delete(worldID string) error {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM saves WHERE world_id = ?`, worldID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM turn_snapshots WHERE session_id = ?`, worldID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -255,6 +265,54 @@ func (r *SQLiteRepository) Archive(worldID string, beforeRound int) error {
 	}
 	log.Printf("[World] 归档事件日志: world=%s, archived=%d", worldID, beforeRound)
 	return nil
+}
+
+// ============================================================
+// 回合快照（"AI 回复重试"的回滚基点）
+// ============================================================
+
+// SaveTurnSnapshot 保存回合前快照（整聚合 JSON + 本回合用户输入，UPSERT 单行）。
+// 序列化与 Save 同一套（json.MarshalIndent）；不改动 state 本身（不写 LastUpdate）。
+func (r *SQLiteRepository) SaveTurnSnapshot(sessionID string, state *WorldState, userText string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化回合快照失败: %w", err)
+	}
+	_, err = r.db.Exec(`INSERT INTO turn_snapshots (session_id, state_json, user_text, created_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(session_id) DO UPDATE SET
+			state_json = excluded.state_json, user_text = excluded.user_text, created_at = excluded.created_at`,
+		sessionID, string(data), userText, time.Now().Format("2006-01-02 15:04:05"))
+	if err != nil {
+		return fmt.Errorf("写入回合快照失败: %w", err)
+	}
+	return nil
+}
+
+// RestoreTurnSnapshot 读取回合快照并覆盖回 worlds 表，返回当时的用户输入。
+// 无快照时 ok=false（normal 模式或老数据）。
+func (r *SQLiteRepository) RestoreTurnSnapshot(sessionID string) (userText string, ok bool, err error) {
+	r.mu.RLock()
+	var raw, ut string
+	err = r.db.QueryRow(`SELECT state_json, COALESCE(user_text, '') FROM turn_snapshots WHERE session_id = ?`,
+		sessionID).Scan(&raw, &ut)
+	r.mu.RUnlock()
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	state, err := decodeWorldState([]byte(raw))
+	if err != nil {
+		return "", false, err
+	}
+	if err := r.Save(state); err != nil {
+		return "", false, fmt.Errorf("回合快照回写失败: %w", err)
+	}
+	return ut, true, nil
 }
 
 // ============================================================

@@ -31,6 +31,19 @@ import (
 // DefaultPlanInterval 默认场景计划刷新间隔（轮次）。
 const DefaultPlanInterval = 8
 
+// ExtraKeyRegenRetry MessageContext.Extra 标记：本次为"AI 回复重试"的重跑，
+// TurnEngine 跳过回合快照写入（不覆盖原快照，多次重试回滚到同一基点）。
+const ExtraKeyRegenRetry = "regen_retry"
+
+// IsRegenRetry 判断本次消息是否为"回复重试"的重跑（Extra 带标记）。
+func IsRegenRetry(ctx *core.MessageContext) bool {
+	if ctx == nil || ctx.Extra == nil {
+		return false
+	}
+	v, _ := ctx.Extra[ExtraKeyRegenRetry].(bool)
+	return v
+}
+
 // recentInjectionsCap 每世界保留的最近 lore 注入记录数（环形缓存，供管理端可观测性用）。
 const recentInjectionsCap = 20
 
@@ -41,9 +54,9 @@ type TurnEngine struct {
 	metrics      *MetricsEvaluator
 	worldEngine  *world.Engine
 	ctxBuilder   *ContextBuilder
-	memory       *MemoryService  // 记忆服务（可为 nil 禁用）
-	cfgStore     *config.Store   // 运行时配置（热更新项每回合读取，可为 nil）
-	personaStore *persona.Store  // 全局默认人设存储（可为 nil，nil 时人设功能关闭）
+	memory       *MemoryService // 记忆服务（可为 nil 禁用）
+	cfgStore     *config.Store  // 运行时配置（热更新项每回合读取，可为 nil）
+	personaStore *persona.Store // 全局默认人设存储（可为 nil，nil 时人设功能关闭）
 	planInterval int
 
 	// injections 世界 ID -> 最近 N 回合 lore 注入清单（内存环形缓存）。
@@ -112,16 +125,29 @@ func (t *TurnEngine) Run(
 	}
 
 	// 1. 加载 WorldState
-	state := t.loadOrCreateState(sessionID, session)
+	// normal 模式 = 纯对话：不加载/注入世界上下文；freechat = 世界内扮演。
+	var state *world.WorldState
+	if session.Mode != core.ModeNormal {
+		state = t.loadOrCreateState(sessionID)
+	}
 	if state == nil {
-		// 无世界状态（自由模式）-> 直接叙事（人设只有全局默认一档）
-		gameContext := t.narrator.buildGameContext(sessionID, userID)
+		// 无世界状态（普通对话）-> 直接叙事（人设只有全局默认一档）
+		gameContext := t.narrator.buildGameContext(sessionID)
 		userMessage := t.ctxBuilder.BuildNarratorMessage(nil, nil, nil, gameContext, "", "", playerMessage,
 			LengthHintFromSession(session), t.globalPersonaBlock(userID))
 		return t.narrator.NarrateMessage(ctx.Ctx, userMessage, sessionID, userID)
 	}
 	eventLogBase := len(state.EventLog) // 本回合开始前的事件数，供 AfterTurn 取增量
 	mode := world.GetMode(state.Mode)
+
+	// 回合快照：在任何 mutation 之前留存世界状态 + 本回合用户输入，
+	// 作为"AI 回复重试"的回滚基点。重试的重跑带 Extra 标记跳过本步，
+	// 保证连续多次重试都回滚到同一基点。
+	if !IsRegenRetry(ctx) {
+		if err := t.worldEngine.SaveTurnSnapshot(sessionID, state, playerMessage); err != nil {
+			log.Printf("[TurnEngine] 回合快照写入失败: %v", err)
+		}
+	}
 
 	// 1c. 应用运行时配置（热更新项：上下文预算与 lore 检索参数每回合读取）
 	loreBudget := world.DefaultLoreBudget
@@ -148,7 +174,7 @@ func (t *TurnEngine) Run(
 
 	// 2. 规则化指标评估（确定性）
 	if t.metrics != nil {
-		state.Metrics = t.metrics.Evaluate(state, sessionID)
+		state.Metrics = t.metrics.Evaluate(state)
 	}
 
 	// 3. 规则叙事指导（确定性，替代每轮 Director LLM）
@@ -160,7 +186,7 @@ func (t *TurnEngine) Run(
 	}
 
 	// 5. ContextBuilder 按预算组装上下文包（含记忆检索块、近期对话窗口与世界事件）
-	gameContext := t.narrator.buildGameContext(sessionID, userID)
+	gameContext := t.narrator.buildGameContext(sessionID)
 	memoryBlock := worldEventsBlock
 	if mode.EnableMemory && t.memory != nil {
 		memoryBlock += t.memory.BuildMemoryBlock(state, playerMessage)
@@ -261,40 +287,12 @@ func (t *TurnEngine) RecentInjections(worldID string) []world.LoreResult {
 	return out
 }
 
-// loadOrCreateState 加载 WorldState，不存在且有剧本则初始化。
-func (t *TurnEngine) loadOrCreateState(sessionID string, session *core.Session) *world.WorldState {
+// loadOrCreateState 加载 WorldState（不存在时返回 nil，由调用方走纯对话路径）。
+func (t *TurnEngine) loadOrCreateState(sessionID string) *world.WorldState {
 	if t.worldEngine == nil {
 		return nil
 	}
-
-	if state := t.worldEngine.LoadOrNil(sessionID); state != nil {
-		return state
-	}
-
-	if t.narrator == nil || t.narrator.scriptDeps == nil || t.narrator.scriptDeps.Archive == nil {
-		return nil
-	}
-
-	scriptIDVal, ok := session.Get("script_id")
-	if !ok || scriptIDVal == nil {
-		return nil
-	}
-	scriptID, ok := scriptIDVal.(string)
-	if !ok || scriptID == "" {
-		return nil
-	}
-
-	scr, err := t.narrator.scriptDeps.Archive.Get(scriptID)
-	if err != nil {
-		return nil
-	}
-
-	state, err := t.worldEngine.InitFromScript(sessionID, scr)
-	if err != nil {
-		log.Printf("[TurnEngine] 初始化 WorldState 失败: %v", err)
-		return nil
-	}
-	return state
+	return t.worldEngine.LoadOrNil(sessionID)
 }
 
 // needsPlan 判断是否需要刷新场景计划。
@@ -436,7 +434,7 @@ func (t *TurnEngine) bookkeep(state *world.WorldState, sessionID, playerMessage,
 	latest.RoundCount++
 
 	// 合并世界时钟（本回合已推进）与事件触发标记（按 ID 合并，
-	// 避免覆盖 advance_timeline 刷新的事件队列）
+	// 避免覆盖本回合工具调用刷新的事件队列）
 	latest.Clock = state.Clock
 	triggered := make(map[string]bool)
 	for _, ev := range state.EventQueue {

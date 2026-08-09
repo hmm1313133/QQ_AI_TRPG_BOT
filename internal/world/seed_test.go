@@ -2,8 +2,6 @@ package world
 
 import (
 	"testing"
-
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
 )
 
 func newTestEngine(t *testing.T) *Engine {
@@ -25,7 +23,7 @@ func TestSeedWorld_SimRPG(t *testing.T) {
 			{Name: "酒馆老板", Personality: "精明健谈，想打探冒险者的来历"},
 		},
 		Locations: []string{"酒馆", "集市"},
-	}, nil)
+	})
 	if err != nil {
 		t.Fatalf("simrpg 播种失败: %v", err)
 	}
@@ -55,13 +53,13 @@ func TestSeedWorld_SimRPG(t *testing.T) {
 
 func TestSeedWorld_RoleplayRequiresNPC(t *testing.T) {
 	e := newTestEngine(t)
-	if _, err := e.SeedWorld("w-rp", SeedSpec{Mode: ModeRoleplay, Background: "x"}, nil); err == nil {
+	if _, err := e.SeedWorld("w-rp", SeedSpec{Mode: ModeRoleplay, Background: "x"}); err == nil {
 		t.Fatal("roleplay 无 NPC 应报错")
 	}
 	state, err := e.SeedWorld("w-rp", SeedSpec{
 		Mode: ModeRoleplay,
 		NPCs: []NPCSeed{{Name: "搭档", Kind: "npc", Disposition: "friendly"}},
-	}, nil)
+	})
 	if err != nil {
 		t.Fatalf("roleplay 播种失败: %v", err)
 	}
@@ -70,41 +68,23 @@ func TestSeedWorld_RoleplayRequiresNPC(t *testing.T) {
 	}
 }
 
-func TestSeedWorld_TRPGDelegatesToScript(t *testing.T) {
-	e := newTestEngine(t)
-	scr := &script.Script{
-		ID: "s1", Name: "测试剧本", Title: "测试剧本", System: "coc7",
-		Timeline: []script.TimelineNode{{ID: "node_1", Name: "开场", Order: 1}},
-	}
-	if _, err := e.SeedWorld("w-trpg", SeedSpec{Mode: ModeTRPG, ScriptID: "s1"}, nil); err == nil {
-		t.Fatal("trpg 缺剧本应报错")
-	}
-	state, err := e.SeedWorld("w-trpg", SeedSpec{Mode: ModeTRPG, ScriptID: "s1"}, scr)
-	if err != nil {
-		t.Fatalf("trpg 播种失败: %v", err)
-	}
-	if state.ScriptID != "s1" || state.Scene.NodeID != "node_1" {
-		t.Fatalf("trpg 应复用 InitFromScript: %+v", state)
-	}
-}
-
 func TestSeedWorld_Validation(t *testing.T) {
 	e := newTestEngine(t)
-	if _, err := e.SeedWorld("", SeedSpec{Mode: ModeSimRPG}, nil); err == nil {
+	if _, err := e.SeedWorld("", SeedSpec{Mode: ModeSimRPG}); err == nil {
 		t.Fatal("空世界 ID 应报错")
 	}
-	if _, err := e.SeedWorld("w-bad", SeedSpec{Mode: "unknown"}, nil); err == nil {
+	if _, err := e.SeedWorld("w-bad", SeedSpec{Mode: "unknown"}); err == nil {
 		t.Fatal("未知模式应报错")
 	}
-	if _, err := e.SeedWorld("w-npc", SeedSpec{Mode: ModeSimRPG, NPCs: []NPCSeed{{Name: ""}}}, nil); err == nil {
+	if _, err := e.SeedWorld("w-npc", SeedSpec{Mode: ModeSimRPG, NPCs: []NPCSeed{{Name: ""}}}); err == nil {
 		t.Fatal("空 NPC 名称应报错")
 	}
 
 	// 重复 ID 应报错，且不能覆盖已有世界
-	if _, err := e.SeedWorld("w-dup", SeedSpec{Mode: ModeSimRPG, Background: "旧设定"}, nil); err != nil {
+	if _, err := e.SeedWorld("w-dup", SeedSpec{Mode: ModeSimRPG, Background: "旧设定"}); err != nil {
 		t.Fatalf("首次播种失败: %v", err)
 	}
-	if _, err := e.SeedWorld("w-dup", SeedSpec{Mode: ModeSimRPG, Background: "新设定"}, nil); err == nil {
+	if _, err := e.SeedWorld("w-dup", SeedSpec{Mode: ModeSimRPG, Background: "新设定"}); err == nil {
 		t.Fatal("重复世界 ID 应报错")
 	}
 	loaded, _ := e.Load("w-dup")

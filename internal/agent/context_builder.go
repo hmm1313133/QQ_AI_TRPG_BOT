@@ -47,7 +47,7 @@ func NewContextBuilder(budget int) *ContextBuilder {
 // 用户消息共享前缀缓存块，降低成本）：
 //   1. 规则叙事指导（必需；整局不变）
 //   2. 世界基调（必需；Style.Tone，恒定稳定，吃前缀缓存）
-//   3. 游戏上下文：规则集/角色卡（基本稳定，尾部骰点等小幅波动）
+//   3. 游戏上下文：会话级状态（基本稳定，尾部骰点等小幅波动）
 //   4. lore front 世界观区（恒定条目稳定，关键词命中随回合变化）
 //   5. 记忆检索块（随回合检索结果变化）
 //   6. 游戏运行态摘要 + 锁定事实（必需；每轮都变）
@@ -91,7 +91,7 @@ func (b *ContextBuilder) BuildNarratorMessage(
 		})
 	}
 
-	// 可选：游戏上下文（角色卡/规则集，基本稳定）
+	// 可选：游戏上下文（会话级状态，基本稳定）
 	if gameContext != "" {
 		sections = append(sections, contextSection{
 			priority: 3, name: "game_context",

@@ -64,7 +64,6 @@ export const worldApi = {
   detail: (id) => adminReq(`/api/admin/worlds/${enc(id)}`),
   create: (body) => adminReq('/api/admin/worlds', { method: 'POST', body: JSON.stringify(body) }),
   remove: (id) => adminReq(`/api/admin/worlds/${enc(id)}`, { method: 'DELETE' }),
-  advance: (id) => adminReq(`/api/admin/worlds/${enc(id)}/advance`, { method: 'POST' }),
   section: (id, part) => adminReq(`/api/admin/worlds/${enc(id)}/section?part=${enc(part)}`),
   saveSection: (id, part, data) => adminReq(`/api/admin/worlds/${enc(id)}/section`, {
     method: 'PATCH',
@@ -77,7 +76,7 @@ export const worldApi = {
 // ============================================================
 
 export const assetApi = {
-  // 素材目录：{ library, cards, worlds, scripts }
+  // 素材目录：{ library, worlds }
   catalog: () => adminReq('/api/admin/assets'),
   // 素材库列表（可选 kind / 关键词 q / 标签 tag 过滤）
   list: ({ kind = '', q = '', tag = '' } = {}) => {
@@ -100,7 +99,7 @@ export const assetApi = {
     method: 'POST',
     body: JSON.stringify(body),
   }),
-  // 素材导入世界：{ library, cards, copy, script_characters, on_conflict }
+  // 素材导入世界：{ library, copy, on_conflict }
   import: (worldId, body) => adminReq(`/api/admin/worlds/${enc(worldId)}/assets/import`, {
     method: 'POST',
     body: JSON.stringify(body),
@@ -122,11 +121,6 @@ export const assetApi = {
     method: 'POST',
     body: JSON.stringify({ assets }),
   }),
-}
-
-export const scriptApi = {
-  // 剧本素材一键入库：派生背景/角色/场景/组织/主线素材 -> { created, skipped, errors }
-  collectAssets: (id) => adminReq(`/api/admin/scripts/${enc(id)}/assets/collect`, { method: 'POST' }),
 }
 
 export const saveApi = {

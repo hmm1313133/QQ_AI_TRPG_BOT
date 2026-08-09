@@ -1,7 +1,7 @@
 <template>
   <div class="admin-page">
     <nav class="nav">
-      <div class="logo">AI <span>TRPG</span></div>
+      <div class="logo">AI <span>世界引擎</span></div>
       <router-link
         v-for="item in navItems"
         :key="item.path"
@@ -30,14 +30,10 @@ const route = useRoute()
 
 const navItems = [
   { path: '/admin/dashboard', icon: '📊', label: '仪表盘' },
-  { path: '/admin/bot', icon: '🤖', label: '机器人' },
   { path: '/admin/worlds', icon: '🌍', label: '世界管理' },
-  { path: '/admin/scripts', icon: '📜', label: '剧本管理' },
   { path: '/admin/config', icon: '⚙️', label: 'AI 配置' },
-  { path: '/admin/characters', icon: '🎭', label: '角色卡' },
   { path: '/admin/assets', icon: '🧩', label: '素材库' },
   { path: '/admin/memory', icon: '🧠', label: '记忆查看' },
-  { path: '/admin/logs', icon: '💬', label: '聊天记录' },
 ]
 
 function isActive(path) {

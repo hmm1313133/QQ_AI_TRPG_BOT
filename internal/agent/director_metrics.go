@@ -1,7 +1,7 @@
 // Package agent - 规则化指标评估器。
 //
-// 从 WorldState + trpg.Service 确定性计算四个核心指标：
-//   - TensionLevel:      场景激烈程度（活跃威胁、SAN下降、检定失败）
+// 从 WorldState 确定性计算四个核心指标：
+//   - TensionLevel:      场景激烈程度（活跃威胁、危险等级、未发现线索）
 //   - ChaosLevel:        局势失控距离（敌对NPC、偏离主线）
 //   - PlayerAgency:      玩家掌控权（待选项、目标完成度）
 //   - ObjectiveProgress: 目标推进程度（当前节点目标完成比例）
@@ -10,25 +10,21 @@
 package agent
 
 import (
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
 // MetricsEvaluator 规则化指标评估器。
-type MetricsEvaluator struct {
-	svc *trpg.Service
-}
+type MetricsEvaluator struct{}
 
 // NewMetricsEvaluator 创建指标评估器。
-func NewMetricsEvaluator(svc *trpg.Service) *MetricsEvaluator {
-	return &MetricsEvaluator{svc: svc}
+func NewMetricsEvaluator() *MetricsEvaluator {
+	return &MetricsEvaluator{}
 }
 
-// Evaluate 从 WorldState 和会话信息计算四个指标。
-// sessionID 用于读取角色卡状态（SAN/HP 等）。
-func (m *MetricsEvaluator) Evaluate(state *world.WorldState, sessionID string) world.Metrics {
+// Evaluate 从 WorldState 计算四个指标。
+func (m *MetricsEvaluator) Evaluate(state *world.WorldState) world.Metrics {
 	return world.Metrics{
-		TensionLevel:      m.calcTension(state, sessionID),
+		TensionLevel:      m.calcTension(state),
 		ChaosLevel:        m.calcChaos(state),
 		PlayerAgency:      m.calcAgency(state),
 		ObjectiveProgress: m.calcProgress(state),
@@ -36,35 +32,13 @@ func (m *MetricsEvaluator) Evaluate(state *world.WorldState, sessionID string) w
 }
 
 // calcTension 计算场景张力（0-100）。
-// 因素：活跃威胁数 + SAN下降幅度 + 未发现线索数
-func (m *MetricsEvaluator) calcTension(state *world.WorldState, sessionID string) int {
+// 因素：活跃威胁数 + 未发现线索数 + 场景危险等级
+func (m *MetricsEvaluator) calcTension(state *world.WorldState) int {
 	score := 0
 
 	// 活跃威胁：每个敌对NPC +20，每个未触发遭遇 +15
 	threats := state.ActiveThreatCount()
 	score += threats * 20
-
-	// SAN 值下降幅度（从角色卡读取）
-	if m.svc != nil {
-		for _, userID := range m.getSessionUsers(sessionID) {
-			if card := m.svc.GetActiveCharacter(sessionID, userID); card != nil {
-				if san, ok := card.Status["SAN"]; ok {
-					// SAN 低于 60 开始增加张力
-					if san < 60 {
-						score += (60 - san) / 2
-					}
-					// SAN 低于 30 大幅增加
-					if san < 30 {
-						score += 20
-					}
-				}
-				// HP 低也增加张力
-				if hp, ok := card.Status["HP"]; ok && hp < 5 {
-					score += 15
-				}
-			}
-		}
-	}
 
 	// 未发现的线索暗示潜在危险
 	undiscovered := state.UndiscoveredCount()
@@ -167,23 +141,6 @@ func (m *MetricsEvaluator) calcProgress(state *world.WorldState) int {
 	}
 	completedObj := state.CompletedQuestCount()
 	return (completedObj * 100) / totalObj
-}
-
-// getSessionUsers 获取会话中的用户列表。
-// 从 trpg.Service 的 Session.Characters 获取已绑定角色的用户。
-func (m *MetricsEvaluator) getSessionUsers(sessionID string) []string {
-	if m.svc == nil {
-		return nil
-	}
-	session := m.svc.GetSession(sessionID)
-	if session == nil {
-		return nil
-	}
-	users := make([]string, 0, len(session.Characters))
-	for userID := range session.Characters {
-		users = append(users, userID)
-	}
-	return users
 }
 
 // clampInt 将 v 限制在 [min, max]。

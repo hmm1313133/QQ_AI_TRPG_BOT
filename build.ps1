@@ -1,4 +1,4 @@
-﻿# QQ AI TRPG Bot 构建脚本 (PowerShell)
+﻿# Voyage World Engine 构建脚本 (PowerShell)
 # 用法: .\build.ps1
 # 流程: 先构建前端（Vue3 + Vite -> internal/web/static/dist），再编译 Go 程序。
 # 说明: go:embed 依赖 dist 产物，因此必须先生成前端再编译 Go。
@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  QQ AI TRPG Bot 构建脚本" -ForegroundColor Cyan
+Write-Host "  Voyage World Engine 构建脚本" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # 1. 准备 Node 环境（优先系统 Node，其次项目便携版 tools/node）

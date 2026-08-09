@@ -1,8 +1,8 @@
 // Package web - 玩家侧"进入世界"选择器 API（Web 聊天页）。
 //
-// 与 .world 指令同一机制：聊天会话（web:<token>）经实例化复制进入
-// 管理后台创建的世界。这里只提供列表数据，进入动作仍走 .world enter 指令
-// （复用指令链路，无需新写路径）。鉴权沿用聊天令牌（?auth=）+ 会话 token。
+// 与 POST /api/chat/world/enter 同一机制：聊天会话（web:<token>）经实例化
+// 复制进入管理后台创建的世界。这里只提供列表数据。
+// 鉴权沿用聊天令牌（?auth=）+ 会话 token。
 package web
 
 import (

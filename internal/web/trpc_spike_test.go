@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/handler"
 
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
@@ -28,7 +27,7 @@ func TestTrpcHTTPSpike(t *testing.T) {
   app: test
   server: test
   service:
-    - name: trpc.trpg.web.Admin
+    - name: trpc.voyage.web.Admin
       ip: 127.0.0.1
       port: 18099
       network: tcp
@@ -40,10 +39,9 @@ func TestTrpcHTTPSpike(t *testing.T) {
 	}
 
 	plugins := core.NewPluginManager()
-	plugins.RegisterHandler(handler.NewHelpHandler())
 	sessions := core.NewSessionManager()
-	router := core.NewRouter(plugins, sessions, nil)
-	srv := NewServer(Config{UploadDir: t.TempDir()}, router, sessions)
+	router := core.NewRouter(plugins, sessions)
+	srv := NewServer(Config{}, router, sessions)
 
 	if err := srv.StartTrpc(confPath); err != nil {
 		t.Fatalf("StartTrpc 失败: %v", err)
@@ -103,11 +101,16 @@ func TestTrpcHTTPSpike(t *testing.T) {
 	if err := wsjson.Read(ctx, conn, &welcome); err != nil || welcome.Type != "session" {
 		t.Fatalf("WS 欢迎帧异常: %v, %+v", err, welcome)
 	}
-	if err := wsjson.Write(ctx, conn, wsMessage{Type: "chat", Text: ".help"}); err != nil {
+	if err := wsjson.Write(ctx, conn, wsMessage{Type: "chat", Text: "你好"}); err != nil {
 		t.Fatalf("WS 发送失败: %v", err)
 	}
 	var reply wsMessage
-	if err := wsjson.Read(ctx, conn, &reply); err != nil || reply.Type != "reply" {
-		t.Fatalf("WS 回复帧异常: %v, %+v", err, reply)
+	for {
+		if err := wsjson.Read(ctx, conn, &reply); err != nil {
+			t.Fatalf("WS 回复帧异常: %v", err)
+		}
+		if reply.Type == "reply" {
+			break
+		}
 	}
 }

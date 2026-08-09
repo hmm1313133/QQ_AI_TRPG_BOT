@@ -1,11 +1,10 @@
 // Package agent - Narrator 叙事层。
 //
-// Narrator 是输出层，接收 DecisionDirective 作为约束，结合 GameState
-// 和剧本上下文，使用工具（骰子/检定/NPC查询等）生成沉浸式叙事文本。
+// Narrator 是输出层，接收 DecisionDirective 作为约束，结合世界状态
+// 上下文，使用工具（roll_dice）生成沉浸式叙事文本。
 //
-// 复用现有 KPAgent 的 Agent + Tools 模式：
+// 复用 KPAgent 的 Agent + Tools 模式：
 //   - llmagent.New + WithModel + WithInstruction + WithTools + WithGenerationConfig
-//   - 保留所有现有工具（roll_dice, skill_check, san_check, get_character, ...）
 //   - 温度 0.7 兼顾创造性和可控性
 package agent
 
@@ -14,11 +13,9 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -35,16 +32,12 @@ type Narrator struct {
 	runner     runner.Runner
 	tools      []tool.Tool
 	sessionMgr *core.SessionManager
-	svc        *trpg.Service
-	scriptDeps *ScriptDeps
 }
 
 // NewNarrator 创建叙事层 Agent。
 func NewNarrator(
 	cfg *Config,
 	sessionMgr *core.SessionManager,
-	svc *trpg.Service,
-	scriptDeps *ScriptDeps,
 ) (*Narrator, error) {
 	narratorTemp := cfg.NarratorTemperature
 	if narratorTemp == 0 {
@@ -69,15 +62,8 @@ func NewNarrator(
 	}
 	modelInstance := openai.New(cfg.LLMModel, modelOpts...)
 
-	// 2. Create tools (KP tools + script tools)
-	var progression *ProgressionEngine
-	if scriptDeps != nil {
-		progression = scriptDeps.Progression
-	}
-	tools := NewKPTools(sessionMgr, svc, progression)
-	if scriptDeps != nil {
-		tools = append(tools, NewScriptTools(scriptDeps)...)
-	}
+	// 2. Create tools (仅 roll_dice)
+	tools := []tool.Tool{NewRollDiceTool(sessionMgr)}
 
 	// 3. Create LLMAgent with Narrator system prompt
 	maxTokens := narratorMaxTokens
@@ -89,7 +75,7 @@ func NewNarrator(
 		Stream:      false,
 	}
 
-	// 初始系统提示词（后续每轮会根据 GameState 动态更新）
+	// 初始系统提示词
 	a := llmagent.New("narrator",
 		llmagent.WithModel(modelInstance),
 		llmagent.WithInstruction(narratorSystemPromptBase),
@@ -97,7 +83,7 @@ func NewNarrator(
 		llmagent.WithGenerationConfig(genConfig),
 	)
 
-	r := runner.NewRunner("trpg-narrator", a)
+	r := runner.NewRunner("voyage-narrator", a)
 
 	n := &Narrator{
 		config:     cfg,
@@ -105,8 +91,6 @@ func NewNarrator(
 		runner:     r,
 		tools:      tools,
 		sessionMgr: sessionMgr,
-		svc:        svc,
-		scriptDeps: scriptDeps,
 	}
 
 	log.Printf("[Narrator] 初始化完成, model=%s, temp=%.1f, maxTokens=%d, tools=%d",
@@ -148,7 +132,7 @@ func (n *Narrator) NarrateMessage(
 	// Collect reply（剥离 CoT 思考段；未启用 CoT 时是无害 no-op）
 	reply := StripThinking(collectAgentReply(events))
 	if reply == "" {
-		reply = "（KP 沉思中...未生成回复）"
+		reply = "（主持人沉思中...未生成回复）"
 	}
 
 	elapsed := time.Since(start)
@@ -158,118 +142,15 @@ func (n *Narrator) NarrateMessage(
 	return reply, nil
 }
 
-// buildGameContext 构建游戏上下文（复用现有 KPAgent 的逻辑）。
-func (n *Narrator) buildGameContext(sessionID, userID string) string {
-	var sb strings.Builder
-	hasContext := false
-
-	// Ruleset
-	rs := n.svc.GetRuleSet(sessionID)
-	if rs != nil {
-		rsLabel := "CoC 7版"
-		if rs.Name() == "dnd5e" {
-			rsLabel = "DnD 5e"
-		}
-		sb.WriteString(fmt.Sprintf("规则集: %s\n", rsLabel))
-		hasContext = true
-	}
-
-	// Active character
-	card := n.svc.GetActiveCharacter(sessionID, userID)
-	if card != nil {
-		sb.WriteString(fmt.Sprintf("玩家角色: %s (%s)\n", card.Name, card.System))
-		if len(card.Attrs) > 0 {
-			sb.WriteString("属性: ")
-			first := true
-			for k, v := range card.Attrs {
-				if !first {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(fmt.Sprintf("%s=%d", k, v))
-				first = false
-			}
-			sb.WriteString("\n")
-		}
-		if len(card.Skills) > 0 && rs != nil && rs.Name() == "coc7" {
-			sb.WriteString("技能(前10): ")
-			count := 0
-			for k, v := range card.Skills {
-				if count >= 10 {
-					sb.WriteString("...")
-					break
-				}
-				if count > 0 {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(fmt.Sprintf("%s=%d", k, v))
-				count++
-			}
-			sb.WriteString("\n")
-		}
-		if len(card.Status) > 0 {
-			sb.WriteString("状态: ")
-			first := true
-			for k, v := range card.Status {
-				if !first {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(fmt.Sprintf("%s=%d", k, v))
-				first = false
-			}
-			sb.WriteString("\n")
-		}
-		hasContext = true
-	}
-
-	// Last dice result
-	if n.sessionMgr != nil {
-		session := n.sessionMgr.GetSession(sessionID)
-		if lastRoll, ok := session.Get("last_dice_result"); ok {
-			sb.WriteString(fmt.Sprintf("最近骰点: %v\n", lastRoll))
-			hasContext = true
-		}
-		if lastCheck, ok := session.Get("last_check_result"); ok {
-			sb.WriteString(fmt.Sprintf("最近检定: %v\n", lastCheck))
-			hasContext = true
-		}
-	}
-
-	// Initiative list (DnD)
-	initList := n.svc.GetInitList(sessionID)
-	if len(initList) > 0 {
-		sb.WriteString("先攻列表: ")
-		first := true
-		for name, val := range initList {
-			if !first {
-				sb.WriteString(", ")
-			}
-			sb.WriteString(fmt.Sprintf("%s(%d)", name, val))
-			first = false
-		}
-		sb.WriteString("\n")
-		hasContext = true
-	}
-
-	// Script context (ProgressTracker)
-	if n.scriptDeps != nil && n.scriptDeps.ProgressTracker != nil {
-		scriptCtx := n.scriptDeps.ProgressTracker.GetContextForKP(sessionID)
-		if scriptCtx != "" {
-			sb.WriteString(scriptCtx)
-			hasContext = true
-		}
-
-		if n.sessionMgr != nil {
-			session := n.sessionMgr.GetSession(sessionID)
-			if prompt, ok := session.Get("timeline_prompt"); ok {
-				sb.WriteString(fmt.Sprintf("\n【时间轴提示】%v\n", prompt))
-				session.Set("timeline_prompt", nil)
-			}
-		}
-	}
-
-	if !hasContext {
+// buildGameContext 构建会话级上下文（最近骰点记账）。
+func (n *Narrator) buildGameContext(sessionID string) string {
+	if n.sessionMgr == nil {
 		return ""
 	}
-
-	return "【游戏上下文】\n" + sb.String()
+	session := n.sessionMgr.GetSession(sessionID)
+	lastRoll, ok := session.Get("last_dice_result")
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("【游戏上下文】\n最近骰点: %v\n", lastRoll)
 }

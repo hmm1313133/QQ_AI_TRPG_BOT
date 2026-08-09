@@ -16,17 +16,18 @@ import (
 
 // 游戏模式（见设计文档第九章）。
 const (
-	ModeTRPG     = "trpg"     // AI 跑团（剧本驱动）
 	ModeSimRPG   = "simrpg"   // 文字 RPG 模拟（开放世界）
 	ModeRoleplay = "roleplay" // AI 角色扮演（单 NPC 深度对话）
 )
 
-// WorldState 是一个世界实例（= 一个 QQ 群的一场游戏）的全部硬状态。
+// WorldState 是一个世界实例（= 一场游戏）的全部硬状态。
 // 合并自旧 GameState（internal/agent/gamestate.go）与 Progress（internal/script/types.go）。
 type WorldState struct {
-	WorldID    string `json:"world_id"`
-	Mode       string `json:"mode"`
-	ScriptID   string `json:"script_id,omitempty"`
+	WorldID string `json:"world_id"`
+	Mode    string `json:"mode"`
+	// Deprecated: 剧本系统已移除，字段仅为兼容既有存储中的 JSON 而保留，不再写入。
+	ScriptID string `json:"script_id,omitempty"`
+	// Deprecated: 剧本系统已移除，字段仅为兼容既有存储中的 JSON 而保留，不再写入。
 	ScriptName string `json:"script_name,omitempty"`
 
 	// Background 是不可变的剧本/世界设定（旧 StoryContext 拆分而来）。
@@ -149,13 +150,12 @@ type SceneState struct {
 }
 
 // CharacterState PC/NPC 统一实体（旧 NPCState 扩展）。
-// 数值真相（HP/SAN/技能）仍在 character.Card，这里只存引用与叙事状态。
 type CharacterState struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
 	Kind          string   `json:"kind"` // npc / pc
 	Role          string   `json:"role,omitempty"`
-	CardRef       string   `json:"card_ref,omitempty"` // 关联 character.Card ID
+	CardRef       string   `json:"card_ref,omitempty"` // Deprecated: 全局人物卡系统已移除，仅兼容旧数据
 	Alive         bool     `json:"alive"`
 	Disposition   string   `json:"disposition"` // friendly / neutral / suspicious / hostile / dead
 	Location      string   `json:"location,omitempty"`
@@ -197,7 +197,7 @@ type SkillUseRecord struct {
 	Round  int    `json:"round"`
 }
 
-// Location 地点（RPG 模式全量，TRPG 模式按需）。
+// Location 地点。
 type Location struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
@@ -229,8 +229,7 @@ type Item struct {
 	Tags        []string `json:"tags,omitempty"`
 }
 
-// Storyline 导演系统主线剧情脊柱（simrpg/roleplay 手工编排；
-// trpg 模式由 InitFromScript 从剧本时间轴派生镜像，设计 §11.2）。设计 §3.4。
+// Storyline 导演系统主线剧情脊柱（simrpg/roleplay 手工编排）。设计 §3.4。
 type Storyline struct {
 	Title   string     `json:"title"`
 	Premise string     `json:"premise,omitempty"` // 主线前提/悬念

@@ -3,7 +3,7 @@ package world
 import "testing"
 
 func newConsequenceTestState() *WorldState {
-	ws := NewWorldState("w-test", ModeTRPG)
+	ws := NewWorldState("w-test", ModeSimRPG)
 	ws.Characters["Alice"] = &CharacterState{Name: "Alice", Kind: "npc", Alive: true, Disposition: "neutral"}
 	ws.Characters["Bob"] = &CharacterState{Name: "Bob", Kind: "npc", Alive: true, Disposition: "neutral"}
 	ws.Characters["Carol"] = &CharacterState{Name: "Carol", Kind: "npc", Alive: true, Disposition: "neutral"}

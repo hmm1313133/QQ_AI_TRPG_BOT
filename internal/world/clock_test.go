@@ -6,7 +6,7 @@ import (
 )
 
 func TestAdvanceClock_DueEvents(t *testing.T) {
-	ws := NewWorldState("w1", ModeTRPG)
+	ws := NewWorldState("w1", ModeSimRPG)
 	ws.EventQueue = []ScheduledEvent{
 		{ID: "e1", Description: "商队抵达", TriggerAt: 100, Type: "world"},
 		{ID: "e2", Description: "季节变化", TriggerAt: 500, Type: "world"},
@@ -68,7 +68,7 @@ func TestFastForward_FiresDueEvents(t *testing.T) {
 }
 
 func TestDecayMoods(t *testing.T) {
-	ws := NewWorldState("w1", ModeTRPG)
+	ws := NewWorldState("w1", ModeSimRPG)
 	ws.Characters["甲"] = &CharacterState{
 		Name: "甲", Kind: "npc", Alive: true,
 		Mood: MoodState{Valence: 70, Arousal: 70, Tags: []string{"感激"}, UpdatedAt: 0},
@@ -168,7 +168,7 @@ func TestGetMode(t *testing.T) {
 		t.Fatal("roleplay 应关闭规则层与剧本")
 	}
 	m = GetMode("unknown")
-	if m.Name != ModeTRPG {
-		t.Fatal("未知模式应回退为 trpg")
+	if m.Name != ModeSimRPG {
+		t.Fatal("未知模式应回退为 simrpg")
 	}
 }

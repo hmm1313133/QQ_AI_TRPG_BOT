@@ -1,10 +1,10 @@
 // Package web - 素材联动与游玩存档 API（《世界编辑器与素材联动设计.md》§四/§9.4）。
 //
-//   - GET  /api/admin/assets                        素材目录（素材库/人物卡/其他世界/剧本角色）
+//   - GET  /api/admin/assets                        素材目录（素材库/其他世界）
 //   - GET|POST       /api/admin/assets/library      素材库列表/新建
 //   - GET|PATCH|DELETE /api/admin/assets/library/{aid} 素材详情/编辑/删除
 //   - POST /api/admin/worlds/{id}/assets/collect    收藏世界实体进素材库
-//   - POST /api/admin/worlds/{id}/assets/import     素材导入世界（四类来源）
+//   - POST /api/admin/worlds/{id}/assets/import     素材导入世界（素材库/跨世界复制）
 //   - GET|POST       /api/admin/worlds/{id}/saves   存档列表/新建
 //   - POST /api/admin/worlds/{id}/saves/{sid}/restore 恢复存档（先自动备份当前进度）
 //   - DELETE /api/admin/worlds/{id}/saves/{sid}     删除存档
@@ -29,7 +29,6 @@ func (a *adminAPI) registerAssetRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/admin/assets/library/{aid}", a.wrap(a.handleAssetUpdate))
 	mux.HandleFunc("DELETE /api/admin/assets/library/{aid}", a.wrap(a.handleAssetDelete))
 	mux.HandleFunc("POST /api/admin/assets/parse", a.wrap(a.handleAssetParse))
-	mux.HandleFunc("POST /api/admin/scripts/{id}/assets/collect", a.wrap(a.handleScriptAssetsCollect))
 	mux.HandleFunc("POST /api/admin/worlds/{id}/assets/collect", a.wrap(a.handleAssetCollect))
 	mux.HandleFunc("POST /api/admin/worlds/{id}/assets/import", a.wrap(a.handleAssetImport))
 	mux.HandleFunc("GET /api/admin/worlds/{id}/saves", a.wrap(a.handleSaveList))
@@ -53,13 +52,6 @@ func (a *adminAPI) sqliteRepo(w http.ResponseWriter) *world.SQLiteRepository {
 // ============================================================
 
 func (a *adminAPI) handleAssetsCatalog(w http.ResponseWriter, r *http.Request) {
-	type cardInfo struct {
-		ID           string `json:"id"`
-		Name         string `json:"name"`
-		System       string `json:"system"`
-		Player       string `json:"player"`
-		HasBackstory bool   `json:"has_backstory"`
-	}
 	type worldInfo struct {
 		ID         string   `json:"id"`
 		Mode       string   `json:"mode"`
@@ -69,17 +61,10 @@ func (a *adminAPI) handleAssetsCatalog(w http.ResponseWriter, r *http.Request) {
 		Items      []string `json:"items"`
 		Factions   []string `json:"factions"`
 	}
-	type scriptInfo struct {
-		ID         string   `json:"id"`
-		Name       string   `json:"name"`
-		Characters []string `json:"characters"`
-	}
 
 	catalog := map[string]any{
 		"library": []any{},
-		"cards":   []cardInfo{},
 		"worlds":  []worldInfo{},
-		"scripts": []scriptInfo{},
 	}
 
 	// 素材库（不含 payload）
@@ -87,18 +72,6 @@ func (a *adminAPI) handleAssetsCatalog(w http.ResponseWriter, r *http.Request) {
 		if list, err := a.deps.AssetStore.List("", "", ""); err == nil {
 			catalog["library"] = list
 		}
-	}
-
-	// 全局人物卡
-	if a.deps.CharMgr != nil {
-		var cards []cardInfo
-		for _, c := range a.deps.CharMgr.ListAll() {
-			cards = append(cards, cardInfo{
-				ID: c.ID, Name: c.Name, System: c.System, Player: c.Player,
-				HasBackstory: c.Backstory != "",
-			})
-		}
-		catalog["cards"] = cards
 	}
 
 	// 各世界实体名（素材选择器的复制来源；世界量级小，逐个加载可接受）
@@ -125,19 +98,6 @@ func (a *adminAPI) handleAssetsCatalog(w http.ResponseWriter, r *http.Request) {
 			worlds = append(worlds, wi)
 		}
 		catalog["worlds"] = worlds
-	}
-
-	// 剧本角色
-	if a.deps.Archive != nil {
-		var scripts []scriptInfo
-		for _, s := range a.deps.Archive.List() {
-			si := scriptInfo{ID: s.ID, Name: s.Name}
-			for _, ch := range s.Characters {
-				si.Characters = append(si.Characters, ch.Name)
-			}
-			scripts = append(scripts, si)
-		}
-		catalog["scripts"] = scripts
 	}
 
 	writeJSON(w, catalog)
@@ -358,22 +318,15 @@ func extractEntityPayload(ws *world.WorldState, kind, name string) (json.RawMess
 // ============================================================
 
 type assetImportReq struct {
-	Library          []string             `json:"library"` // 素材库条目 ID
-	Cards            []string             `json:"cards"`   // 全局人物卡 ID（CardRef 关联）
-	Copy             []assetImportCopyRef `json:"copy"`    // 跨世界复制
-	ScriptCharacters []assetImportScriptRef `json:"script_characters"`
-	OnConflict       string               `json:"on_conflict"` // skip（默认）/ overwrite
+	Library    []string             `json:"library"` // 素材库条目 ID
+	Copy       []assetImportCopyRef `json:"copy"`    // 跨世界复制
+	OnConflict string               `json:"on_conflict"` // skip（默认）/ overwrite
 }
 
 type assetImportCopyRef struct {
 	WorldID string `json:"world_id"`
 	Kind    string `json:"kind"`
 	Name    string `json:"name"`
-}
-
-type assetImportScriptRef struct {
-	ScriptID string `json:"script_id"`
-	Name     string `json:"name"`
 }
 
 type assetImportResult struct {
@@ -404,11 +357,10 @@ func (a *adminAPI) handleAssetImport(w http.ResponseWriter, r *http.Request) {
 
 	res := &assetImportResult{}
 
-	// 预校验：人物卡 / 素材库条目 / 剧本角色全部能解析，避免半导入
+	// 预校验：素材库条目 / 跨世界复制来源全部能解析，避免半导入
 	type pendingChar struct {
 		cs    *world.CharacterState
 		label string
-		merge bool // 人物卡关联：同名补字段而非冲突
 	}
 	var pendingChars []pendingChar
 	type pendingEntity struct {
@@ -460,17 +412,6 @@ func (a *adminAPI) handleAssetImport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for _, cardID := range req.Cards {
-		card, err := a.deps.CharMgr.Get(cardID)
-		if err != nil {
-			res.Errors = append(res.Errors, "人物卡不存在: "+cardID)
-			continue
-		}
-		pendingChars = append(pendingChars, pendingChar{
-			cs: world.CharacterStateFromCard(card), label: "人物卡:" + card.Name, merge: true,
-		})
-	}
-
 	for _, ref := range req.Copy {
 		src := a.deps.WorldEngine.LoadOrNil(ref.WorldID)
 		if src == nil {
@@ -516,35 +457,9 @@ func (a *adminAPI) handleAssetImport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	for _, ref := range req.ScriptCharacters {
-		scr, err := a.deps.Archive.Get(ref.ScriptID)
-		if err != nil {
-			res.Errors = append(res.Errors, "剧本不存在: "+ref.ScriptID)
-			continue
-		}
-		found := false
-		for _, ch := range scr.Characters {
-			if ch.Name == ref.Name {
-				pendingChars = append(pendingChars, pendingChar{
-					cs: world.CharacterFromScript(ch), label: "剧本:" + ref.Name,
-				})
-				found = true
-				break
-			}
-		}
-		if !found {
-			res.Errors = append(res.Errors, fmt.Sprintf("剧本 %s 中无角色 %s", scr.Name, ref.Name))
-		}
-	}
-
-	// 应用：角色（人物卡关联走合并，其余按冲突策略）
+	// 应用：角色按冲突策略处理
 	for _, p := range pendingChars {
-		if existing, ok := ws.Characters[p.cs.Name]; ok {
-			if p.merge {
-				world.MergeCharacterState(existing, p.cs)
-				res.Imported++
-				continue
-			}
+		if _, ok := ws.Characters[p.cs.Name]; ok {
 			if req.OnConflict == "overwrite" {
 				p.cs.Alive = true
 				ws.Characters[p.cs.Name] = p.cs

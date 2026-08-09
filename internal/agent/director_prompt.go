@@ -10,13 +10,13 @@ import (
 )
 
 // directorSystemPrompt 是 Director 的系统提示词。
-const directorSystemPrompt = `你是一个 TRPG 游戏的导演系统（Director）。你的职责是分析当前游戏状态，做出下一轮的决策指令。
+const directorSystemPrompt = `你是一个角色扮演游戏的导演系统（Director）。你的职责是分析当前游戏状态，做出下一轮的决策指令。
 
 你将收到：
 1. 当前游戏运行态（GameState JSON）- 包含场景、NPC状态、隐藏信息、待触发事件、目标
 2. 规则化预评估指标 - 张力、混乱、掌控权、目标进度（0-100）
 3. 玩家的最新消息
-4. 剧本背景上下文
+4. 世界设定上下文
 
 你需要输出一个 JSON 格式的决策指令（DecisionDirective），包含：
 - assessment: 对当前局势的评估
@@ -31,7 +31,7 @@ const directorSystemPrompt = `你是一个 TRPG 游戏的导演系统（Director
 3. 张力过高时（>70），考虑给玩家喘息空间或降低难度
 4. 张力过低时（<20），考虑引入新威胁或紧迫感
 5. 玩家掌控权过低时（<30），提供更多选择和线索
-6. 目标进度满时（100），建议推进到下一时间轴节点
+6. 目标进度满时（100），建议推进到下一剧情节点
 7. state_updates 只能修改已存在的状态，不能创建新元素
 
 输出必须是纯 JSON，不要包含 markdown 代码块标记或任何其他文本。
@@ -70,7 +70,7 @@ JSON 格式如下：
 }`
 
 // buildDirectorUserMessage 构建 Director 的用户消息。
-// 包含 WorldState JSON、预评估指标、玩家消息、剧本上下文。
+// 包含 WorldState JSON、预评估指标、玩家消息、世界设定上下文。
 func buildDirectorUserMessage(state *world.WorldState, playerMessage string, scriptContext string) string {
 	var sb strings.Builder
 
@@ -91,7 +91,7 @@ func buildDirectorUserMessage(state *world.WorldState, playerMessage string, scr
 	sb.WriteString(fmt.Sprintf("当前轮次: %d\n", state.RoundCount))
 
 	if scriptContext != "" {
-		sb.WriteString("\n【剧本背景】\n")
+		sb.WriteString("\n【世界设定】\n")
 		sb.WriteString(scriptContext)
 		sb.WriteString("\n")
 	}

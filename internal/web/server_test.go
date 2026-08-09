@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/handler"
 
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
@@ -20,11 +19,10 @@ import (
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	plugins := core.NewPluginManager()
-	plugins.RegisterHandler(handler.NewHelpHandler())
 	sessions := core.NewSessionManager()
-	router := core.NewRouter(plugins, sessions, nil)
+	router := core.NewRouter(plugins, sessions)
 
-	srv := NewServer(Config{UploadDir: t.TempDir()}, router, sessions)
+	srv := NewServer(Config{}, router, sessions)
 	return httptest.NewServer(srv.Handler())
 }
 
@@ -48,7 +46,7 @@ func wsURL(httpURL string) string {
 	return "ws" + strings.TrimPrefix(httpURL, "http")
 }
 
-func TestWebChannel_HelpCommand(t *testing.T) {
+func TestWebChannel_ChatRoundtrip(t *testing.T) {
 	ts := newTestServer(t)
 	defer ts.Close()
 
@@ -69,15 +67,20 @@ func TestWebChannel_HelpCommand(t *testing.T) {
 		t.Fatalf("应收到 session 欢迎帧: %v, %+v", err, welcome)
 	}
 
-	// 发送 .help 指令
-	if err := wsjson.Write(ctx, conn, wsMessage{Type: "chat", Text: ".help"}); err != nil {
+	// 发送一条消息（无注册 Agent 时应收到"AI Agent 不可用"回退回复）
+	if err := wsjson.Write(ctx, conn, wsMessage{Type: "chat", Text: "你好"}); err != nil {
 		t.Fatalf("发送消息失败: %v", err)
 	}
 
-	// 期待回复帧
+	// 期待状态帧（thinking）后接回复帧
 	var reply wsMessage
-	if err := wsjson.Read(ctx, conn, &reply); err != nil {
-		t.Fatalf("读取回复失败: %v", err)
+	for {
+		if err := wsjson.Read(ctx, conn, &reply); err != nil {
+			t.Fatalf("读取回复失败: %v", err)
+		}
+		if reply.Type == "reply" {
+			break
+		}
 	}
 	if reply.Type != "reply" || reply.Text == "" {
 		t.Fatalf("应收到非空 reply 帧: %+v", reply)

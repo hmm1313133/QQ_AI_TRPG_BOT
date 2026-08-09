@@ -1,4 +1,4 @@
-// 素材解析 / 批量入库 / 剧本素材收藏 API 测试（《世界编辑器与素材联动设计.md》§11）。
+// 素材解析 / 批量入库 API 测试（《世界编辑器与素材联动设计.md》§11）。
 package web
 
 import (
@@ -6,119 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"mime/multipart"
 	"net/http"
 	"testing"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/assetparse"
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
-
-// 保存一个带完整模组内容的测试剧本。
-func saveTestScript(t *testing.T, deps AdminDeps) *script.Script {
-	t.Helper()
-	scr := &script.Script{
-		ID: "scr_collect", Name: "雾都疑云", Title: "雾都疑云（导演剪辑版）",
-		Background: script.StoryBackground{
-			Setting: "蒸汽雾都", Synopsis: "连环失踪案",
-			KeyOrganizations: []string{"雾都警厅"},
-		},
-		Timeline: []script.TimelineNode{
-			{ID: "node_1", Name: "序幕", Type: "act", Order: 1, Description: "案发"},
-			{ID: "node_2", Name: "码头追踪", Type: "scene", Order: 2, IsKeyNode: true},
-		},
-		Characters: []script.ScriptCharacter{
-			{ID: "char_1", Name: "莫里亚警长", Personality: "固执"},
-		},
-		Scenes: []script.ScriptScene{
-			{ID: "scene_1", Name: "旧码头", Description: "鱼腥味", DangerLevel: "危险"},
-		},
-	}
-	if err := deps.Archive.Save(scr); err != nil {
-		t.Fatalf("保存测试剧本失败: %v", err)
-	}
-	return scr
-}
-
-// 剧本派生素材一键入库：首次创建、再次幂等跳过、素材带标签。
-func TestAdmin_ScriptAssetsCollect(t *testing.T) {
-	ts, deps := newAssetTestServer(t)
-	defer ts.Close()
-	scr := saveTestScript(t, deps)
-
-	resp := adminReq(t, "POST", ts.URL+"/api/admin/scripts/"+scr.ID+"/assets/collect", "")
-	var res scriptCollectResult
-	readJSON(t, resp, &res)
-	// world + storyline + character + location + faction = 5
-	if res.Created != 5 {
-		t.Fatalf("首次收藏应创建 5 条: %+v", res)
-	}
-	if res.Skipped != 0 || len(res.Errors) != 0 {
-		t.Fatalf("首次收藏不应有跳过/错误: %+v", res)
-	}
-
-	// 幂等：再次收藏全部跳过
-	resp = adminReq(t, "POST", ts.URL+"/api/admin/scripts/"+scr.ID+"/assets/collect", "")
-	res = scriptCollectResult{}
-	readJSON(t, resp, &res)
-	if res.Created != 0 || res.Skipped != 5 {
-		t.Fatalf("再次收藏应全部跳过: %+v", res)
-	}
-
-	// 素材带「剧本:雾都疑云」标签，可按标签检索
-	resp = adminReq(t, "GET", ts.URL+"/api/admin/assets/library?tag="+
-		"%E5%89%A7%E6%9C%AC:%E9%9B%BE%E9%83%BD%E7%96%91%E4%BA%91", "")
-	var list []world.Asset
-	readJSON(t, resp, &list)
-	if len(list) != 5 {
-		t.Fatalf("按标签应检索到 5 条: %d", len(list))
-	}
-	for _, item := range list {
-		if item.Source != "剧本《雾都疑云（导演剪辑版）》" {
-			t.Fatalf("来源标记错误: %+v", item)
-		}
-	}
-
-	// 不存在的剧本 → 404
-	resp = adminReq(t, "POST", ts.URL+"/api/admin/scripts/nonexistent/assets/collect", "")
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("剧本不存在应 404: %d", resp.StatusCode)
-	}
-}
-
-// trpg 世界创建即自动带入模组素材（无需再手动导入）。
-func TestAdmin_TRPGWorldCreateDerivesAssets(t *testing.T) {
-	ts, deps := newAssetTestServer(t)
-	defer ts.Close()
-	scr := saveTestScript(t, deps)
-
-	resp := adminReq(t, "POST", ts.URL+"/api/admin/worlds",
-		fmt.Sprintf(`{"world_id":"w_mod","mode":"trpg","script_id":"%s"}`, scr.ID))
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("创建 trpg 世界失败: %d", resp.StatusCode)
-	}
-
-	ws := deps.WorldEngine.LoadOrNil("w_mod")
-	if ws == nil {
-		t.Fatal("世界应已创建")
-	}
-	if ws.Storyline == nil || len(ws.Storyline.Acts) == 0 {
-		t.Fatal("主线应从剧本时间轴派生")
-	}
-	if len(ws.Locations) != 1 || ws.Locations["旧码头"].Danger != "危险" {
-		t.Fatalf("地点应从场景派生: %+v", ws.Locations)
-	}
-	if len(ws.Factions) != 1 {
-		t.Fatalf("势力应从关键组织派生: %+v", ws.Factions)
-	}
-	if ws.Characters["莫里亚警长"] == nil {
-		t.Fatal("角色应带入")
-	}
-}
 
 // world 类型素材：导入写入背景，冲突策略生效。
 func TestAdmin_WorldAssetImport(t *testing.T) {

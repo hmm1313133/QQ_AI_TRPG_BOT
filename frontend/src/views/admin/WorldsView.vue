@@ -8,14 +8,11 @@
       <div style="margin-bottom:12px">
         <el-button type="primary" size="small" @click="openCreate">新建世界</el-button>
       </div>
-      <el-table :data="worlds" empty-text="暂无世界（在聊天端加载剧本后创建）">
+      <el-table :data="worlds" empty-text="暂无世界，点击上方按钮创建">
         <el-table-column prop="id" label="世界">
           <template #default="{ row }"><span class="mono">{{ row.id }}</span></template>
         </el-table-column>
         <el-table-column prop="mode" label="模式" />
-        <el-table-column label="剧本">
-          <template #default="{ row }">{{ row.script_name || '-' }}</template>
-        </el-table-column>
         <el-table-column label="当前场景">
           <template #default="{ row }">{{ row.scene || '-' }}</template>
         </el-table-column>
@@ -43,7 +40,6 @@
       <el-form v-show="step === 0" label-width="110px">
         <el-form-item label="模式">
           <el-radio-group v-model="form.mode">
-            <el-radio value="trpg">trpg 剧本跑团</el-radio>
             <el-radio value="simrpg">simrpg 开放模拟</el-radio>
             <el-radio value="roleplay">roleplay 角色扮演</el-radio>
           </el-radio-group>
@@ -51,17 +47,6 @@
         </el-form-item>
         <el-form-item label="世界 ID">
           <el-input v-model="form.world_id" placeholder="留空由服务端自动生成" style="max-width:320px" />
-        </el-form-item>
-        <el-form-item v-if="form.mode === 'trpg'" label="选择剧本" required>
-          <el-select v-model="form.script_id" placeholder="选择已有剧本" style="width:100%" filterable>
-            <el-option
-              v-for="s in scriptOptions"
-              :key="s.id"
-              :value="s.id"
-              :label="`${s.name}（${s.title} · ${s.system}）`"
-            />
-          </el-select>
-          <div class="muted" style="margin-top:6px">创建时将自动带入模组的背景、主线、角色、场景地点与势力，无需手动配置。</div>
         </el-form-item>
       </el-form>
 
@@ -75,7 +60,7 @@
         </el-form-item>
 
         <!-- 设定库快速录入（设计文档 §3.2：逐条添加 + 段落拆分两种入口） -->
-        <el-form-item v-if="form.mode !== 'trpg'" label="设定条目">
+        <el-form-item label="设定条目">
           <div class="loc-list">
             <div class="muted">
               只写静态设定（地理/势力/规则/历史）；HP、任务进度等易变事实由系统自动管理。可留空，创建后在世界编辑器中维护。
@@ -117,34 +102,23 @@
             </div>
           </div>
         </el-form-item>
-        <div v-else class="muted" style="padding-left:110px">trpg 模式的设定来自剧本，可创建后在编辑器的「设定库」页签追加。</div>
       </el-form>
 
       <!-- ③ 素材 -->
       <div v-show="step === 2" class="wizard-step">
         <div class="block">
           <div class="block-head">
-            <div class="block-title">人物卡</div>
+            <div class="block-title">素材导入</div>
             <el-button size="small" type="primary" plain @click="pickerVisible = true">从素材选择</el-button>
           </div>
-          <div class="muted">创建即关联全局人物卡（数值真相仍在卡上）。已选 {{ form.import_cards.length }} 张：</div>
-          <div v-if="form.import_cards.length" class="chip-list">
-            <el-tag
-              v-for="c in form.import_cards"
-              :key="c.id"
-              closable
-              size="small"
-              :title="c.name || c.id"
-              @close="form.import_cards = form.import_cards.filter((x) => x.id !== c.id)"
-            >{{ c.name || c.id }}</el-tag>
-          </div>
-          <!-- 待导入素材（素材库/跨世界/剧本角色，创建成功后自动导入） -->
-          <div v-if="!assetSelEmpty" style="margin-top:10px">
+          <!-- 待导入素材（素材库/跨世界，创建成功后自动导入） -->
+          <div v-if="!assetSelEmpty">
             <div class="muted">待导入素材（创建后自动导入）：</div>
             <div v-for="(line, i) in assetSelSummary" :key="i" class="muted" style="margin-top:2px">· {{ line }}</div>
             <el-button size="small" text type="danger" style="margin-top:4px"
-              @click="form.asset_sel = { library_rows: [], copy: [], script_characters: [], on_conflict: 'skip' }">清空待导入素材</el-button>
+              @click="form.asset_sel = { library_rows: [], copy: [], on_conflict: 'skip' }">清空待导入素材</el-button>
           </div>
+          <div v-else class="muted">可从素材库或其他世界挑选素材，创建成功后自动导入本世界。</div>
         </div>
 
         <div class="block">
@@ -227,12 +201,9 @@
         </div>
       </div>
 
-      <!-- ④ 主线剧情（仅 simrpg / roleplay） -->
+      <!-- ④ 主线剧情 -->
       <div v-show="step === 3" class="wizard-step">
-        <template v-if="form.mode === 'trpg'">
-          <div class="empty">trpg 模式的主线由剧本时间轴驱动，无需在此设置。</div>
-        </template>
-        <el-form v-else label-width="90px">
+        <el-form label-width="90px">
           <el-form-item label="主线标题">
             <el-input v-model="form.storyline.title" style="max-width:360px" placeholder="可留空，创建后再设置" />
           </el-form-item>
@@ -265,12 +236,8 @@
         <div class="summary-block">
           <div class="summary-row"><span class="muted">模式</span><b>{{ form.mode }}</b></div>
           <div class="summary-row"><span class="muted">世界 ID</span><span class="mono">{{ form.world_id || '（自动生成）' }}</span></div>
-          <div v-if="form.mode === 'trpg'" class="summary-row">
-            <span class="muted">剧本</span><span>{{ scriptName(form.script_id) || '-' }}</span>
-          </div>
           <div class="summary-row"><span class="muted">背景</span><span>{{ form.background ? form.background.slice(0, 60) + (form.background.length > 60 ? '…' : '') : '（未填写）' }}</span></div>
           <div class="summary-row"><span class="muted">设定条目</span><span>{{ validLore.length }} 条</span></div>
-          <div class="summary-row"><span class="muted">人物卡</span><span>{{ form.import_cards.length ? form.import_cards.map((c) => c.name || c.id).join('、') : '无' }}</span></div>
           <div class="summary-row">
             <span class="muted">待导入素材</span>
             <span>{{ assetSelEmpty ? '无' : assetSelSummary.join('；') }}</span>
@@ -281,7 +248,7 @@
           <div class="summary-row"><span class="muted">势力</span><span>{{ validFactions.length ? validFactions.map((x) => x.name).join('、') : '无' }}</span></div>
           <div class="summary-row">
             <span class="muted">主线</span>
-            <span>{{ form.mode !== 'trpg' && form.storyline.title.trim() ? `${form.storyline.title}（${validActs.length} 幕）` : '无' }}</span>
+            <span>{{ form.storyline.title.trim() ? `${form.storyline.title}（${validActs.length} 幕）` : '无' }}</span>
           </div>
         </div>
       </div>
@@ -294,7 +261,7 @@
       </template>
     </el-dialog>
 
-    <!-- 素材选择（人物卡创建时直接关联，其余三类创建成功后经 assets/import 导入） -->
+    <!-- 素材选择（创建成功后经 assets/import 导入） -->
     <AssetPicker v-model:visible="pickerVisible" @confirm="onPickAssets" />
   </div>
 </template>
@@ -314,22 +281,19 @@ const worlds = ref([])
 
 const createVisible = ref(false)
 const creating = ref(false)
-const scriptOptions = ref([])
 const step = ref(0)
 const pickerVisible = ref(false)
 const openNpcs = ref([])
 
 const form = reactive({
-  mode: 'trpg',
+  mode: 'simrpg',
   world_id: '',
-  script_id: '',
   background: '',
   scene: '',
   locations: [],
   npcs: [],
-  import_cards: [], // [{id, name}]
-  // 待创建后导入的素材（素材库/跨世界复制/剧本角色；人物卡经 import_cards 创建时关联，不在此列）
-  asset_sel: { library_rows: [], copy: [], script_characters: [], on_conflict: 'skip' },
+  // 待创建后导入的素材（素材库/跨世界复制）
+  asset_sel: { library_rows: [], copy: [], on_conflict: 'skip' },
   items: [],
   factions: [],
   storyline: { title: '', premise: '', acts: [] },
@@ -340,9 +304,8 @@ const splitText = ref('')
 const splitDrafts = ref([])
 
 const MODE_DESC = {
-  trpg: '按已有剧本跑团：完整规则 + 时间轴推进，需选择剧本。',
-  simrpg: '开放世界模拟：无固定剧本，轻量规则，离线后世界继续演化，需填世界设定与初始地点。',
-  roleplay: '纯角色扮演：无规则无剧本，以 NPC 互动为核心，至少需要 1 个角色（结构化 NPC / 人物卡 / 角色类素材）。',
+  simrpg: '开放世界模拟：轻量规则，离线后世界继续演化，需填世界设定与初始地点。',
+  roleplay: '纯角色扮演：无规则，以 NPC 互动为核心，至少需要 1 个角色（结构化 NPC / 角色类素材）。',
 }
 
 function newCharacter() {
@@ -361,11 +324,6 @@ function addNpc() {
 
 function newLoreDraft() {
   return { title: '', keysText: '', content: '', constant: false }
-}
-
-function scriptName(id) {
-  const s = scriptOptions.value.find((x) => x.id === id)
-  return s ? s.name : id
 }
 
 // ---------- 汇总（确认步） ----------
@@ -405,25 +363,8 @@ function confirmSplit() {
 
 // ---------- 素材选择 ----------
 
-async function onPickAssets(sel) {
-  // 人物卡：创建时随 import_cards 直接关联（逻辑不变）
-  if (sel.cards.length) {
-    // 解析人物卡名称（用于预览与 roleplay 校验兜底）
-    try {
-      const catalog = await assetApi.catalog()
-      const byId = new Map((catalog?.cards || []).map((c) => [c.id, c]))
-      for (const id of sel.cards) {
-        if (!form.import_cards.some((c) => c.id === id)) {
-          form.import_cards.push({ id, name: byId.get(id)?.name || '' })
-        }
-      }
-    } catch {
-      for (const id of sel.cards) {
-        if (!form.import_cards.some((c) => c.id === id)) form.import_cards.push({ id, name: '' })
-      }
-    }
-  }
-  // 其余三类：存入 asset_sel，创建成功后经 assets/import 导入（按 id/name 去重累加）
+function onPickAssets(sel) {
+  // 存入 asset_sel，创建成功后经 assets/import 导入（按 id/name 去重累加）
   const asel = form.asset_sel
   for (const r of sel.library_rows || []) {
     if (!asel.library_rows.some((x) => x.id === r.id)) asel.library_rows.push(r)
@@ -431,18 +372,15 @@ async function onPickAssets(sel) {
   for (const c of sel.copy || []) {
     if (!asel.copy.some((x) => x.world_id === c.world_id && x.kind === c.kind && x.name === c.name)) asel.copy.push(c)
   }
-  for (const s of sel.script_characters || []) {
-    if (!asel.script_characters.some((x) => x.script_id === s.script_id && x.name === s.name)) asel.script_characters.push(s)
-  }
   asel.on_conflict = sel.on_conflict || 'skip'
 }
 
 // 待导入素材是否为空
 const assetSelEmpty = computed(() =>
-  !form.asset_sel.library_rows.length && !form.asset_sel.copy.length && !form.asset_sel.script_characters.length
+  !form.asset_sel.library_rows.length && !form.asset_sel.copy.length
 )
 
-// 角色类素材来源（roleplay 校验与种子镜像用）：素材库角色 / 跨世界角色 / 剧本角色
+// 角色类素材来源（roleplay 校验与种子镜像用）：素材库角色 / 跨世界角色
 const assetCharacterNames = computed(() => {
   const names = []
   for (const r of form.asset_sel.library_rows) {
@@ -450,9 +388,6 @@ const assetCharacterNames = computed(() => {
   }
   for (const c of form.asset_sel.copy) {
     if (c.kind === 'character' && c.name) names.push(c.name)
-  }
-  for (const s of form.asset_sel.script_characters) {
-    if (s.name) names.push(s.name)
   }
   return names
 })
@@ -466,19 +401,12 @@ const assetSelSummary = computed(() => {
   if (form.asset_sel.copy.length) {
     parts.push(`跨世界复制 ${form.asset_sel.copy.length} 项（${form.asset_sel.copy.map((c) => c.name).join('、')}）`)
   }
-  if (form.asset_sel.script_characters.length) {
-    parts.push(`剧本角色 ${form.asset_sel.script_characters.length} 项（${form.asset_sel.script_characters.map((s) => s.name).join('、')}）`)
-  }
   return parts
 })
 
 // ---------- 向导流程 ----------
 
 function nextStep() {
-  if (step.value === 0 && form.mode === 'trpg' && !form.script_id) {
-    ElMessage.warning('trpg 模式必须选择剧本')
-    return
-  }
   if (step.value === 1 && form.mode === 'simrpg' && !form.background.trim()) {
     ElMessage.warning('simrpg 模式必须填写世界设定')
     return
@@ -488,9 +416,9 @@ function nextStep() {
 
 async function openCreate() {
   Object.assign(form, {
-    mode: 'trpg', world_id: '', script_id: '', background: '', scene: '',
-    locations: [], npcs: [], import_cards: [],
-    asset_sel: { library_rows: [], copy: [], script_characters: [], on_conflict: 'skip' },
+    mode: 'simrpg', world_id: '', background: '', scene: '',
+    locations: [], npcs: [],
+    asset_sel: { library_rows: [], copy: [], on_conflict: 'skip' },
     items: [], factions: [],
     storyline: { title: '', premise: '', acts: [] }, lore: [],
   })
@@ -501,33 +429,27 @@ async function openCreate() {
   splitDrafts.value = []
   addNpc()
   createVisible.value = true
-  try {
-    scriptOptions.value = (await adminApi('/api/admin/scripts')) || []
-  } catch {
-    scriptOptions.value = []
-  }
 }
 
 async function createWorld() {
   const f = form
-  if (f.mode === 'trpg' && !f.script_id) { ElMessage.warning('trpg 模式必须选择剧本'); return }
   if (f.mode === 'simrpg' && !f.background.trim()) { ElMessage.warning('simrpg 模式必须填写世界设定'); return }
-  if (f.mode === 'roleplay' && namedNpcs.value.length === 0 && f.import_cards.length === 0 && assetCharacterNames.value.length === 0) {
-    ElMessage.warning('roleplay 模式至少需要 1 个角色（结构化 NPC / 人物卡 / 角色类素材）')
+  if (f.mode === 'roleplay' && namedNpcs.value.length === 0 && assetCharacterNames.value.length === 0) {
+    ElMessage.warning('roleplay 模式至少需要 1 个角色（结构化 NPC / 角色类素材）')
     return
   }
   // 重名检查
   const npcNames = namedNpcs.value.map((n) => n.name.trim())
   if (new Set(npcNames).size !== npcNames.length) { ElMessage.warning('NPC 名称重复'); return }
 
-  const lore = f.mode === 'trpg' ? [] : validLore.value.map((e) => ({
+  const lore = validLore.value.map((e) => ({
     title: e.title.trim(),
     content: e.content,
     keys: e.keysText.split(/[,，、;；]+/).map((s) => s.trim()).filter(Boolean),
     constant: e.constant,
   }))
 
-  // roleplay 服务端要求 npcs 非空：把结构化 NPC / 人物卡镜像为简易种子（同名会与结构化角色合并）
+  // roleplay 服务端要求 npcs 非空：把结构化 NPC / 素材角色镜像为简易种子（同名会与结构化角色合并）
   let npcSeeds = []
   let mirrored = false // 仅靠素材角色镜像占位种子时置真（导入时强制 overwrite 覆盖占位）
   if (f.mode === 'roleplay') {
@@ -535,12 +457,7 @@ async function createWorld() {
       name: n.name.trim(), kind: n.kind, disposition: n.disposition, personality: n.personality,
       appearance: n.appearance, backstory: n.backstory, skills: n.skills, card_ref: n.card_ref,
     }))
-    for (const c of f.import_cards) {
-      if (c.name && !npcSeeds.some((n) => n.name === c.name)) {
-        npcSeeds.push({ name: c.name, kind: 'pc', disposition: 'neutral', personality: '', card_ref: c.id })
-      }
-    }
-    // 结构化 NPC 与人物卡都为空、只能靠素材角色满足校验时：
+    // 结构化 NPC 为空、只能靠素材角色满足校验时：
     // 把选中角色类素材的名字镜像为简易占位种子，创建后导入用完整素材覆盖
     if (!npcSeeds.length && assetCharacterNames.value.length) {
       for (const name of assetCharacterNames.value) {
@@ -551,12 +468,12 @@ async function createWorld() {
       mirrored = true
     }
     if (!npcSeeds.length) {
-      ElMessage.warning('roleplay 模式至少需要一个可命名的角色（素材/人物卡名称未能解析，请改加结构化 NPC）')
+      ElMessage.warning('roleplay 模式至少需要一个可命名的角色（素材名称未能解析，请改加结构化 NPC）')
       return
     }
   }
 
-  const storyline = f.mode !== 'trpg' && f.storyline.title.trim()
+  const storyline = f.storyline.title.trim()
     ? {
         title: f.storyline.title.trim(),
         premise: f.storyline.premise,
@@ -571,7 +488,6 @@ async function createWorld() {
     mode: f.mode,
     background: f.background,
     scene: f.mode === 'simrpg' ? f.scene : '',
-    script_id: f.mode === 'trpg' ? f.script_id : '',
     locations: [],
     location_defs: f.mode === 'simrpg' ? validLocations.value.map((l) => ({
       name: l.name.trim(), description: l.description, atmosphere: l.atmosphere,
@@ -581,7 +497,6 @@ async function createWorld() {
     characters: namedNpcs.value,
     items: validItems.value,
     factions: validFactions.value,
-    import_cards: f.import_cards.map((c) => c.id),
     lore,
   }
   if (storyline) body.storyline = storyline
@@ -590,17 +505,15 @@ async function createWorld() {
   try {
     const state = await adminReq('/api/admin/worlds', { method: 'POST', body: JSON.stringify(body) })
     const id = state?.world_id || f.world_id.trim()
-    ElMessage.success(`世界已创建，聊天中发送 .world enter ${id || '<id>'} 进入`)
+    ElMessage.success(`世界已创建，可在聊天页侧栏「进入世界」中选择 ${id || '<id>'}`)
 
-    // 创建成功后导入待导入素材（人物卡已随创建关联，不重复传）。
+    // 创建成功后导入待导入素材。
     // 导入失败不影响世界已创建的事实，warning 提示后仍正常跳转编辑器。
     if (id && !assetSelEmpty.value) {
       try {
         const res = await assetApi.import(id, {
           library: f.asset_sel.library_rows.map((r) => r.id),
-          cards: [],
           copy: f.asset_sel.copy,
-          script_characters: f.asset_sel.script_characters,
           // 素材角色镜像占位种子时强制覆盖：占位种子无数据，以导入的完整素材为准
           on_conflict: mirrored ? 'overwrite' : f.asset_sel.on_conflict,
         })
@@ -683,7 +596,6 @@ onMounted(loadWorlds)
 .block { margin-bottom: 18px; }
 .block-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .block-title { font-size: 13.5px; font-weight: 600; }
-.chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .char-title { font-weight: 600; margin-right: 10px; }
 .char-ops { display: flex; justify-content: flex-end; margin-top: 8px; }
 .el-collapse :deep(.el-tag) { margin-right: 6px; }

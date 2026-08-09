@@ -18,29 +18,12 @@ server:
   # 本项目未引入，如需启用请先 import 对应插件再放开。
   service:
     # Web 渠道（聊天 + 管理后台）：泛 HTTP 标准服务（NoProtocol）
-    - name: trpc.trpg.web.Admin
+    - name: trpc.voyage.web.Admin
       ip: 0.0.0.0
       port: 8080
       network: tcp
       protocol: http
       idletime: -1          # 禁用空闲连接回收（WebSocket 长连接必须；框架默认 60s 会杀 WS）
-
-# QQ 机器人配置 (官方 API v2)
-# 文档: https://bot.q.qq.com/wiki/develop/api-v2/
-qq_bot:
-  # 凭证配置（建议通过环境变量设置）
-  app_id: "102079108"                  # 机器人 AppID，也可通过环境变量 QQ_BOT_APPID 设置
-  client_secret: "Ym0FVl2KcvFZuGczMk9YyOpHjCf9e9fB"           # 机器人 ClientSecret，也可通过环境变量 QQ_BOT_SECRET 设置
-  # OpenAPI 基础地址
-  api_base_url: "https://api.sgroup.qq.com"
-  # 事件订阅
-  intents:
-    - group_and_c2c_event     # 群聊和单聊事件 (1<<25)
-    - interaction             # 交互事件 (1<<26)
-    - public_guild_messages   # 公域频道消息 (1<<30)
-  # WebSocket 重连配置
-  reconnect_interval: 3s      # 重连间隔
-  heartbeat_timeout: 45s     # 心跳超时
 
 # AI Agent 配置 (trpc-agent-go + DeepSeek)
 agent:

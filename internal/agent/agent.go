@@ -1,8 +1,7 @@
 // Package agent 封装 trpc-agent-go 的 AI Agent 能力。
 // 实现了 core.AgentHandler 接口，可被 PluginManager 统一调度。
 //
-// 与 Handler 层解耦：Agent 不直接依赖 TRPG 引擎，
-// 而是通过 Session.Data 共享游戏状态（角色卡、骰子结果等）。
+// Agent 通过 Session.Data 共享会话状态（骰点结果等）。
 package agent
 
 import (
@@ -30,34 +29,23 @@ type Config struct {
 	NarratorMaxTokens   int     // Narrator 最大 token 数（默认 4096）
 }
 
-// DefaultKPPrompt 返回默认的 KP/DM 主持人提示词。
+// DefaultKPPrompt 返回默认的主持人提示词。
 func DefaultKPPrompt() string {
-	return `你是一个经验丰富的 TRPG 游戏主持人（KP/DM）。
-你负责引导玩家进行桌面角色扮演游戏，包括：
+	return `你是一个经验丰富的角色扮演游戏主持人。
+你负责引导玩家进行角色扮演，包括：
 1. 描述场景和氛围
 2. 扮演 NPC
 3. 根据玩家行动推进剧情
-4. 在需要时要求玩家进行骰点判定
+4. 在需要时进行骰点判定
 请保持沉浸感和趣味性，尊重玩家的选择。
 
 【回复风格基线】
 1. 篇幅服务当前互动：简单动作简短回应，关键场景充分展开，不一味铺陈
 2. 环境描写适度，不堆砌辞藻，信息密度优先
-3. 叙述风格须与世界题材/剧本背景保持一致，不出戏
+3. 叙述风格须与世界题材/背景设定保持一致，不出戏
 
-你可以使用 roll_dice 工具来为玩家投掷骰子。
-当需要技能检定时，主动调用 roll_dice 工具或 skill_check 工具并告知玩家结果。
-
-【剧本模式约束】
-当加载了剧本后，你必须严格遵循剧本的剧情发展，不能随意拓展或编造剧情：
-1. 只在剧本设定的时间轴节点内推进故事
-2. NPC 的行为和对话必须符合剧本中描述的性格和背景
-3. 场景描述应基于剧本中的场景信息，可适当丰富细节但不改变核心内容
-4. 当玩家完成当前节点的关键事件后，使用 advance_timeline 工具推进剧情
-5. 定期使用 save_progress 工具保存剧情进度摘要
-6. 使用 get_script_context 工具查看当前剧本上下文和可推进方向
-7. 使用 get_npc 工具获取 NPC 信息以准确扮演角色
-8. 如果不确定剧情走向，优先使用 get_progress 和 get_script_context 查看当前状态`
+你可以使用 roll_dice 工具来投掷骰子。
+当需要随机判定时，主动调用 roll_dice 工具并告知玩家结果。`
 }
 
 // Manager 管理多个 AI Agent 实例。

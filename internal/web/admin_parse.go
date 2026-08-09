@@ -2,7 +2,6 @@
 //
 //   - POST /api/admin/assets/parse                  文本/文件解析为素材草稿（不落库）
 //   - POST /api/admin/assets/library/batch          批量入库（解析草稿确认后）
-//   - POST /api/admin/scripts/{id}/assets/collect   剧本派生素材一键入库（幂等）
 package web
 
 import (
@@ -13,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/assetparse"
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
@@ -177,108 +175,4 @@ func (a *adminAPI) handleAssetBatchCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, res)
-}
-
-// ============================================================
-// 剧本派生素材一键入库（§11.1/§11.2）
-// ============================================================
-
-type scriptCollectResult struct {
-	Created int      `json:"created"`
-	Skipped int      `json:"skipped"` // 已存在（kind+name+source 相同）
-	Errors  []string `json:"errors,omitempty"`
-}
-
-// handleScriptAssetsCollect 把剧本的背景/角色/场景/组织/时间轴派生为素材库条目，
-// 打「剧本:<剧本名>」标签，供其他世界按标签一键引入。幂等：同 kind+name+source 跳过。
-func (a *adminAPI) handleScriptAssetsCollect(w http.ResponseWriter, r *http.Request) {
-	if a.deps.AssetStore == nil {
-		http.Error(w, "素材库不可用", http.StatusServiceUnavailable)
-		return
-	}
-	if a.deps.Archive == nil {
-		http.Error(w, "剧本存档不可用", http.StatusServiceUnavailable)
-		return
-	}
-	scr, err := a.deps.Archive.Get(r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "剧本不存在", http.StatusNotFound)
-		return
-	}
-
-	// 已存在的 (kind|name|source) 集合，用于幂等去重
-	tag := "剧本:" + scr.Name
-	source := fmt.Sprintf("剧本《%s》", scriptTitle(scr))
-	existing := make(map[string]bool)
-	if list, err := a.deps.AssetStore.List("", "", tag); err == nil {
-		for _, item := range list {
-			existing[item.Kind+"|"+item.Name+"|"+item.Source] = true
-		}
-	}
-
-	res := &scriptCollectResult{}
-	add := func(kind, name, summary string, payload any) {
-		data, err := json.Marshal(payload)
-		if err != nil {
-			res.Errors = append(res.Errors, name+": 序列化失败")
-			return
-		}
-		key := kind + "|" + name + "|" + source
-		if existing[key] {
-			res.Skipped++
-			return
-		}
-		asset := &world.Asset{
-			Kind: kind, Name: name, Tags: []string{tag},
-			Summary: summary, Source: source, Payload: data,
-		}
-		if err := a.deps.AssetStore.Create(asset); err != nil {
-			res.Errors = append(res.Errors, name+": "+err.Error())
-			return
-		}
-		existing[key] = true
-		res.Created++
-	}
-
-	// 世界观（背景）
-	if wv := world.WorldviewFromScript(scr); wv != nil && !wv.Empty() {
-		add("world", scriptTitle(scr)+" 的世界观", truncateRunes(wv.Setting, 80), wv)
-	}
-	// 主线（时间轴派生）
-	if sl := world.StorylineFromScript(scr); sl != nil {
-		add("storyline", sl.Title, truncateRunes(sl.Premise, 80), sl)
-	}
-	// 角色
-	for _, ch := range scr.Characters {
-		summary := ch.Personality
-		if summary == "" {
-			summary = ch.Background
-		}
-		add("character", ch.Name, truncateRunes(summary, 80), world.CharacterFromScript(ch))
-	}
-	// 地点（场景派生）
-	for _, loc := range world.LocationsFromScript(scr) {
-		add("location", loc.Name, truncateRunes(loc.Description, 80), loc)
-	}
-	// 势力（关键组织派生）
-	for _, fac := range world.FactionsFromScript(scr) {
-		add("faction", fac.Name, fac.Description, fac)
-	}
-
-	writeJSON(w, res)
-}
-
-func scriptTitle(scr *script.Script) string {
-	if scr.Title != "" {
-		return scr.Title
-	}
-	return scr.Name
-}
-
-func truncateRunes(s string, n int) string {
-	runes := []rune(strings.TrimSpace(s))
-	if len(runes) <= n {
-		return string(runes)
-	}
-	return string(runes[:n]) + "…"
 }

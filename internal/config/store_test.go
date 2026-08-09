@@ -94,7 +94,7 @@ func TestKeyRegistry(t *testing.T) {
 	keys := []string{
 		KeyLLMModel, KeyNarratorTemp, KeyDirectorTemp,
 		KeyContextBudget, KeyPlanInterval, KeyExtractorEnabled,
-		KeyQQAppID, KeyQQSecret, KeyLLMAPIKey, KeyLLMBaseURL, KeyWebChatToken,
+		KeyLLMAPIKey, KeyLLMBaseURL, KeyWebChatToken,
 	}
 	for _, k := range keys {
 		if !Registered(k) {
@@ -106,18 +106,15 @@ func TestKeyRegistry(t *testing.T) {
 	}
 
 	// 敏感键标记
-	for _, k := range []string{KeyQQSecret, KeyLLMAPIKey, KeyWebChatToken} {
+	for _, k := range []string{KeyLLMAPIKey, KeyWebChatToken} {
 		meta, ok := Meta(k)
 		if !ok || !meta.Secret {
 			t.Fatalf("%s 应为敏感键", k)
 		}
 	}
-	meta, _ := Meta(KeyQQAppID)
+	meta, _ := Meta(KeyLLMModel)
 	if meta.Secret {
-		t.Fatal("qq_appid 不应为敏感键")
-	}
-	if meta.Scope != ScopeBotRestart {
-		t.Fatalf("qq_appid 生效级别应为 bot-restart: %s", meta.Scope)
+		t.Fatal("llm_model 不应为敏感键")
 	}
 
 	// 热更新键的注册 scope 应与 HotKeys 一致

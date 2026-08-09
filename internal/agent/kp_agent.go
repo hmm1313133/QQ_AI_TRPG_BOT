@@ -8,7 +8,6 @@ import (
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -18,10 +17,8 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
-// KPAgent is the KP/DM AI Agent.
+// KPAgent is the AI host Agent.
 // It uses trpc-agent-go's LLMAgent with DeepSeek model.
-// Game state is accessed through Service and shared via core.Session.
-// Script context (timeline, NPCs, progress) is injected for AI-driven KP/DM mode.
 //
 // 多层架构：Chat() 委托给 TurnEngine（规则指导 + 低频 Planner + Narrator）。
 type KPAgent struct {
@@ -30,15 +27,12 @@ type KPAgent struct {
 	runner       runner.Runner
 	tools        []tool.Tool
 	sessionMgr   *core.SessionManager
-	svc          *trpg.Service
-	scriptDeps   *ScriptDeps    // 剧本相关依赖（可选，nil 表示无剧本模式）
 	turnEngine   *TurnEngine    // 回合引擎（可选，nil 时回退到单 agent 模式）
 	personaStore *persona.Store // 全局默认人设存储（可为 nil）
 }
 
-// NewKPAgent creates a KP/DM agent.
-// scriptDeps is optional — pass nil for free-form KP mode without script constraints.
-func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service, scriptDeps *ScriptDeps) (*KPAgent, error) {
+// NewKPAgent creates the AI host agent.
+func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager) (*KPAgent, error) {
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = DefaultKPPrompt()
 	}
@@ -66,17 +60,8 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service,
 	}
 	modelInstance := openai.New(cfg.LLMModel, modelOpts...)
 
-	// 2. Create TRPG tools (KP-relevant only)
-	var progression *ProgressionEngine
-	if scriptDeps != nil {
-		progression = scriptDeps.Progression
-	}
-	tools := NewKPTools(sessionMgr, svc, progression)
-
-	// 2b. Add script-related tools if script deps are available
-	if scriptDeps != nil {
-		tools = append(tools, NewScriptTools(scriptDeps)...)
-	}
+	// 2. Create tools (仅 roll_dice)
+	tools := []tool.Tool{NewRollDiceTool(sessionMgr)}
 
 	// 3. Create LLMAgent
 	genConfig := model.GenerationConfig{
@@ -93,7 +78,7 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service,
 	)
 
 	// 4. Create Runner
-	r := runner.NewRunner("qq-ai-trpg-bot", a)
+	r := runner.NewRunner("voyage-world-engine", a)
 
 	kp := &KPAgent{
 		config:     cfg,
@@ -101,8 +86,6 @@ func NewKPAgent(cfg *Config, sessionMgr *core.SessionManager, svc *trpg.Service,
 		runner:     r,
 		tools:      tools,
 		sessionMgr: sessionMgr,
-		svc:        svc,
-		scriptDeps: scriptDeps,
 	}
 
 	log.Printf("[KPAgent] 初始化完成, provider=%s, model=%s, base_url=%s, tools=%d",
@@ -151,7 +134,7 @@ func (a *KPAgent) Chat(ctx *core.MessageContext, session *core.Session) (string,
 // chatSingleAgent 是原有的单 agent 模式，作为 pipeline 的回退。
 func (a *KPAgent) chatSingleAgent(ctx *core.MessageContext) (string, error) {
 	// Build game context prompt
-	gameContext := a.buildGameContext(ctx.SessionID, ctx.UserID)
+	gameContext := a.buildGameContext(ctx.SessionID)
 
 	var userMessage string
 	if gameContext != "" {
@@ -203,7 +186,7 @@ func (a *KPAgent) chatSingleAgent(ctx *core.MessageContext) (string, error) {
 	// 剥离 CoT 思考段（未启用 CoT 时是无害 no-op）
 	reply := StripThinking(replyBuilder.String())
 	if reply == "" {
-		reply = "（KP 沉思中...未生成回复）"
+		reply = "（主持人沉思中...未生成回复）"
 	}
 
 	log.Printf("[KPAgent] 会话 %s, 用户 %s: %s -> %s",
@@ -212,124 +195,17 @@ func (a *KPAgent) chatSingleAgent(ctx *core.MessageContext) (string, error) {
 	return reply, nil
 }
 
-// buildGameContext builds a game context description from the engine and session.
-// This is injected into the AI's prompt to provide awareness of game state.
-func (a *KPAgent) buildGameContext(sessionID, userID string) string {
-	var sb strings.Builder
-	hasContext := false
-
-	// Ruleset
-	rs := a.svc.GetRuleSet(sessionID)
-	if rs != nil {
-		rsLabel := "CoC 7版"
-		if rs.Name() == "dnd5e" {
-			rsLabel = "DnD 5e"
-		}
-		sb.WriteString(fmt.Sprintf("规则集: %s\n", rsLabel))
-		hasContext = true
-	}
-
-	// Active character
-	card := a.svc.GetActiveCharacter(sessionID, userID)
-	if card != nil {
-		sb.WriteString(fmt.Sprintf("玩家角色: %s (%s)\n", card.Name, card.System))
-		// Show key stats
-		if len(card.Attrs) > 0 {
-			sb.WriteString("属性: ")
-			first := true
-			for k, v := range card.Attrs {
-				if !first {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(fmt.Sprintf("%s=%d", k, v))
-				first = false
-			}
-			sb.WriteString("\n")
-		}
-		if len(card.Skills) > 0 && rs != nil && rs.Name() == "coc7" {
-			// Only show skills for CoC (too many to list otherwise)
-			sb.WriteString("技能(前10): ")
-			count := 0
-			for k, v := range card.Skills {
-				if count >= 10 {
-					sb.WriteString("...")
-					break
-				}
-				if count > 0 {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(fmt.Sprintf("%s=%d", k, v))
-				count++
-			}
-			sb.WriteString("\n")
-		}
-		if len(card.Status) > 0 {
-			sb.WriteString("状态: ")
-			first := true
-			for k, v := range card.Status {
-				if !first {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(fmt.Sprintf("%s=%d", k, v))
-				first = false
-			}
-			sb.WriteString("\n")
-		}
-		hasContext = true
-	}
-
-	// Last dice result from core.Session
-	if a.sessionMgr != nil {
-		session := a.sessionMgr.GetSession(sessionID)
-		if lastRoll, ok := session.Get("last_dice_result"); ok {
-			sb.WriteString(fmt.Sprintf("最近骰点: %v\n", lastRoll))
-			hasContext = true
-		}
-		if lastCheck, ok := session.Get("last_check_result"); ok {
-			sb.WriteString(fmt.Sprintf("最近检定: %v\n", lastCheck))
-			hasContext = true
-		}
-	}
-
-	// Initiative list (DnD)
-	initList := a.svc.GetInitList(sessionID)
-	if len(initList) > 0 {
-		sb.WriteString("先攻列表: ")
-		first := true
-		for name, val := range initList {
-			if !first {
-				sb.WriteString(", ")
-			}
-			sb.WriteString(fmt.Sprintf("%s(%d)", name, val))
-			first = false
-		}
-		sb.WriteString("\n")
-		hasContext = true
-	}
-
-	// Script context (AI KP/DM mode)
-	if a.scriptDeps != nil && a.scriptDeps.ProgressTracker != nil {
-		scriptCtx := a.scriptDeps.ProgressTracker.GetContextForKP(sessionID)
-		if scriptCtx != "" {
-			sb.WriteString(scriptCtx)
-			hasContext = true
-		}
-
-		// Check for timeline idle prompt
-		if a.sessionMgr != nil {
-			session := a.sessionMgr.GetSession(sessionID)
-			if prompt, ok := session.Get("timeline_prompt"); ok {
-				sb.WriteString(fmt.Sprintf("\n【时间轴提示】%v\n", prompt))
-				session.Set("timeline_prompt", nil) // 清除已读提示
-			}
-		}
-	}
-
-	if !hasContext {
+// buildGameContext 构建会话级上下文（最近骰点记账）。
+func (a *KPAgent) buildGameContext(sessionID string) string {
+	if a.sessionMgr == nil {
 		return ""
 	}
-
-	return "【游戏上下文】\n" + sb.String()
+	session := a.sessionMgr.GetSession(sessionID)
+	lastRoll, ok := session.Get("last_dice_result")
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("【游戏上下文】\n最近骰点: %v\n", lastRoll)
 }
 
 // truncate truncates a string to maxLen runes.

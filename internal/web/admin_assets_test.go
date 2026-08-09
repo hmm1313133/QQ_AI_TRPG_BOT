@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/trpg/character"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
@@ -31,23 +29,12 @@ func newAssetTestServer(t *testing.T) (*httptest.Server, AdminDeps) {
 	if err != nil {
 		t.Fatalf("创建素材库失败: %v", err)
 	}
-	charMgr, err := character.NewSQLiteManager(db)
-	if err != nil {
-		t.Fatalf("创建角色卡管理器失败: %v", err)
-	}
-	archive, err := script.NewArchive(t.TempDir())
-	if err != nil {
-		t.Fatalf("创建剧本存档失败: %v", err)
-	}
-
 	sessions := core.NewSessionManager()
-	router := core.NewRouter(core.NewPluginManager(), sessions, nil)
-	srv := NewServer(Config{UploadDir: t.TempDir()}, router, sessions)
+	router := core.NewRouter(core.NewPluginManager(), sessions)
+	srv := NewServer(Config{}, router, sessions)
 	deps := AdminDeps{
 		Sessions:    sessions,
 		WorldEngine: world.NewEngine(repo),
-		Archive:     archive,
-		CharMgr:     charMgr,
 		AssetStore:  assetStore,
 		StartTime:   time.Now(),
 	}
@@ -132,30 +119,11 @@ func TestAdmin_AssetLibraryFlow(t *testing.T) {
 		t.Fatalf("收藏素材元数据错误: %+v", collected)
 	}
 
-	// 人物卡关联导入
-	if err := deps.CharMgr.Create(&character.Card{
-		Name: "佣兵雷恩", Player: "p1", System: "coc7",
-		Skills: map[string]int{"剑术": 70}, Backstory: "退役老兵", Personality: "沉默寡言",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds/w_imp/assets/import",
-		`{"cards":["p1:佣兵雷恩"]}`)
-	readJSON(t, resp, &result)
-	if int(result["imported"].(float64)) != 1 {
-		t.Fatalf("人物卡导入失败: %+v", result)
-	}
-	ws = deps.WorldEngine.LoadOrNil("w_imp")
-	npc := ws.Characters["佣兵雷恩"]
-	if npc == nil || npc.CardRef != "p1:佣兵雷恩" || npc.Backstory != "退役老兵" || len(npc.Skills) != 1 {
-		t.Fatalf("人物卡关联映射错误: %+v", npc)
-	}
-
 	// 素材目录聚合
 	resp = adminReq(t, "GET", ts.URL+"/api/admin/assets", "")
 	var catalog map[string]any
 	readJSON(t, resp, &catalog)
-	if len(catalog["library"].([]any)) != 2 || len(catalog["cards"].([]any)) != 1 || len(catalog["worlds"].([]any)) != 1 {
+	if len(catalog["library"].([]any)) != 2 || len(catalog["worlds"].([]any)) != 1 {
 		t.Fatalf("素材目录聚合错误: %+v", catalog)
 	}
 }

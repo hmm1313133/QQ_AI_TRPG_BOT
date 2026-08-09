@@ -63,7 +63,7 @@ func BuildGuidance(state *world.WorldState) *RuleGuidance {
 
 	// 目标推进
 	if m.ObjectiveProgress >= 100 {
-		g.Focus = append(g.Focus, "当前节点目标已全部完成，可引导玩家推进到下一剧情节点（调用 advance_timeline）")
+		g.Focus = append(g.Focus, "当前节点目标已全部完成，可引导玩家推进到下一剧情节点")
 	}
 
 	// 停滞检测：同一场景轮次过多且目标无进展

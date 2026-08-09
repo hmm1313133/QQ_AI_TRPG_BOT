@@ -266,7 +266,7 @@ func TestResolve_PriorityOrder(t *testing.T) {
 
 func TestPresentNPCNames(t *testing.T) {
 	// 无 Location 信息 -> 全部在场（旧行为等价）
-	ws := NewWorldState("w", ModeTRPG)
+	ws := NewWorldState("w", ModeSimRPG)
 	ws.Characters["甲"] = &CharacterState{Name: "甲", Alive: true}
 	ws.Characters["乙"] = &CharacterState{Name: "乙", Alive: false}
 	if got := PresentNPCNames(ws); len(got) != 2 {

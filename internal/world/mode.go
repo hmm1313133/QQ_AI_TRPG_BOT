@@ -1,18 +1,16 @@
 // 游戏模式配置（设计文档第九章）：模式 = 子系统开关的组合。
-// 三种业务模式共享同一引擎内核，差异仅为配置。
+// 两种业务模式共享同一引擎内核，差异仅为配置。
 package world
 
 import (
 	"fmt"
 	"log"
-
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
 )
 
 // GameMode 游戏模式配置。
 type GameMode struct {
-	Name          string // trpg / simrpg / roleplay
-	Ruleset       string // coc7 / dnd5e / lite / none
+	Name          string // simrpg / roleplay
+	Ruleset       string // lite / none
 	EnableRules   bool   // 规则层（检定/成长）
 	EnableScript  bool   // 剧本/时间轴
 	EnablePlanner bool   // 低频场景规划
@@ -23,12 +21,6 @@ type GameMode struct {
 }
 
 var modePresets = map[string]GameMode{
-	ModeTRPG: {
-		Name: ModeTRPG, Ruleset: "coc7",
-		EnableRules: true, EnableScript: true, EnablePlanner: true,
-		EnableMemory: true, EnableMood: true, EnableClock: true,
-		EnableOffline: false, // 剧本内时间，不做跨现实时间演化
-	},
 	ModeSimRPG: {
 		Name: ModeSimRPG, Ruleset: "lite",
 		EnableRules: true, EnableScript: false, EnablePlanner: true,
@@ -43,12 +35,12 @@ var modePresets = map[string]GameMode{
 	},
 }
 
-// GetMode 获取模式配置（未知模式回退为 TRPG）。
+// GetMode 获取模式配置（未知模式回退为 simrpg）。
 func GetMode(name string) GameMode {
 	if m, ok := modePresets[name]; ok {
 		return m
 	}
-	return modePresets[ModeTRPG]
+	return modePresets[ModeSimRPG]
 }
 
 // CreateWorld 创建指定模式的空世界（RPG 模拟/角色扮演的入口）。
@@ -75,12 +67,11 @@ type NPCSeed struct {
 
 // SeedSpec 手动创建世界时的播种规格。
 type SeedSpec struct {
-	Mode       string    `json:"mode"`       // trpg / simrpg / roleplay
+	Mode       string    `json:"mode"`       // simrpg / roleplay
 	Background string    `json:"background"` // 世界设定文本
 	Scene      string    `json:"scene"`      // 初始场景描述（可选）
 	NPCs       []NPCSeed `json:"npcs"`       // roleplay 至少 1 个
 	Locations  []string  `json:"locations"`  // simrpg 用
-	ScriptID   string    `json:"script_id"`  // trpg 专用：由调用方据此加载剧本后传入 scr
 	// 结构化素材（《世界编辑器与素材联动设计.md》§4.3，全部可选，各模式通用）
 	Characters   []CharacterState `json:"characters"`    // 结构化 NPC（含创作字段），与 NPCs 简易种子并存
 	LocationDefs []Location       `json:"location_defs"` // 结构化地点（Locations 名称列表之外的完整形态）
@@ -91,9 +82,8 @@ type SeedSpec struct {
 
 // SeedWorld 创建并播种一个世界（管理后台手动创建入口）。
 // 校验：worldID 非空且不重复、模式合法、roleplay 至少 1 个 NPC。
-// trpg 模式直接复用 InitFromScript，此时 scr 必填（调用方按 spec.ScriptID 加载）。
 // 符合单写入原则：一切状态经 Engine 填充后由 Engine 落库。
-func (e *Engine) SeedWorld(worldID string, spec SeedSpec, scr *script.Script) (*WorldState, error) {
+func (e *Engine) SeedWorld(worldID string, spec SeedSpec) (*WorldState, error) {
 	if worldID == "" {
 		return nil, fmt.Errorf("世界 ID 不能为空")
 	}
@@ -102,9 +92,6 @@ func (e *Engine) SeedWorld(worldID string, spec SeedSpec, scr *script.Script) (*
 	}
 	if spec.Mode == ModeRoleplay && len(spec.NPCs)+len(spec.Characters) == 0 {
 		return nil, fmt.Errorf("roleplay 模式至少需要 1 个 NPC")
-	}
-	if spec.Mode == ModeTRPG && scr == nil {
-		return nil, fmt.Errorf("trpg 模式必须提供剧本（spec.ScriptID 对应的 Script）")
 	}
 	for _, n := range spec.NPCs {
 		if n.Name == "" {
@@ -118,20 +105,6 @@ func (e *Engine) SeedWorld(worldID string, spec SeedSpec, scr *script.Script) (*
 	// 重复 ID 报错，防止覆盖已有世界
 	if existing, err := e.repo.Load(worldID); err == nil && existing != nil {
 		return nil, fmt.Errorf("世界 %s 已存在", worldID)
-	}
-
-	if spec.Mode == ModeTRPG {
-		state, err := e.InitFromScript(worldID, scr)
-		if err != nil {
-			return nil, err
-		}
-		// 剧本播种之上追加结构化素材（同名角色只补缺失字段）
-		if applySpecExtras(state, spec) {
-			if err := e.repo.Save(state); err != nil {
-				return nil, fmt.Errorf("保存追加素材失败: %w", err)
-			}
-		}
-		return state, nil
 	}
 
 	state := NewWorldState(worldID, spec.Mode)
@@ -181,7 +154,7 @@ func (e *Engine) SeedWorld(worldID string, spec SeedSpec, scr *script.Script) (*
 }
 
 // applySpecExtras 把 SeedSpec 的结构化素材（characters/items/factions/storyline）
-// 叠加到已播种的世界（trpg 剧本播种之上也可追加）。有追加则返回 true（调用方负责 Save）。
+// 叠加到已播种的世界。有追加则返回 true（调用方负责 Save）。
 func applySpecExtras(state *WorldState, spec SeedSpec) bool {
 	changed := false
 	for i := range spec.Characters {
@@ -256,7 +229,7 @@ func applySpecExtras(state *WorldState, spec SeedSpec) bool {
 }
 
 // MergeCharacterState 把 src 中 dst 缺失的字段补入 dst（空值不覆盖）。
-// 同名角色合并（剧本播种之上追加素材、人物卡关联）共用。
+// 同名角色合并（素材导入、创建向导追加素材）共用。
 func MergeCharacterState(dst, src *CharacterState) {
 	if dst.CardRef == "" {
 		dst.CardRef = src.CardRef

@@ -21,7 +21,7 @@ type Asset struct {
 	Name      string          `json:"name"`
 	Tags      []string        `json:"tags,omitempty"`
 	Summary   string          `json:"summary,omitempty"`
-	Source    string          `json:"source,omitempty"`    // 来源说明（手动创建 / 收藏自世界X / 剧本Y）
+	Source    string          `json:"source,omitempty"`    // 来源说明（手动创建 / 收藏自世界X / 解析导入）
 	Payload   json.RawMessage `json:"payload"`             // 实体完整 JSON
 	CreatedAt string          `json:"created_at,omitempty"`
 	UpdatedAt string          `json:"updated_at,omitempty"`

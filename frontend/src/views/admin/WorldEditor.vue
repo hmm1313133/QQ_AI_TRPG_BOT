@@ -4,7 +4,7 @@
       <div>
         <div class="page-title">世界编辑器 <span class="mono">{{ worldId }}</span></div>
         <div class="page-desc">
-          {{ detail ? `模式 ${detail.mode}${detail.script_name ? ' · 剧本 ' + detail.script_name : ''}` : '加载中…' }}
+          {{ detail ? `模式 ${detail.mode}` : '加载中…' }}
         </div>
       </div>
       <el-button size="small" @click="router.push('/admin/worlds')">← 返回世界列表</el-button>
@@ -20,7 +20,6 @@
             <div class="overview-grid">
               <div><div class="muted">世界 ID</div><p class="mono">{{ detail.world_id }}</p></div>
               <div><div class="muted">模式</div><p>{{ detail.mode }}</p></div>
-              <div><div class="muted">剧本</div><p>{{ detail.script_name || '-' }}</p></div>
               <div><div class="muted">回合数</div><p>{{ detail.round_count }}</p></div>
               <div><div class="muted">当前场景</div><p>{{ detail.scene?.node_name || '-' }}</p></div>
               <div><div class="muted">最近更新</div><p>{{ detail.last_update || '-' }}</p></div>
@@ -32,7 +31,6 @@
         <div class="card danger-card">
           <div class="card-title">危险操作</div>
           <div style="display:flex;gap:10px">
-            <el-button type="primary" plain size="small" :loading="advancing" @click="advance">推进时间轴 →</el-button>
             <el-button type="danger" plain size="small" @click="removeWorld">删除世界</el-button>
           </div>
         </div>
@@ -43,24 +41,6 @@
         <div class="card">
           <div class="card-title">主线剧情</div>
           <div v-if="!loaded.storylineDone" class="empty">加载中…</div>
-          <!-- trpg 模式：主线由剧本时间轴驱动，只读展示 -->
-          <template v-else-if="isTrpg">
-            <div class="muted" style="margin-bottom:10px">trpg 模式的主线由剧本时间轴驱动，此处仅供只读查看。</div>
-            <div v-if="!sections.storyline" class="empty">该世界没有独立主线（进度见「场景」与时间轴）</div>
-            <template v-else>
-              <h3 class="sl-title">{{ sections.storyline.title }}</h3>
-              <p v-if="sections.storyline.premise" class="muted">{{ sections.storyline.premise }}</p>
-              <div v-for="(a, i) in sections.storyline.acts || []" :key="a.id || i" class="act-row">
-                <span class="act-index">{{ i + 1 }}</span>
-                <div class="act-body">
-                  <b>{{ a.title }}</b>
-                  <div v-if="a.summary" class="muted">{{ a.summary }}</div>
-                </div>
-                <el-tag size="small" :type="actStatusType(a.status)">{{ actStatusLabel(a.status) }}</el-tag>
-              </div>
-            </template>
-          </template>
-          <!-- simrpg / roleplay：可编辑 -->
           <template v-else>
             <div v-if="!storylineForm" class="empty">
               尚未设置主线剧情
@@ -454,11 +434,9 @@ const worldId = route.params.id
 
 const activeTab = ref('overview')
 const detail = ref(null)
-const advancing = ref(false)
 
 // 分区数据（按需加载）
 const sections = reactive({
-  scene: null,
   characters: null,
   locations: null,
   factions: null,
@@ -469,7 +447,7 @@ const sections = reactive({
   style: null,
 })
 const saving = reactive({
-  scene: false, characters: false, locations: false, factions: false,
+  characters: false, locations: false, factions: false,
   quests: false, hidden: false, items: false, storyline: false, style: false, json: false,
 })
 const loaded = reactive({})
@@ -491,8 +469,6 @@ const importing = ref(false)
 const saves = ref(null)
 const saveDialog = reactive({ visible: false, name: '', note: '', creating: false })
 
-const isTrpg = computed(() => detail.value?.mode === 'trpg')
-
 const metricsText = computed(() => {
   const m = detail.value?.metrics
   if (!m) return '-'
@@ -506,19 +482,6 @@ async function loadDetail() {
     detail.value = await worldApi.detail(worldId)
   } catch (e) {
     ElMessage.error('加载世界详情失败：' + e.message)
-  }
-}
-
-async function advance() {
-  advancing.value = true
-  try {
-    const r = await worldApi.advance(worldId)
-    ElMessage.success(r?.message || '已推进')
-    await loadDetail()
-  } catch (e) {
-    ElMessage.error('推进失败：' + e.message)
-  } finally {
-    advancing.value = false
   }
 }
 
@@ -650,7 +613,6 @@ function addItem() {
 
 async function ensureTabData(tab) {
   const need = {
-    scene: ['scene'],
     storyline: ['storyline'],
     style: ['style'],
     characters: ['characters'],
@@ -738,14 +700,6 @@ function moveAct(i, dir) {
   if (j < 0 || j >= acts.length) return
   const [a] = acts.splice(i, 1)
   acts.splice(j, 0, a)
-}
-
-function actStatusLabel(s) {
-  return { pending: '未开始', active: '进行中', done: '已完成' }[s] || s
-}
-
-function actStatusType(s) {
-  return { pending: 'info', active: 'warning', done: 'success' }[s] || 'info'
 }
 
 async function saveStoryline() {
@@ -1013,22 +967,18 @@ onMounted(loadDetail)
 .char-ops { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .el-collapse :deep(.el-tag) { margin-right: 6px; }
 
-.sl-title { margin: 4px 0 6px; font-size: 15px; }
 .act-list { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; width: 100%; }
 .act-edit-card {
   width: 100%; border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 10px; background: var(--bg);
 }
 .act-edit-head { display: flex; align-items: center; gap: 8px; }
-.act-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-.act-row:last-child { border-bottom: none; }
 .act-index {
   flex: none; width: 22px; height: 22px; border-radius: 50%;
   background: var(--primary-soft); color: var(--primary);
   font-size: 12px; font-weight: 600;
   display: inline-flex; align-items: center; justify-content: center;
 }
-.act-body { flex: 1; font-size: 13.5px; }
 
 .hit-group { margin-top: 8px; }
 .hit-group-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }

@@ -10,8 +10,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/script"
 )
 
 // Engine 世界引擎。
@@ -90,6 +88,54 @@ func (e *Engine) Save(state *WorldState) error {
 // Delete 删除世界状态。
 func (e *Engine) Delete(worldID string) error {
 	return e.repo.Delete(worldID)
+}
+
+// ============================================================
+// 回合快照（"AI 回复重试"：恢复快照 + 用原用户输入重跑）
+// ============================================================
+
+// SaveTurnSnapshot 保存回合前快照（仅 SQLite 存储支持，其他实现静默跳过）。
+// 调用方须已持有世界锁（TurnEngine 回合内调用，整个 Run 持锁）。
+func (e *Engine) SaveTurnSnapshot(worldID string, state *WorldState, userText string) error {
+	repo, ok := e.repo.(*SQLiteRepository)
+	if !ok {
+		return nil
+	}
+	return repo.SaveTurnSnapshot(worldID, state, userText)
+}
+
+// RestoreTurnSnapshot 恢复回合快照（覆盖当前世界状态），返回当时的用户输入。
+// 无快照（normal 模式 / 老数据 / 非 SQLite 存储）时 ok=false，调用方走兜底重跑。
+func (e *Engine) RestoreTurnSnapshot(worldID string) (userText string, ok bool, err error) {
+	repo, castOK := e.repo.(*SQLiteRepository)
+	if !castOK {
+		return "", false, nil
+	}
+	e.Lock(worldID)
+	defer e.Unlock(worldID)
+	return repo.RestoreTurnSnapshot(worldID)
+}
+
+// UpdateRecentNarrator 把 RecentTurns 窗口内最后一处 Narrator == oldText 替换为 newText
+// 并落库（编辑/版本切换后同步 LLM 近期对话上下文；窗口内未命中则静默跳过，尽力而为）。
+// 已知限制：已写入长期记忆（MemoryService.AfterTurn）的内容不回收。
+func (e *Engine) UpdateRecentNarrator(worldID, oldText, newText string) error {
+	if oldText == "" || oldText == newText {
+		return nil
+	}
+	e.Lock(worldID)
+	defer e.Unlock(worldID)
+	ws := e.LoadOrNil(worldID)
+	if ws == nil {
+		return nil
+	}
+	for i := len(ws.RecentTurns) - 1; i >= 0; i-- {
+		if ws.RecentTurns[i].Narrator == oldText {
+			ws.RecentTurns[i].Narrator = newText
+			return e.repo.Save(ws)
+		}
+	}
+	return nil
 }
 
 // ListWorlds 列出所有世界 ID。
@@ -376,185 +422,6 @@ func MatchTarget(target, id, description string) bool {
 }
 
 // ============================================================
-// 剧本初始化与场景刷新（自旧 gamestate_store.go 迁移）
-// ============================================================
-
-// InitFromScript 从分析后的 Script 初始化 WorldState（TRPG 模式）。
-func (e *Engine) InitFromScript(worldID string, scr *script.Script) (*WorldState, error) {
-	state := NewWorldState(worldID, ModeTRPG)
-	state.ScriptID = scr.ID
-	state.ScriptName = scr.Name
-	state.Background = BuildStoryContext(&scr.Background)
-	// P4 剧本条目化：Background/Timeline/Characters → lore 条目（Background 原文保留兼容旧读路径）
-	state.Lore = ScriptLoreEntries(scr)
-
-	if firstNode := scr.GetFirstNode(); firstNode != nil {
-		applyNodeToState(state, scr, firstNode)
-	}
-
-	for _, ch := range scr.Characters {
-		state.Characters[ch.Name] = CharacterFromScript(ch)
-	}
-
-	// 模组素材派生（设计 §11.2）：时间轴→主线、场景→地点、关键组织→势力，
-	// 创建 trpg 世界即开箱完整，无需再手动搬运。
-	state.Storyline = StorylineFromScript(scr)
-	for _, loc := range LocationsFromScript(scr) {
-		if _, exists := state.Locations[loc.Name]; !exists {
-			state.Locations[loc.Name] = loc
-		}
-	}
-	for _, fac := range FactionsFromScript(scr) {
-		if _, exists := state.Factions[fac.Name]; !exists {
-			state.Factions[fac.Name] = fac
-		}
-	}
-
-	if err := e.repo.Save(state); err != nil {
-		return nil, fmt.Errorf("保存初始 WorldState 失败: %w", err)
-	}
-
-	log.Printf("[World] 初始化 WorldState: world=%s, script=%s, scene=%s, npcs=%d, lore=%d, locations=%d, factions=%d",
-		worldID, scr.Name, state.Scene.NodeName, len(state.Characters), len(state.Lore), len(state.Locations), len(state.Factions))
-	return state, nil
-}
-
-// RefreshScene 推进时间轴节点时刷新场景/目标/线索/事件（NPC 状态跨节点保留）。
-// 同时维护 CompletedNodes（旧 ProgressTracker.AdvanceNode 的职责）。
-func (e *Engine) RefreshScene(worldID string, scr *script.Script, nodeID string) error {
-	state, err := e.repo.Load(worldID)
-	if err != nil {
-		return fmt.Errorf("加载 WorldState 失败: %w", err)
-	}
-
-	node, err := scr.GetNodeByID(nodeID)
-	if err != nil {
-		return fmt.Errorf("获取节点失败: %w", err)
-	}
-
-	// 标记旧节点完成
-	if state.Scene.NodeID != "" && state.Scene.NodeID != nodeID {
-		completed := false
-		for _, id := range state.CompletedNodes {
-			if id == state.Scene.NodeID {
-				completed = true
-				break
-			}
-		}
-		if !completed {
-			state.CompletedNodes = append(state.CompletedNodes, state.Scene.NodeID)
-		}
-	}
-
-	applyNodeToState(state, scr, node)
-
-	// 补充新 NPC
-	for _, ch := range scr.Characters {
-		if _, exists := state.Characters[ch.Name]; !exists {
-			state.Characters[ch.Name] = CharacterFromScript(ch)
-		}
-	}
-
-	if err := e.repo.Save(state); err != nil {
-		return fmt.Errorf("保存刷新后的 WorldState 失败: %w", err)
-	}
-
-	log.Printf("[World] 刷新场景: world=%s, node=%s, quests=%d, events=%d",
-		worldID, nodeID, len(state.Quests), len(state.EventQueue))
-	return nil
-}
-
-// applyNodeToState 将时间轴节点信息应用到 WorldState。
-func applyNodeToState(state *WorldState, scr *script.Script, node *script.TimelineNode) {
-	state.Scene = SceneState{
-		NodeID:      node.ID,
-		NodeName:    node.Name,
-		NodeType:    node.Type,
-		Description: node.Description,
-		Narrative:   node.Narrative,
-		KPNotes:     node.KPNotes,
-	}
-
-	// 关联 ScriptScene（通过 ConnectedNodes 匹配）
-	for i := range scr.Scenes {
-		sc := &scr.Scenes[i]
-		for _, cn := range sc.ConnectedNodes {
-			if cn == node.ID {
-				state.Scene.Atmosphere = sc.Atmosphere
-				state.Scene.DangerLevel = sc.DangerLevel
-				state.Scene.InvestigationPts = sc.InvestigationPoints
-				state.Scene.Exits = sc.Exits
-				if state.Scene.Narrative == "" {
-					state.Scene.Narrative = sc.Narrative
-				}
-				break
-			}
-		}
-	}
-
-	state.Quests = []QuestState{}
-	for _, obj := range node.Objectives {
-		state.Quests = append(state.Quests, QuestState{Description: obj})
-	}
-
-	state.HiddenInfo = []HiddenItem{}
-	for idx, clue := range node.Clues {
-		state.HiddenInfo = append(state.HiddenInfo, HiddenItem{
-			ID:          fmt.Sprintf("%s_clue_%d", node.ID, idx),
-			Description: clue,
-			Source:      "clue",
-		})
-	}
-
-	state.EventQueue = []ScheduledEvent{}
-	for idx, trigger := range node.Triggers {
-		state.EventQueue = append(state.EventQueue, ScheduledEvent{
-			ID:          fmt.Sprintf("%s_trigger_%d", node.ID, idx),
-			Description: trigger,
-			Trigger:     trigger,
-			Type:        "trigger",
-		})
-	}
-	for idx, encounter := range node.Encounters {
-		state.EventQueue = append(state.EventQueue, ScheduledEvent{
-			ID:          fmt.Sprintf("%s_encounter_%d", node.ID, idx),
-			Description: encounter,
-			Type:        "encounter",
-		})
-	}
-}
-
-// BuildStoryContext 从 StoryBackground 构建设定文本（不可变部分）。
-func BuildStoryContext(bg *script.StoryBackground) string {
-	var sb []byte
-	if bg.Setting != "" {
-		sb = append(sb, fmt.Sprintf("时代/世界观: %s\n", bg.Setting)...)
-	}
-	if bg.Era != "" {
-		sb = append(sb, fmt.Sprintf("时代: %s\n", bg.Era)...)
-	}
-	if bg.Location != "" {
-		sb = append(sb, fmt.Sprintf("地点: %s\n", bg.Location)...)
-	}
-	if bg.Atmosphere != "" {
-		sb = append(sb, fmt.Sprintf("氛围: %s\n", bg.Atmosphere)...)
-	}
-	if bg.Tone != "" {
-		sb = append(sb, fmt.Sprintf("基调: %s\n", bg.Tone)...)
-	}
-	if bg.MainTheme != "" {
-		sb = append(sb, fmt.Sprintf("主题: %s\n", bg.MainTheme)...)
-	}
-	if bg.Synopsis != "" {
-		sb = append(sb, fmt.Sprintf("剧情梗概: %s\n", bg.Synopsis)...)
-	}
-	if bg.Backstory != "" {
-		sb = append(sb, fmt.Sprintf("背景故事: %s\n", bg.Backstory)...)
-	}
-	return string(sb)
-}
-
-// ============================================================
 // 进度与摘要（旧 ProgressTracker 职责）
 // ============================================================
 
@@ -595,25 +462,4 @@ func (e *Engine) RecentDecisions(ws *WorldState, n int) []WorldEvent {
 		}
 	}
 	return decisions
-}
-
-// GetProgressContext 构建供叙事层使用的进度上下文文本（旧 GetContextForKP）。
-func (e *Engine) GetProgressContext(ws *WorldState) string {
-	if ws == nil {
-		return ""
-	}
-	result := "【剧本进度】\n"
-	result += fmt.Sprintf("剧本: %s\n", ws.ScriptName)
-	result += fmt.Sprintf("当前节点: %s (%s)\n", ws.Scene.NodeName, ws.Scene.NodeID)
-	result += fmt.Sprintf("已完成节点: %d\n", len(ws.CompletedNodes))
-	if ws.CampaignSummary != "" {
-		result += fmt.Sprintf("剧情摘要: %s\n", ws.CampaignSummary)
-	}
-	if decisions := e.RecentDecisions(ws, 3); len(decisions) > 0 {
-		result += "最近决策:\n"
-		for _, d := range decisions {
-			result += fmt.Sprintf("  %s\n", d.Value)
-		}
-	}
-	return result
 }

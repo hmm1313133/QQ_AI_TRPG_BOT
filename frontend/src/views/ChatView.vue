@@ -1,7 +1,7 @@
 <template>
   <div class="chat-page">
     <header class="header">
-      <div class="logo">AI <span>TRPG</span></div>
+      <div class="logo">AI <span>世界引擎</span></div>
       <div class="spacer"></div>
       <div class="conn" :class="connClass">
         <div class="dot"></div>
@@ -13,7 +13,7 @@
 
     <!-- 游玩存档 -->
     <el-dialog v-model="savesVisible" title="游玩存档" width="560px">
-      <div v-if="savesNoWorld" class="empty">当前会话还没有进行中的世界（先加载剧本或创建世界）</div>
+      <div v-if="savesNoWorld" class="empty">当前会话还没有进行中的世界（先在右侧进入一个世界）</div>
       <template v-else>
         <div class="save-create">
           <el-input v-model="saveName" size="small" placeholder="存档名称（必填）" style="width:180px" />
@@ -45,51 +45,125 @@
     <!-- 玩家人设 -->
     <el-dialog v-model="personaVisible" title="玩家人设" width="480px">
       <el-form label-width="70px" label-position="left">
+        <el-form-item label="范围">
+          <el-radio-group v-model="personaScope" @change="loadPersona">
+            <el-radio value="global">全局默认</el-radio>
+            <el-radio value="world" :disabled="!currentWorldId">仅本世界</el-radio>
+          </el-radio-group>
+          <div v-if="!currentWorldId" class="muted" style="margin-top:4px">进入世界后可设置仅该世界生效的人设</div>
+        </el-form-item>
         <el-form-item label="名字">
           <el-input v-model="personaName" placeholder="你在游戏中扮演的角色名" />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="personaDesc" type="textarea" :rows="4"
-            placeholder="自由描述：性格/外貌/行事风格等（换行会转为空格，请勿使用 | 字符）" />
-        </el-form-item>
-        <el-form-item label="范围">
-          <el-radio-group v-model="personaScope">
-            <el-radio value="global">全局默认</el-radio>
-            <el-radio value="world">仅本世界</el-radio>
-          </el-radio-group>
+            placeholder="自由描述：性格/外貌/行事风格等" />
         </el-form-item>
       </el-form>
       <template #footer>
+        <el-button size="small" :disabled="!personaName && !personaDesc" @click="clearPersona">清除人设</el-button>
         <el-button size="small" @click="personaVisible = false">取消</el-button>
-        <el-button type="primary" size="small" @click="applyPersona">确定</el-button>
+        <el-button type="primary" size="small" :loading="personaSaving" @click="applyPersona">确定</el-button>
       </template>
     </el-dialog>
 
     <!-- 进入世界 -->
     <el-dialog v-model="worldsVisible" title="进入世界" width="520px">
       <div v-if="currentWorldId" class="empty" style="padding:0 0 10px">
-        当前会话已有进行中的世界，进入新世界前会先退出当前世界（清除当前进度）
+        当前正在世界「{{ currentWorldName || currentWorldId }}」中，进入新世界前会先退出当前世界（清除当前进度，进度可先在「存档」中备份）
       </div>
       <div v-if="worldsLoading" class="empty">加载中…</div>
       <div v-else-if="!worldList.length" class="empty">暂无可进入的世界（请先在管理后台创建）</div>
       <el-radio-group v-else v-model="selectedWorldId" class="world-list">
         <el-radio v-for="w in worldList" :key="w.id" :value="w.id" class="world-item">
           <b>{{ w.id }}</b> <span class="muted">[{{ w.mode }}]</span>
-          {{ w.script_name || w.background || '（无描述）' }}
+          {{ w.background || '（无描述）' }}
           <span class="muted">轮次 {{ w.round_count }} · 角色 {{ w.character_count }}</span>
         </el-radio>
       </el-radio-group>
       <template #footer>
         <el-button size="small" @click="worldsVisible = false">取消</el-button>
-        <el-button type="primary" size="small" :disabled="!selectedWorldId" @click="enterWorld">进入</el-button>
+        <el-button type="primary" size="small" :disabled="!selectedWorldId" :loading="worldBusy" @click="enterSelectedWorld">进入</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 帮助 -->
+    <el-dialog v-model="helpVisible" title="使用帮助" width="520px">
+      <div class="help-body">
+        <div class="help-item">
+          <b>会话模式</b>
+          <p>普通对话：与 AI 自由聊天，不加载世界上下文；世界内扮演：在当前世界中扮演行动，AI 会结合世界状态回应（需先进入世界）。</p>
+        </div>
+        <div class="help-item">
+          <b>回复长度</b>
+          <p>控制 AI 回复的篇幅：简短 / 标准 / 详细，随时可切换，立即生效。</p>
+        </div>
+        <div class="help-item">
+          <b>进入世界</b>
+          <p>从管理后台创建的世界中选择一个进入（世界会实例化复制到本会话，互不影响）。进入新世界会退出并清除当前世界的进度，重要进度请先在「存档」中备份；也可随时「离开世界」回到无世界状态。</p>
+        </div>
+        <div class="help-item">
+          <b>玩家人设</b>
+          <p>告诉 AI「你是谁」：名字 + 性格 / 外貌 / 行事风格。支持「全局默认」与「仅本世界」两层，世界人设优先于全局人设。</p>
+        </div>
+        <div class="help-item">
+          <b>存档</b>
+          <p>顶栏「存档」可新建 / 恢复游玩存档；恢复前会自动备份当前进度。</p>
+        </div>
+        <div class="help-item">
+          <b>管理后台</b>
+          <p>右上角「管理后台 →」可创建与编辑世界、维护素材库与设定库、查看记忆。</p>
+        </div>
+      </div>
+      <template #footer>
+        <el-button type="primary" size="small" @click="helpVisible = false">知道了</el-button>
       </template>
     </el-dialog>
 
     <div class="main">
       <div class="chat-wrap">
         <div class="messages" ref="messagesEl">
-          <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.type">
-            <div class="bubble"><MarkdownText :text="m.text" /></div>
+          <div v-for="(m, i) in messages" :key="m.id || 'tmp-' + i" class="msg" :class="m.type">
+            <div class="msg-main">
+              <div v-if="editingId && editingId === m.id" class="bubble edit-bubble">
+                <el-input v-model="editText" type="textarea" :autosize="{ minRows: 3, maxRows: 14 }" />
+                <div class="edit-actions">
+                  <el-button size="small" @click="cancelEdit">取消</el-button>
+                  <el-button type="primary" size="small" :loading="editSaving" @click="saveEdit(m)">保存</el-button>
+                </div>
+              </div>
+              <template v-else>
+                <div class="bubble"><MarkdownText :text="m.text" /></div>
+                <div v-if="m.type === 'kp' && m.id" class="msg-ops">
+                  <button
+                    v-if="m.id === lastKpId"
+                    class="op-btn"
+                    :disabled="thinking || !!editingId"
+                    title="重新生成该回复"
+                    @click="regen(m)"
+                  >⟳ 重试</button>
+                  <button
+                    class="op-btn"
+                    :disabled="thinking"
+                    title="编辑该回复"
+                    @click="startEdit(m)"
+                  >✎ 编辑</button>
+                  <span v-if="m.version_count > 1" class="ver-switch">
+                    <button
+                      class="op-btn ver-btn"
+                      :disabled="m.version_no <= 1 || m.versionSwitching"
+                      @click="switchVersion(m, -1)"
+                    >‹</button>
+                    <span class="ver-label">{{ m.version_no }}/{{ m.version_count }}</span>
+                    <button
+                      class="op-btn ver-btn"
+                      :disabled="m.version_no >= m.version_count || m.versionSwitching"
+                      @click="switchVersion(m, 1)"
+                    >›</button>
+                  </span>
+                </div>
+              </template>
+            </div>
           </div>
           <div class="msg thinking" :class="{ show: thinking }">
             <div class="bubble"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
@@ -97,21 +171,18 @@
         </div>
 
         <div class="input-bar">
-          <button class="btn btn-icon" title="上传剧本文件" @click="fileInputEl.click()">📎</button>
           <div class="input-box">
-            <div class="cmd-hint" :class="{ show: showCmdHint }">.help 帮助 · .mode trpg 跑团模式 · .script list 剧本列表 · .r 1d20 骰子 · .progress 进度</div>
             <textarea
               ref="inputEl"
               v-model="inputText"
               rows="1"
-              placeholder="描述你的行动，或输入 . 开头的指令…"
+              placeholder="描述你的行动…"
               @keydown="onKeydown"
               @input="onInput"
             ></textarea>
           </div>
-          <button class="btn btn-send" @click="send">发送</button>
+          <button class="btn btn-send" :disabled="thinking" @click="send">发送</button>
         </div>
-        <input ref="fileInputEl" type="file" hidden accept=".pdf,.docx,.txt,.md" @change="onFileChange">
       </div>
 
       <aside class="sidebar">
@@ -140,24 +211,23 @@
           </div>
         </div>
         <div class="side-block">
-          <div class="side-title">进入世界</div>
-          <button class="header-btn persona-btn" @click="openWorlds">选择世界…</button>
+          <div class="side-title">世界</div>
+          <div v-if="currentWorldId" class="world-now">
+            <div class="world-now-name">当前：{{ currentWorldName || currentWorldId }}</div>
+            <button class="header-btn persona-btn" @click="openWorlds">切换世界…</button>
+            <button class="header-btn persona-btn" style="margin-top:6px" @click="leaveCurrentWorld">离开世界</button>
+          </div>
+          <button v-else class="header-btn persona-btn" @click="openWorlds">进入世界…</button>
           <div class="side-note" style="margin-top:6px">进入管理后台创建的世界（实例化复制到本会话）。</div>
         </div>
         <div class="side-block">
           <div class="side-title">玩家人设</div>
-          <button class="header-btn persona-btn" @click="personaVisible = true">设置人设…</button>
+          <button class="header-btn persona-btn" @click="openPersona">设置人设…</button>
           <div class="side-note" style="margin-top:6px">告诉 AI「你是谁」，支持全局默认或仅本世界生效。</div>
         </div>
         <div class="side-block">
-          <div class="side-title">快捷指令</div>
-          <div class="quick-cmds">
-            <span v-for="c in quickCmds" :key="c" class="qcmd" @click="sendQuick(c)">{{ c }}</span>
-          </div>
-        </div>
-        <div class="side-block">
-          <div class="side-title">提示</div>
-          <div class="side-note">上传剧本文件（PDF/Word）后发送 <b>.script upload 路径</b> 即可 AI 识别。剧本加载后切换到跑团模式开始游戏。</div>
+          <div class="side-title">帮助</div>
+          <button class="header-btn persona-btn" @click="helpVisible = true">使用说明…</button>
         </div>
       </aside>
     </div>
@@ -165,35 +235,43 @@
 </template>
 
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { playerSaveReq } from '../api/admin'
+import {
+  getChatState,
+  updateChatState,
+  getPersona,
+  setPersona,
+  enterWorld,
+  leaveWorld,
+  editChatMessage,
+  switchChatMessageVersion,
+} from '../api/chat'
 import MarkdownText from '../components/MarkdownText.vue'
 
 const messagesEl = ref(null)
 const inputEl = ref(null)
-const fileInputEl = ref(null)
 
 const messages = ref([])
 const thinking = ref(false)
 const connClass = ref('')
 const connText = ref('连接中…')
 const inputText = ref('')
-const showCmdHint = ref(false)
 const currentMode = ref('')
 const currentLength = ref('standard')
 
 const modes = [
-  { key: 'normal', label: '普通模式' },
-  { key: 'trpg', label: '跑团模式' },
-  { key: 'freechat', label: '自由聊天' },
+  { key: 'normal', label: '普通对话' },
+  { key: 'freechat', label: '世界内扮演' },
 ]
 const lengths = [
   { key: 'short', label: '简短（≤150字）' },
   { key: 'standard', label: '标准（~300字）' },
   { key: 'detailed', label: '详细（~600字）' },
 ]
-const quickCmds = ['.help', '.script list', '.progress', '.timeline', '.r 1d100', '.log start', '.log end']
+
+const helpVisible = ref(false)
 
 let ws = null
 let token = localStorage.getItem('trpg_token') || ''
@@ -207,20 +285,20 @@ function setConn(on, text) {
   connText.value = text
 }
 
-function addMsg(type, text) {
-  messages.value.push({ type, text })
+function scrollToBottom() {
   nextTick(() => {
     if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
   })
 }
 
+function addMsg(type, text, extra = {}) {
+  messages.value.push({ type, text, id: 0, version_no: 0, version_count: 0, versionsCache: {}, ...extra })
+  scrollToBottom()
+}
+
 function setThinking(on) {
   thinking.value = on
-  if (on) {
-    nextTick(() => {
-      if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
-    })
-  }
+  if (on) scrollToBottom()
 }
 
 async function ensureToken() {
@@ -243,17 +321,25 @@ async function loadHistory() {
   const typeMap = { reply: 'kp', user: 'user', push: 'push' }
   messages.value = (list || [])
     .filter((m) => typeMap[m.type])
-    .map((m) => ({ type: typeMap[m.type], text: m.text }))
-  nextTick(() => {
-    if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
-  })
+    .map((m) => ({
+      type: typeMap[m.type],
+      text: m.text,
+      id: m.id || 0,
+      version_no: m.version_no || 0,
+      version_count: m.version_count || 0,
+      // 历史返回的 text 即当前激活版本，先放入本地版本缓存
+      versionsCache: m.version_no > 0 ? { [m.version_no]: m.text } : {},
+    }))
+  scrollToBottom()
 }
 
 function connect() {
   ensureToken().then(() => {
     if (destroyed) return
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    ws = new WebSocket(`${proto}://${location.host}/ws/chat?token=${token}`)
+    let wsUrl = `${proto}://${location.host}/ws/chat?token=${encodeURIComponent(token)}`
+    if (chatAuth) wsUrl += '&auth=' + encodeURIComponent(chatAuth)
+    ws = new WebSocket(wsUrl)
 
     ws.onopen = () => setConn(true, '已连接')
     ws.onclose = () => {
@@ -265,25 +351,47 @@ function connect() {
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data)
       switch (msg.type) {
-        case 'reply': addMsg('kp', msg.text); break
+        case 'reply':
+          if (msg.ref_id) {
+            // 重试生成的新版本：就地更新目标消息，不追加新气泡
+            applyRegenReply(msg)
+          } else {
+            addMsg('kp', msg.text, { id: msg.id || 0 })
+          }
+          break
         case 'push': addMsg('push', msg.text); break
         case 'session': addMsg('system', msg.text); break
         case 'progress': addMsg('system', msg.text); break
-        case 'error': addMsg('system', '⚠ ' + msg.text); break
+        case 'error':
+          addMsg('system', '⚠ ' + msg.text)
+          setThinking(false)
+          break
         case 'status': setThinking(msg.state === 'thinking'); break
       }
     }
   })
 }
 
+// 重试回复帧：{ type:'reply', ref_id, text, version_no, version_count }
+function applyRegenReply(msg) {
+  const target = messages.value.find((x) => x.id === msg.ref_id)
+  if (!target) {
+    addMsg('kp', msg.text)
+    return
+  }
+  target.text = msg.text
+  if (msg.version_no) target.version_no = msg.version_no
+  if (msg.version_count) target.version_count = msg.version_count
+  if (target.version_no > 0) target.versionsCache[target.version_no] = msg.text
+}
+
 function send() {
   const text = inputText.value.trim()
-  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return
+  if (!text || thinking.value || !ws || ws.readyState !== WebSocket.OPEN) return
   addMsg('user', text)
   ws.send(JSON.stringify({ type: 'chat', text }))
   inputText.value = ''
   if (inputEl.value) inputEl.value.style.height = 'auto'
-  showCmdHint.value = false
 }
 
 function onKeydown(e) {
@@ -299,20 +407,137 @@ function onInput() {
     el.style.height = 'auto'
     el.style.height = Math.min(el.scrollHeight, 140) + 'px'
   }
-  showCmdHint.value = inputText.value === '.'
 }
 
-function switchMode(mode) {
-  currentMode.value = mode
-  inputText.value = '.mode ' + mode
-  send()
+// ---------- AI 回复：重试 / 编辑 / 版本切换 ----------
+
+// 仅最后一条 kp 消息允许重试（后端同样校验）
+const lastKpId = computed(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i]
+    if (m.type === 'kp') return m.id || null
+  }
+  return null
+})
+
+function regen(m) {
+  if (!m.id || thinking.value || editingId.value) return
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    ElMessage.error('连接已断开，无法重试')
+    return
+  }
+  // 后端在校验失败时只回 error 帧；error 帧处理里会复位 thinking
+  ws.send(JSON.stringify({ type: 'regen', ref_id: m.id }))
+  setThinking(true)
 }
 
-// 回复长度复用指令链路（.length xxx），无需新 API
-function switchLength(key) {
-  currentLength.value = key
-  inputText.value = '.length ' + key
-  send()
+const editingId = ref(null)
+const editText = ref('')
+const editSaving = ref(false)
+
+function startEdit(m) {
+  if (!m.id || thinking.value) return
+  editingId.value = m.id
+  editText.value = m.text
+}
+
+function cancelEdit() {
+  editingId.value = null
+  editText.value = ''
+}
+
+async function saveEdit(m) {
+  const text = editText.value.trim()
+  if (!text) {
+    ElMessage.warning('内容不能为空')
+    return
+  }
+  if (text === m.text) {
+    cancelEdit()
+    return
+  }
+  editSaving.value = true
+  try {
+    const t = await ensureToken()
+    await editChatMessage(t, chatAuth, m.id, text)
+    m.text = text
+    if (m.version_no > 0) m.versionsCache[m.version_no] = text
+    ElMessage.success('已保存')
+    cancelEdit()
+  } catch (e) {
+    ElMessage.error('保存失败：' + e.message)
+  } finally {
+    editSaving.value = false
+  }
+}
+
+// 切换版本：本地缓存有目标版本文本则先切换显示，再调接口持久化；
+// 无缓存则等接口返回文本。失败时回滚到切换前的显示。
+async function switchVersion(m, dir) {
+  const target = m.version_no + dir
+  if (m.versionSwitching || target < 1 || target > m.version_count) return
+  m.versionSwitching = true
+  const prevNo = m.version_no
+  const prevText = m.text
+  try {
+    const t = await ensureToken()
+    if (m.versionsCache[target] != null) {
+      m.version_no = target
+      m.text = m.versionsCache[target]
+    }
+    const r = await switchChatMessageVersion(t, chatAuth, m.id, target)
+    m.text = r.text
+    m.version_no = r.version_no
+    if (r.version_count) m.version_count = r.version_count
+    m.versionsCache[r.version_no] = r.text
+  } catch (e) {
+    m.version_no = prevNo
+    m.text = prevText
+    ElMessage.error('切换版本失败：' + e.message)
+  } finally {
+    m.versionSwitching = false
+  }
+}
+
+// ---------- 会话状态（模式 / 回复长度 / 所在世界） ----------
+
+const currentWorldId = ref('')
+const currentWorldName = ref('')
+
+function applyState(s) {
+  if (!s) return
+  currentMode.value = s.mode || 'normal'
+  currentLength.value = s.reply_length || 'standard'
+  currentWorldId.value = s.world_id || ''
+  currentWorldName.value = s.world_name || ''
+}
+
+async function loadChatState() {
+  const t = await ensureToken()
+  applyState(await getChatState(t, chatAuth))
+}
+
+async function switchMode(mode) {
+  if (mode === currentMode.value) return
+  try {
+    const t = await ensureToken()
+    applyState(await updateChatState(t, chatAuth, { mode }))
+    ElMessage.success('已切换到「' + (modes.find((m) => m.key === mode)?.label || mode) + '」')
+  } catch (e) {
+    ElMessage.error('切换模式失败：' + e.message)
+    loadChatState().catch(() => {})
+  }
+}
+
+async function switchLength(key) {
+  if (key === currentLength.value) return
+  try {
+    const t = await ensureToken()
+    applyState(await updateChatState(t, chatAuth, { reply_length: key }))
+  } catch (e) {
+    ElMessage.error('设置回复长度失败：' + e.message)
+    loadChatState().catch(() => {})
+  }
 }
 
 // ---------- 玩家人设 ----------
@@ -321,27 +546,68 @@ const personaVisible = ref(false)
 const personaName = ref('')
 const personaDesc = ref('')
 const personaScope = ref('global')
+const personaSaving = ref(false)
 
-// 组装 .persona 指令发送（复用指令链路，无需新 API）
-function applyPersona() {
-  const name = personaName.value.trim().replace(/\s+/g, ' ')
-  const desc = personaDesc.value.trim().replace(/\s+/g, ' ')
-  if (!name || !desc) { ElMessage.warning('名字和描述都不能为空'); return }
-  if (name.includes('|') || desc.includes('|')) {
-    ElMessage.warning('名字/描述请勿使用 | 字符（它是指令的分隔符）')
-    return
-  }
-  inputText.value = (personaScope.value === 'world' ? '.persona set world ' : '.persona set ') + name + '|' + desc
-  personaVisible.value = false
-  send()
+function personaWorld() {
+  return personaScope.value === 'world' ? currentWorldId.value : ''
 }
 
-// ---------- 进入世界 ----------
+async function loadPersona() {
+  try {
+    const t = await ensureToken()
+    const p = await getPersona(t, chatAuth, personaWorld())
+    personaName.value = p?.name || ''
+    personaDesc.value = p?.description || ''
+  } catch (e) {
+    ElMessage.error('加载人设失败：' + e.message)
+  }
+}
+
+function openPersona() {
+  personaVisible.value = true
+  if (personaScope.value === 'world' && !currentWorldId.value) personaScope.value = 'global'
+  loadPersona()
+}
+
+async function applyPersona() {
+  const name = personaName.value.trim()
+  const desc = personaDesc.value.trim()
+  if (!name || !desc) { ElMessage.warning('名字和描述都不能为空（要移除人设请点「清除人设」）'); return }
+  personaSaving.value = true
+  try {
+    const t = await ensureToken()
+    await setPersona(t, chatAuth, { world: personaWorld(), name, description: desc })
+    ElMessage.success('人设已保存')
+    personaVisible.value = false
+  } catch (e) {
+    ElMessage.error('保存人设失败：' + e.message)
+  } finally {
+    personaSaving.value = false
+  }
+}
+
+async function clearPersona() {
+  personaSaving.value = true
+  try {
+    const t = await ensureToken()
+    await setPersona(t, chatAuth, { world: personaWorld(), name: '', description: '' })
+    personaName.value = ''
+    personaDesc.value = ''
+    ElMessage.success('人设已清除')
+    personaVisible.value = false
+  } catch (e) {
+    ElMessage.error('清除人设失败：' + e.message)
+  } finally {
+    personaSaving.value = false
+  }
+}
+
+// ---------- 进入 / 离开世界 ----------
 
 const worldsVisible = ref(false)
 const worldsLoading = ref(false)
+const worldBusy = ref(false)
 const worldList = ref([])
-const currentWorldId = ref('')
 const selectedWorldId = ref('')
 
 async function openWorlds() {
@@ -352,7 +618,6 @@ async function openWorlds() {
     const t = await ensureToken()
     const data = await playerSaveReq('/api/worlds', { token: t, auth: chatAuth })
     worldList.value = data?.worlds || []
-    currentWorldId.value = data?.current_world_id || ''
   } catch (e) {
     ElMessage.error('加载世界列表失败：' + e.message)
     worldList.value = []
@@ -361,15 +626,14 @@ async function openWorlds() {
   }
 }
 
-// 确认进入：复用指令链路（.world enter），回复自然出现在聊天流；
-// 已有进行中世界时二次确认后先 .world reset 再进入（会清除当前进度）
-async function enterWorld() {
+// 确认进入：已有进行中世界时二次确认，先离开再进入（会清除当前进度）
+async function enterSelectedWorld() {
   const id = selectedWorldId.value
   if (!id) return
   if (currentWorldId.value) {
     try {
       await ElMessageBox.confirm(
-        '进入新世界会先退出当前世界并清除当前进度（存档快照见 .saves）。继续？',
+        '进入新世界会先退出当前世界并清除当前进度（可在「存档」中提前备份）。继续？',
         '进入世界',
         { type: 'warning', confirmButtonText: '退出并进入', cancelButtonText: '取消' }
       )
@@ -377,47 +641,55 @@ async function enterWorld() {
       return
     }
   }
-  worldsVisible.value = false
-  if (currentWorldId.value) {
-    inputText.value = '.world reset'
-    send()
-  }
-  inputText.value = '.world enter ' + id
-  send()
-}
-
-function sendQuick(cmd) {
-  inputText.value = cmd
-  send()
-}
-
-async function onFileChange() {
-  const input = fileInputEl.value
-  if (!input || !input.files.length) return
-  const fd = new FormData()
-  fd.append('file', input.files[0])
-  addMsg('system', '正在上传: ' + input.files[0].name + ' …')
+  worldBusy.value = true
   try {
-    const resp = await fetch('/api/upload', { method: 'POST', body: fd })
-    const data = await resp.json()
-    if (data.path) {
-      inputText.value = '.script upload ' + data.path
-      send()
-    } else {
-      addMsg('system', '⚠ 上传失败')
+    const t = await ensureToken()
+    if (currentWorldId.value) {
+      await leaveWorld(t, chatAuth)
     }
-  } catch (err) {
-    addMsg('system', '⚠ 上传失败: ' + err.message)
+    const r = await enterWorld(t, chatAuth, id)
+    await loadChatState()
+    worldsVisible.value = false
+    addMsg('system', `🌍 已进入世界「${r?.world_name || id}」`)
+  } catch (e) {
+    ElMessage.error('进入世界失败：' + e.message)
+    loadChatState().catch(() => {})
+  } finally {
+    worldBusy.value = false
   }
-  input.value = ''
 }
 
-// 先恢复历史再连 WS：历史请求在 connect 之前 await，天然无竞态
+async function leaveCurrentWorld() {
+  try {
+    await ElMessageBox.confirm(
+      '离开世界会清除本会话在该世界的进度（可在「存档」中提前备份）。继续？',
+      '离开世界',
+      { type: 'warning', confirmButtonText: '离开世界', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    const t = await ensureToken()
+    await leaveWorld(t, chatAuth)
+    await loadChatState()
+    addMsg('system', '已离开世界')
+  } catch (e) {
+    ElMessage.error('离开世界失败：' + e.message)
+  }
+}
+
+// 先恢复历史与会话状态再连 WS：历史请求在 connect 之前 await，天然无竞态
 onMounted(async () => {
   try {
     await loadHistory()
   } catch (err) {
     console.warn('加载历史消息失败:', err)
+  }
+  try {
+    await loadChatState()
+  } catch (err) {
+    console.warn('加载会话状态失败:', err)
   }
   connect()
 })
@@ -511,6 +783,7 @@ async function restoreSave(row) {
     } catch (err) {
       console.warn('恢复后加载历史失败:', err)
     }
+    loadChatState().catch(() => {})
     addMsg('system', `📦 ${r?.message || '已恢复存档'}`)
   } catch (e) {
     ElMessage.error('恢复失败：' + e.message)
@@ -551,11 +824,14 @@ async function restoreSave(row) {
 }
 .header-btn:hover { background: var(--bg); color: var(--text); }
 .persona-btn { width: 100%; border: 1px solid var(--border); text-align: center; }
+.world-now-name { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
 .world-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
 .world-item { width: 100%; margin-right: 0 !important; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
 .world-item :deep(.el-radio__label) { white-space: normal; line-height: 1.6; }
 .save-create { display: flex; gap: 8px; margin-bottom: 12px; }
 .empty { padding: 24px 0; text-align: center; color: var(--text-secondary); font-size: 13px; }
+.help-body { display: flex; flex-direction: column; gap: 12px; }
+.help-item p { margin: 4px 0 0; font-size: 13px; color: var(--text-secondary); line-height: 1.7; }
 
 /* ===== 主体 ===== */
 .main { flex: 1; display: flex; min-height: 0; }
@@ -588,6 +864,28 @@ async function restoreSave(row) {
   background: #fff8e6; color: #92660a; box-shadow: none;
   font-size: 13px; border-radius: 10px; border: 1px solid #f5e3b3;
 }
+
+/* ===== kp 气泡操作区（重试 / 编辑 / 版本切换） ===== */
+.msg-main { display: flex; flex-direction: column; min-width: 0; }
+.msg.user .msg-main { align-items: flex-end; }
+.msg-ops { display: flex; align-items: center; gap: 6px; margin-top: 4px; padding: 0 4px; }
+.op-btn {
+  font: inherit; font-size: 12px; line-height: 1.4;
+  color: var(--text-secondary); background: transparent;
+  border: none; border-radius: 6px; padding: 2px 6px; cursor: pointer;
+  opacity: 0; transition: opacity .15s, background .15s, color .15s;
+}
+.msg:hover .op-btn { opacity: 1; }
+.op-btn:hover:not(:disabled) { background: var(--bg); color: var(--text); }
+.op-btn:disabled { cursor: not-allowed; color: #c3c9d4; }
+/* 版本切换器常显（让用户可发现多版本），其余按钮 hover 显示 */
+.ver-switch { display: flex; align-items: center; gap: 2px; }
+.ver-switch .op-btn { opacity: 1; padding: 2px 4px; font-size: 14px; }
+.ver-label { font-size: 12px; color: var(--text-secondary); min-width: 30px; text-align: center; }
+
+/* 编辑态气泡 */
+.msg.kp .bubble.edit-bubble { width: min(480px, 100%); }
+.edit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 
 /* ===== 气泡内 markdown 内容 ===== */
 .msg .bubble :deep(.md-body) > :first-child { margin-top: 0; }
@@ -669,14 +967,6 @@ textarea {
   font: inherit; font-size: 14.5px; line-height: 1.6;
   max-height: 140px; display: block;
 }
-.cmd-hint {
-  position: absolute; bottom: 100%; left: 0; margin-bottom: 6px;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: var(--shadow);
-  font-size: 12.5px; color: var(--text-secondary);
-  padding: 8px 12px; display: none; white-space: pre-line;
-}
-.cmd-hint.show { display: block; }
 .btn {
   flex: none; height: 42px; padding: 0 18px;
   border: none; border-radius: 12px; cursor: pointer;
@@ -686,8 +976,6 @@ textarea {
 .btn-send { background: var(--primary); color: #fff; }
 .btn-send:hover { background: #2f5cd8; }
 .btn-send:disabled { background: #c3cfe8; cursor: not-allowed; }
-.btn-icon { background: var(--bg); border: 1px solid var(--border); color: var(--text-secondary); padding: 0 13px; }
-.btn-icon:hover { color: var(--text); border-color: #c9cdd4; }
 
 /* 侧栏 */
 .sidebar {
@@ -708,13 +996,6 @@ textarea {
 }
 .mode-item:hover { border-color: #c9cdd4; }
 .mode-item.active { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); font-weight: 600; }
-.quick-cmds { display: flex; flex-wrap: wrap; gap: 6px; }
-.qcmd {
-  font-size: 12px; padding: 5px 10px; border-radius: 999px;
-  background: var(--bg); border: 1px solid var(--border);
-  cursor: pointer; color: var(--text-secondary); transition: all .15s;
-}
-.qcmd:hover { color: var(--primary); border-color: var(--primary); }
 .side-note { font-size: 12px; color: var(--text-secondary); line-height: 1.7; }
 
 @media (max-width: 860px) {

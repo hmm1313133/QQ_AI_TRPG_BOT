@@ -48,25 +48,6 @@
         </el-table>
       </el-tab-pane>
 
-      <!-- 人物卡 -->
-      <el-tab-pane label="人物卡" name="cards">
-        <el-table
-          :data="catalog.cards"
-          size="small"
-          height="360"
-          empty-text="暂无全局人物卡"
-          @selection-change="(rows) => (selCards = rows)"
-        >
-          <el-table-column type="selection" width="40" />
-          <el-table-column prop="name" label="名称" min-width="120" />
-          <el-table-column prop="system" label="体系" width="110" />
-          <el-table-column prop="player" label="玩家" width="110" />
-          <el-table-column label="背景" width="80">
-            <template #default="{ row }">{{ row.has_backstory ? '有' : '-' }}</template>
-          </el-table-column>
-        </el-table>
-      </el-tab-pane>
-
       <!-- 其他世界 -->
       <el-tab-pane label="其他世界" name="worlds">
         <el-select v-model="srcWorldId" size="small" placeholder="选择来源世界" style="width:100%" filterable>
@@ -74,7 +55,7 @@
             v-for="w in otherWorlds"
             :key="w.id"
             :value="w.id"
-            :label="`${w.id}（${w.mode}${w.script_name ? ' · ' + w.script_name : ''}）`"
+            :label="`${w.id}（${w.mode}）`"
           />
         </el-select>
         <div v-if="!srcWorld" class="empty">请先选择来源世界</div>
@@ -91,25 +72,6 @@
             <div v-if="!g.names.length" class="muted">无</div>
           </div>
         </template>
-      </el-tab-pane>
-
-      <!-- 剧本角色 -->
-      <el-tab-pane label="剧本角色" name="scripts">
-        <el-select v-model="srcScriptId" size="small" placeholder="选择剧本" style="width:100%" filterable>
-          <el-option v-for="s in catalog.scripts" :key="s.id" :value="s.id" :label="s.name" />
-        </el-select>
-        <div v-if="!srcScript" class="empty">请先选择剧本</div>
-        <div v-else class="copy-group">
-          <div class="copy-group-title">角色（{{ srcScript.characters.length }}）</div>
-          <el-checkbox
-            v-for="n in srcScript.characters"
-            :key="n"
-            :model-value="isScriptCharChecked(srcScript.id, n)"
-            size="small"
-            @change="toggleScriptChar(srcScript.id, n, $event)"
-          >{{ n }}</el-checkbox>
-          <div v-if="!srcScript.characters.length" class="muted">该剧本没有预置角色</div>
-        </div>
       </el-tab-pane>
     </el-tabs>
 
@@ -158,15 +120,12 @@ const selLibrary = ref([])
 const libKind = ref('')
 const libQuery = ref('')
 
-// 目录（人物卡 / 其他世界 / 剧本）
-const catalog = ref({ cards: [], worlds: [], scripts: [] })
-const selCards = ref([])
+// 目录（其他世界）
+const catalog = ref({ worlds: [] })
 const srcWorldId = ref('')
-const srcScriptId = ref('')
 
-// 跨世界复制与剧本角色勾选
+// 跨世界复制勾选
 const copySet = ref(new Map()) // key: `${world_id}|${kind}|${name}` -> {world_id,kind,name}
-const scriptCharSet = ref(new Map()) // key: `${script_id}|${name}` -> {script_id,name}
 
 const onConflict = ref('skip')
 
@@ -180,9 +139,6 @@ const otherWorlds = computed(() =>
 const srcWorld = computed(() =>
   otherWorlds.value.find((w) => w.id === srcWorldId.value) || null
 )
-const srcScript = computed(() =>
-  (catalog.value.scripts || []).find((s) => s.id === srcScriptId.value) || null
-)
 const worldGroups = computed(() => {
   const w = srcWorld.value
   if (!w) return []
@@ -195,7 +151,7 @@ const worldGroups = computed(() => {
 })
 
 const totalSelected = computed(() =>
-  selLibrary.value.length + selCards.value.length + copySet.value.size + scriptCharSet.value.size
+  selLibrary.value.length + copySet.value.size
 )
 
 function copyKey(worldId, kind, name) {
@@ -211,19 +167,6 @@ function toggleCopy(worldId, kind, name, checked) {
   copySet.value = next
 }
 
-function scriptCharKey(scriptId, name) {
-  return `${scriptId}|${name}`
-}
-function isScriptCharChecked(scriptId, name) {
-  return scriptCharSet.value.has(scriptCharKey(scriptId, name))
-}
-function toggleScriptChar(scriptId, name, checked) {
-  const next = new Map(scriptCharSet.value)
-  if (checked) next.set(scriptCharKey(scriptId, name), { script_id: scriptId, name })
-  else next.delete(scriptCharKey(scriptId, name))
-  scriptCharSet.value = next
-}
-
 async function loadLibrary() {
   try {
     library.value = (await assetApi.list({ kind: libKind.value, q: libQuery.value.trim() })) || []
@@ -237,9 +180,7 @@ async function loadCatalog() {
   try {
     const data = await assetApi.catalog()
     catalog.value = {
-      cards: data?.cards || [],
       worlds: data?.worlds || [],
-      scripts: data?.scripts || [],
     }
   } catch (e) {
     ElMessage.error('加载素材目录失败：' + e.message)
@@ -249,9 +190,7 @@ async function loadCatalog() {
 async function onOpen() {
   tab.value = 'library'
   selLibrary.value = []
-  selCards.value = []
   copySet.value = new Map()
-  scriptCharSet.value = new Map()
   onConflict.value = 'skip'
   await Promise.all([loadLibrary(), loadCatalog()])
 }
@@ -261,9 +200,7 @@ function confirm() {
     library: selLibrary.value.map((a) => a.id),
     // library_rows 完整行对象（含 kind/name），供创建向导区分角色类素材；library 保持 id 数组不变
     library_rows: selLibrary.value.map((a) => ({ id: a.id, kind: a.kind, name: a.name })),
-    cards: selCards.value.map((c) => c.id),
     copy: [...copySet.value.values()],
-    script_characters: [...scriptCharSet.value.values()],
     on_conflict: onConflict.value,
   })
   emit('update:visible', false)

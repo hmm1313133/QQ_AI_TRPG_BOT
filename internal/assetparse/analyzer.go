@@ -1,6 +1,6 @@
 // 自由文本素材解析：单 Agent LLM 提取（设计 §11.4）。
 //
-// 与剧本三阶段流水线的差异：素材文本（角色卡/设定集量级）远短于 TRPG 模组，
+// 与剧本三阶段流水线的差异：素材文本（角色卡/设定集量级）远短于长篇模组，
 // 无需分段索引与逐字保留，单 Agent 一次提取即可。
 package assetparse
 
@@ -73,13 +73,16 @@ func NewParser(cfg *Config) (*Parser, error) {
 
 // extractedCharacter LLM 提取的单个角色（角色卡整理回写时按名字匹配）。
 type extractedCharacter struct {
-	Name        string   `json:"name"`
-	Summary     string   `json:"summary"`
-	Appearance  string   `json:"appearance"`
-	Personality string   `json:"personality"`
-	Backstory   string   `json:"backstory"`
-	Skills      []string `json:"skills"`
-	Tags        []string `json:"tags"`
+	Name          string   `json:"name"`
+	Summary       string   `json:"summary"`
+	Appearance    string   `json:"appearance"`
+	Personality   string   `json:"personality"`
+	Backstory     string   `json:"backstory"`
+	Motivation    string   `json:"motivation"`
+	DialogueStyle string   `json:"dialogue_style"`
+	KeyDialogue   []string `json:"key_dialogue"`
+	Skills        []string `json:"skills"`
+	Tags          []string `json:"tags"`
 }
 
 // extractedWorldview LLM 提取的世界观。
@@ -206,6 +209,8 @@ func outputToDrafts(out *extractionOutput) []Draft {
 				"name": c.Name, "kind": "npc", "disposition": "neutral", "alive": true,
 				"appearance": c.Appearance, "personality": c.Personality,
 				"backstory": c.Backstory, "skills": c.Skills,
+				"motivation": c.Motivation, "dialogue_style": c.DialogueStyle,
+				"key_dialogue": c.KeyDialogue,
 			}),
 		})
 	}

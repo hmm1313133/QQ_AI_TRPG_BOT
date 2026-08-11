@@ -102,62 +102,6 @@ func TestDecayMoods(t *testing.T) {
 	}
 }
 
-func TestRetrieve_ImportanceAndRecency(t *testing.T) {
-	now := int64(10000)
-	entries := []MemoryEntry{
-		{ID: "m1", Content: "玩家买了一杯茶", Importance: 2, WorldTime: now, LastAccess: now},
-		{ID: "m2", Content: "玩家帮助老陈修好了屋顶", Importance: 8, WorldTime: now - 6000, LastAccess: now - 6000},
-		{ID: "m3", Content: "玩家随手关了一扇门", Importance: 3, WorldTime: now, LastAccess: now},
-		{ID: "m4", Content: "已作废的记忆", Importance: 10, Invalid: true, WorldTime: now, LastAccess: now},
-	}
-
-	top := Retrieve(entries, "老陈 屋顶", now, 3, nil)
-	if len(top) == 0 {
-		t.Fatal("应检索到记忆")
-	}
-	// 失效记忆不应出现
-	for _, e := range top {
-		if e.ID == "m4" {
-			t.Fatal("失效记忆不应被检索到")
-		}
-	}
-	// 高重要性 + 高相关的 m2 应排第一
-	if top[0].ID != "m2" {
-		t.Fatalf("m2 应排第一: %+v", top[0])
-	}
-	// LastAccess 应被更新（保鲜）
-	if entries[1].LastAccess != now {
-		t.Fatal("被检索记忆的 LastAccess 应更新")
-	}
-}
-
-func TestRetrieve_PinnedNeverDropped(t *testing.T) {
-	now := int64(100000)
-	entries := []MemoryEntry{
-		{ID: "m1", Content: "重大事件", Importance: 9, Pinned: true, WorldTime: 0, LastAccess: 0},
-		{ID: "m2", Content: "普通小事", Importance: 1, WorldTime: now, LastAccess: now},
-	}
-	top := Retrieve(entries, "", now, 2, nil)
-	found := false
-	for _, e := range top {
-		if e.ID == "m1" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("Pinned 高重要性记忆应始终可被检索")
-	}
-}
-
-func TestBigramOverlap(t *testing.T) {
-	if got := bigramOverlap("老陈的商店", "老陈在商店里算账"); got <= 0 {
-		t.Fatalf("应有重叠: %f", got)
-	}
-	if got := bigramOverlap("完全无关", "老陈在商店里算账"); got != 0 {
-		t.Fatalf("应无重叠: %f", got)
-	}
-}
-
 func TestGetMode(t *testing.T) {
 	m := GetMode(ModeSimRPG)
 	if !m.EnableOffline {

@@ -33,7 +33,6 @@ const navItems = [
   { path: '/admin/worlds', icon: '🌍', label: '世界管理' },
   { path: '/admin/config', icon: '⚙️', label: 'AI 配置' },
   { path: '/admin/assets', icon: '🧩', label: '素材库' },
-  { path: '/admin/memory', icon: '🧠', label: '记忆查看' },
 ]
 
 function isActive(path) {

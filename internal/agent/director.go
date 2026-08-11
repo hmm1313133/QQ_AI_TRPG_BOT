@@ -106,10 +106,20 @@ func (d *Director) Decide(
 	)
 	if err != nil {
 		log.Printf("[Director] LLM 调用失败，降级为规则化指令: %v", err)
+		logLLMInteraction(llmLogRecord{
+			Kind: "planner", Session: sessionID,
+			SystemPrompt: directorSystemPrompt, UserMessage: userMsg,
+			Error: err.Error(), ElapsedMs: time.Since(start).Milliseconds(),
+		})
 		return d.fallbackDirective(state, playerMessage), nil
 	}
 
 	reply := collectAgentReply(events)
+	logLLMInteraction(llmLogRecord{
+		Kind: "planner", Session: sessionID,
+		SystemPrompt: directorSystemPrompt, UserMessage: userMsg,
+		Reply: reply, ElapsedMs: time.Since(start).Milliseconds(),
+	})
 	if reply == "" {
 		log.Printf("[Director] LLM 返回空回复，降级为规则化指令")
 		return d.fallbackDirective(state, playerMessage), nil
@@ -137,15 +147,24 @@ func (d *Director) Decide(
 
 // rawCompletion 一次无状态的纯文本补全（供 Reflector 等低频任务复用 runner）。
 func (d *Director) rawCompletion(worldID, task, prompt string) (string, error) {
+	start := time.Now()
 	events, err := d.runner.Run(context.Background(),
 		"director",
 		fmt.Sprintf("%s-%s-%d", worldID, task, time.Now().UnixNano()),
 		model.NewUserMessage(prompt),
 	)
 	if err != nil {
+		logLLMInteraction(llmLogRecord{
+			Kind: task, Session: worldID, UserMessage: prompt,
+			Error: err.Error(), ElapsedMs: time.Since(start).Milliseconds(),
+		})
 		return "", err
 	}
 	reply := collectAgentReply(events)
+	logLLMInteraction(llmLogRecord{
+		Kind: task, Session: worldID, UserMessage: prompt,
+		Reply: reply, ElapsedMs: time.Since(start).Milliseconds(),
+	})
 	if reply == "" {
 		return "", fmt.Errorf("LLM 返回空回复")
 	}

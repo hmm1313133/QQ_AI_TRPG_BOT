@@ -175,3 +175,8 @@ export const loreApi = {
     body: JSON.stringify({ text }),
   }),
 }
+
+// 主提示词预设列表（内置只读）：[{ key, name, description, content }]
+export function getPromptPresets() {
+  return adminReq('/api/admin/prompt-presets')
+}

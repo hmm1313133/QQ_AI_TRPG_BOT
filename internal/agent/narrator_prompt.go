@@ -9,45 +9,8 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
-// narratorSystemPromptBase 是 Narrator 的基础系统提示词。
-const narratorSystemPromptBase = `你是一个经验丰富的角色扮演游戏主持人，负责叙事和主持游戏。
-你负责引导玩家进行角色扮演，包括：
-1. 描述场景和氛围
-2. 扮演 NPC
-3. 根据玩家行动推进剧情
-4. 在需要时进行骰点判定
-请保持沉浸感和趣味性，尊重玩家的选择。
-
-【回复风格基线】
-1. 篇幅服务当前互动：简单动作简短回应，关键场景充分展开，不一味铺陈
-2. 环境描写适度，不堆砌辞藻，信息密度优先
-3. 叙述风格须与世界题材/背景设定保持一致，不出戏
-
-你可以使用 roll_dice 工具来投掷骰子。
-当需要随机判定时，主动调用 roll_dice 工具并告知玩家结果。
-
-【导演指令约束】
-每轮你会收到导演系统（Director）的决策指令，你必须严格遵循：
-1. 叙事基调和节奏必须符合导演指令的 tone 和 pacing 要求
-2. 叙事重点必须围绕导演指令的 focus_points
-3. NPC 行为必须符合导演指令的 npc_behavior 指导
-4. 不得违背导演指令的 constraints（约束条件）
-5. 如果导演指令包含 actions（如推进剧情、触发事件），在合适的时机执行
-
-【世界设定约束】
-当处于一个有设定资料的世界中时，你必须严格遵循世界设定，不能随意拓展或编造与之冲突的内容：
-1. NPC 的行为和对话必须符合设定中描述的性格和背景
-2. 场景描述应基于世界设定信息，可适当丰富细节但不改变核心内容
-3. 遵循主线剧情的推进节奏`
-
-// buildNarratorSystemPrompt 构建 Narrator 系统提示词。
-// 在基础提示词上追加 WorldState 摘要。
-func buildNarratorSystemPrompt(state *world.WorldState) string {
-	if state == nil {
-		return narratorSystemPromptBase
-	}
-	return narratorSystemPromptBase + "\n\n" + buildGameStateSummary(state, nil)
-}
+// 系统提示词已迁移至 presets.go：内置预设 + narratorTechnicalContract，
+// 每轮由 ResolveMainPrompt 按世界 StyleConfig 动态解析（见 Narrator.NarrateMessage）。
 
 // buildGameStateSummary 构建当前游戏运行态摘要文本。
 // 每轮通过用户消息注入 Narrator，使其感知微观运行态
@@ -119,82 +82,6 @@ func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) stri
 		}
 	}
 
-	// NPC 状态（在场 + lore 命中角色条目；含情绪与性格特质，供拟人化扮演）
-	present := make(map[string]bool)
-	for _, n := range world.PresentNPCNames(state) {
-		present[n] = true
-	}
-	loreChars := loreHitCharacterNames(state, lore)
-	if len(state.Characters) > 0 {
-		var npcBlock strings.Builder
-		for _, name := range sortedKeys(state.Characters) {
-			npc := state.Characters[name]
-			if !present[name] && !loreChars[name] {
-				continue
-			}
-			npcBlock.WriteString(fmt.Sprintf("  - %s (%s): %s", npc.Name, npc.Role, npc.Disposition))
-			if npc.CurrentAction != "" {
-				npcBlock.WriteString(fmt.Sprintf(" - %s", npc.CurrentAction))
-			}
-			if len(npc.Traits) > 0 {
-				npcBlock.WriteString(fmt.Sprintf(" [性格: %s]", strings.Join(npc.Traits, "/")))
-			}
-			if npc.Mood.Valence != 0 || npc.Mood.Arousal != 0 || len(npc.Mood.Tags) > 0 {
-				moodDesc := fmt.Sprintf(" [情绪: 愉悦%d/激活%d", npc.Mood.Valence, npc.Mood.Arousal)
-				if len(npc.Mood.Tags) > 0 {
-					moodDesc += " " + strings.Join(npc.Mood.Tags, ",")
-				}
-				npcBlock.WriteString(moodDesc + "]")
-			}
-			npcBlock.WriteString("\n")
-			// 创作字段（设计 §5）：截断防膨胀，完整长文经 lore 条目按需召回
-			if npc.Appearance != "" {
-				npcBlock.WriteString(fmt.Sprintf("    外貌: %s\n", truncateRunes(npc.Appearance, 80)))
-			}
-			if npc.Personality != "" {
-				npcBlock.WriteString(fmt.Sprintf("    性格: %s\n", truncateRunes(npc.Personality, 80)))
-			}
-			if len(npc.Skills) > 0 {
-				npcBlock.WriteString(fmt.Sprintf("    能力: %s\n", strings.Join(npc.Skills, "、")))
-			}
-			if npc.Backstory != "" {
-				npcBlock.WriteString(fmt.Sprintf("    背景: %s\n", truncateRunes(npc.Backstory, 120)))
-			}
-		}
-		if npcBlock.Len() > 0 {
-			sb.WriteString("\nNPC状态:\n")
-			sb.WriteString(npcBlock.String())
-		}
-	}
-
-	// 物品（设计 §5）：当前场景内 + 玩家持有的物品
-	if len(state.Items) > 0 {
-		var itemBlock strings.Builder
-		for _, name := range sortedKeys(state.Items) {
-			it := state.Items[name]
-			inScene := it.Location != "" && it.Location == state.Scene.NodeName
-			withPlayer := it.Owner == "玩家"
-			if !inScene && !withPlayer {
-				continue
-			}
-			itemBlock.WriteString(fmt.Sprintf("  - %s", it.Name))
-			if it.Type != "" {
-				itemBlock.WriteString(fmt.Sprintf("(%s)", it.Type))
-			}
-			if withPlayer {
-				itemBlock.WriteString(" [玩家持有]")
-			}
-			if it.Description != "" {
-				itemBlock.WriteString(fmt.Sprintf(": %s", truncateRunes(it.Description, 60)))
-			}
-			itemBlock.WriteString("\n")
-		}
-		if itemBlock.Len() > 0 {
-			sb.WriteString("\n物品:\n")
-			sb.WriteString(itemBlock.String())
-		}
-	}
-
 	// 目标
 	if len(state.Quests) > 0 {
 		sb.WriteString("\n当前目标:\n")
@@ -246,6 +133,103 @@ func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) stri
 	return sb.String()
 }
 
+// buildEntityDetailBlock 构建在场 NPC + 相关物品的详情注入块（无内容返回空串）。
+//
+// 与 buildGameStateSummary（必需分区，紧凑核心状态）不同，本块是可选分区：
+// 创作字段全文注入、不做预防性截断——预算充裕时"能注入的都注入"（SillyTavern
+// 的预算分配思路），超预算时由 ContextBuilder 按优先级整段裁剪，而不是
+// 逐字段预先削足适履。说话方式与台词示例直接决定扮演"像不像"，全量注入。
+func buildEntityDetailBlock(state *world.WorldState, lore *world.LoreResult) string {
+	var sb strings.Builder
+
+	// NPC 状态（在场 + lore 命中角色条目；含情绪与性格特质，供拟人化扮演）
+	present := make(map[string]bool)
+	for _, n := range world.PresentNPCNames(state) {
+		present[n] = true
+	}
+	loreChars := loreHitCharacterNames(state, lore)
+	if len(state.Characters) > 0 {
+		var npcBlock strings.Builder
+		for _, name := range sortedKeys(state.Characters) {
+			npc := state.Characters[name]
+			if !present[name] && !loreChars[name] {
+				continue
+			}
+			npcBlock.WriteString(fmt.Sprintf("  - %s (%s): %s", npc.Name, npc.Role, npc.Disposition))
+			if npc.CurrentAction != "" {
+				npcBlock.WriteString(fmt.Sprintf(" - %s", npc.CurrentAction))
+			}
+			if len(npc.Traits) > 0 {
+				npcBlock.WriteString(fmt.Sprintf(" [性格: %s]", strings.Join(npc.Traits, "/")))
+			}
+			if npc.Mood.Valence != 0 || npc.Mood.Arousal != 0 || len(npc.Mood.Tags) > 0 {
+				moodDesc := fmt.Sprintf(" [情绪: 愉悦%d/激活%d", npc.Mood.Valence, npc.Mood.Arousal)
+				if len(npc.Mood.Tags) > 0 {
+					moodDesc += " " + strings.Join(npc.Mood.Tags, ",")
+				}
+				npcBlock.WriteString(moodDesc + "]")
+			}
+			npcBlock.WriteString("\n")
+			// 创作字段（设计 §5）全文注入
+			if npc.DialogueStyle != "" {
+				npcBlock.WriteString(fmt.Sprintf("    说话方式: %s\n", npc.DialogueStyle))
+			}
+			for _, line := range npc.KeyDialogue {
+				npcBlock.WriteString(fmt.Sprintf("    台词示例: \"%s\"\n", line))
+			}
+			if npc.Appearance != "" {
+				npcBlock.WriteString(fmt.Sprintf("    外貌: %s\n", npc.Appearance))
+			}
+			if npc.Personality != "" {
+				npcBlock.WriteString(fmt.Sprintf("    性格: %s\n", npc.Personality))
+			}
+			if npc.Motivation != "" {
+				npcBlock.WriteString(fmt.Sprintf("    动机: %s\n", npc.Motivation))
+			}
+			if len(npc.Skills) > 0 {
+				npcBlock.WriteString(fmt.Sprintf("    能力: %s\n", strings.Join(npc.Skills, "、")))
+			}
+			if npc.Backstory != "" {
+				npcBlock.WriteString(fmt.Sprintf("    背景: %s\n", npc.Backstory))
+			}
+		}
+		if npcBlock.Len() > 0 {
+			sb.WriteString("\nNPC状态:\n")
+			sb.WriteString(npcBlock.String())
+		}
+	}
+
+	// 物品（设计 §5）：当前场景内 + 玩家持有的物品
+	if len(state.Items) > 0 {
+		var itemBlock strings.Builder
+		for _, name := range sortedKeys(state.Items) {
+			it := state.Items[name]
+			inScene := it.Location != "" && it.Location == state.Scene.NodeName
+			withPlayer := it.Owner == "玩家"
+			if !inScene && !withPlayer {
+				continue
+			}
+			itemBlock.WriteString(fmt.Sprintf("  - %s", it.Name))
+			if it.Type != "" {
+				itemBlock.WriteString(fmt.Sprintf("(%s)", it.Type))
+			}
+			if withPlayer {
+				itemBlock.WriteString(" [玩家持有]")
+			}
+			if it.Description != "" {
+				itemBlock.WriteString(fmt.Sprintf(": %s", it.Description))
+			}
+			itemBlock.WriteString("\n")
+		}
+		if itemBlock.Len() > 0 {
+			sb.WriteString("\n物品:\n")
+			sb.WriteString(itemBlock.String())
+		}
+	}
+
+	return sb.String()
+}
+
 // sortedKeys 返回 map 键的排序副本（注入顺序确定，保前缀缓存稳定）。
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
@@ -254,15 +238,6 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// truncateRunes 截断到 n 个字符（超出追加省略号）。
-func truncateRunes(s string, n int) string {
-	r := []rune(strings.TrimSpace(s))
-	if len(r) <= n {
-		return string(r)
-	}
-	return string(r[:n]) + "…"
 }
 
 // （条目 Title/Keys 与 NPC 名双向子串匹配，≥2 字防误命中）。

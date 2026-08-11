@@ -296,8 +296,8 @@ func cleanCardText(name, text string) string {
 
 // ParseCard 角色卡混合解析（参考剧本解析的「LLM 提取 + 程序化保底」模式）：
 //   - description/personality/scenario 机械清理后交给 LLM 整理，
-//     回写到 CharacterState 的 appearance/personality/backstory/skills
-//     及 Worldview 的 setting/era/atmosphere 等对应字段；
+//     回写到 CharacterState 的 appearance/personality/backstory/motivation/
+//     dialogue_style/key_dialogue/skills 及 Worldview 的 setting/era/atmosphere 等对应字段；
 //   - character_book 保持程序化直映为 lore 条目，不经 LLM；
 //   - LLM 失败或未提取出内容时，降级为 CardToDrafts 的纯程序化直映。
 func (p *Parser) ParseCard(ctx context.Context, card *CharaCardData) (*Result, error) {
@@ -325,6 +325,9 @@ func (p *Parser) ParseCard(ctx context.Context, card *CharaCardData) (*Result, e
 		cs.Personality = c.Personality
 		cs.Backstory = c.Backstory
 		cs.Skills = c.Skills
+		cs.Motivation = c.Motivation
+		cs.DialogueStyle = c.DialogueStyle
+		cs.KeyDialogue = c.KeyDialogue
 		summary = c.Summary
 		if len(tags) == 0 {
 			tags = c.Tags

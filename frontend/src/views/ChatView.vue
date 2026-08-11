@@ -112,13 +112,16 @@
         </div>
         <div class="help-item">
           <b>管理后台</b>
-          <p>右上角「管理后台 →」可创建与编辑世界、维护素材库与设定库、查看记忆。</p>
+          <p>右上角「管理后台 →」可创建与编辑世界、维护素材库与设定库。</p>
         </div>
       </div>
       <template #footer>
         <el-button type="primary" size="small" @click="helpVisible = false">知道了</el-button>
       </template>
     </el-dialog>
+
+    <!-- 剧情摘要编辑 -->
+    <PlayerSummaryPanel v-model="summaryVisible" />
 
     <div class="main">
       <div class="chat-wrap">
@@ -215,6 +218,8 @@
           <div v-if="currentWorldId" class="world-now">
             <div class="world-now-name">当前：{{ currentWorldName || currentWorldId }}</div>
             <button class="header-btn persona-btn" @click="openWorlds">切换世界…</button>
+            <button class="header-btn persona-btn" style="margin-top:6px" @click="goWorldState">世界状态…</button>
+            <button class="header-btn persona-btn" style="margin-top:6px" @click="summaryVisible = true">剧情摘要…</button>
             <button class="header-btn persona-btn" style="margin-top:6px" @click="leaveCurrentWorld">离开世界</button>
           </div>
           <button v-else class="header-btn persona-btn" @click="openWorlds">进入世界…</button>
@@ -236,6 +241,7 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { playerSaveReq } from '../api/admin'
 import {
@@ -249,6 +255,9 @@ import {
   switchChatMessageVersion,
 } from '../api/chat'
 import MarkdownText from '../components/MarkdownText.vue'
+import PlayerSummaryPanel from '../components/PlayerSummaryPanel.vue'
+
+const router = useRouter()
 
 const messagesEl = ref(null)
 const inputEl = ref(null)
@@ -679,6 +688,15 @@ async function leaveCurrentWorld() {
   }
 }
 
+// ---------- 世界状态 / 剧情摘要编辑入口 ----------
+
+const summaryVisible = ref(false)
+
+function goWorldState() {
+  // 带上 ?auth=，保证开启 ChatToken 的部署往返后仍可取到聊天访问令牌
+  router.push({ path: '/world', query: chatAuth ? { auth: chatAuth } : {} })
+}
+
 // 先恢复历史与会话状态再连 WS：历史请求在 connect 之前 await，天然无竞态
 onMounted(async () => {
   try {
@@ -883,8 +901,11 @@ async function restoreSave(row) {
 .ver-switch .op-btn { opacity: 1; padding: 2px 4px; font-size: 14px; }
 .ver-label { font-size: 12px; color: var(--text-secondary); min-width: 30px; text-align: center; }
 
-/* 编辑态气泡 */
-.msg.kp .bubble.edit-bubble { width: min(480px, 100%); }
+/* 编辑态气泡：编辑时把消息行撑到正常气泡的最大宽度（.msg 的 max-width 生效），
+   祖先有确定宽度后 autosize 才能正确计算行高 */
+.msg:has(.edit-bubble) { width: 100%; }
+.msg:has(.edit-bubble) .msg-main { width: 100%; }
+.msg.kp .bubble.edit-bubble { width: 100%; }
 .edit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 
 /* ===== 气泡内 markdown 内容 ===== */
@@ -961,7 +982,9 @@ async function restoreSave(row) {
   transition: border-color .2s;
 }
 .input-box:focus-within { border-color: var(--primary); }
-textarea {
+/* 输入区原生 textarea（scoped 裸 textarea 选择器打不到 el-input 内部，
+   限定到 .input-box 避免误导；编辑框限高由 el-input 的 maxRows 负责） */
+.input-box textarea {
   width: 100%; border: none; outline: none; resize: none;
   background: transparent; padding: 12px 14px;
   font: inherit; font-size: 14.5px; line-height: 1.6;

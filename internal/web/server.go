@@ -112,10 +112,13 @@ func (s *Server) buildMux() *http.ServeMux {
 	mux.HandleFunc("GET /api/session", s.handleSession)
 	mux.HandleFunc("GET /ws/chat", s.handleChatWS)
 	mux.HandleFunc("GET /api/chat/history", s.handleChatHistory)
-	s.registerChatSaveRoutes(mux)    // 玩家侧存档（设计 §9.4）
-	s.registerChatWorldRoutes(mux)   // 玩家侧进入世界选择器
-	s.registerChatSessionRoutes(mux) // 玩家侧会话状态（模式/长度/人设/进出世界）
-	s.registerChatMessageRoutes(mux) // 玩家侧消息编辑/多版本切换
+	s.registerChatSaveRoutes(mux)      // 玩家侧存档（设计 §9.4）
+	s.registerChatWorldRoutes(mux)     // 玩家侧进入世界选择器
+	s.registerChatSessionRoutes(mux)   // 玩家侧会话状态（模式/长度/人设/进出世界）
+	s.registerChatMessageRoutes(mux)   // 玩家侧消息编辑/多版本切换
+	s.registerChatWorldEditRoutes(mux) // 玩家侧世界状态查看/编辑
+	s.registerChatSummaryRoutes(mux)   // 玩家侧剧情摘要查看/编辑
+	s.registerPromptPresetRoutes(mux)  // 玩家侧主提示词预设列表
 	if s.adminReady {
 		s.registerAdmin(mux, s.adminDeps, s.adminToken)
 	}

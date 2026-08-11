@@ -4,7 +4,7 @@
 //   - SillyTavern 角色卡（chara_card v1/v2/v3 JSON 或 PNG 内嵌）：程序化解码后，
 //     有 LLM 时走混合解析（Parser.ParseCard：LLM 整理 description/personality/scenario
 //     并回写到对应字段，character_book 保持程序化直映）；无 LLM 时纯程序化直映
-//   - 自由文本（角色设定/世界观/跑团资料等），单 Agent LLM 提取
+//   - 自由文本（角色设定/世界观/故事资料等），单 Agent LLM 提取
 //
 // 输出统一为 Draft（素材草稿），由调用方预览确认后批量入库。
 package assetparse

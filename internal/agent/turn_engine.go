@@ -54,7 +54,7 @@ type TurnEngine struct {
 	metrics      *MetricsEvaluator
 	worldEngine  *world.Engine
 	ctxBuilder   *ContextBuilder
-	memory       *MemoryService // 记忆服务（可为 nil 禁用）
+	summary      *SummaryService // 滚动剧情摘要服务（可为 nil 禁用）
 	cfgStore     *config.Store  // 运行时配置（热更新项每回合读取，可为 nil）
 	personaStore *persona.Store // 全局默认人设存储（可为 nil，nil 时人设功能关闭）
 	planInterval int
@@ -90,10 +90,10 @@ func NewTurnEngine(
 	}
 }
 
-// SetMemory 注入记忆服务（由 main.go 在装配阶段调用）。
-func (t *TurnEngine) SetMemory(m *MemoryService) {
-	t.memory = m
-	log.Printf("[TurnEngine] 记忆服务已注入")
+// SetSummary 注入滚动剧情摘要服务（由 main.go 在装配阶段调用）。
+func (t *TurnEngine) SetSummary(s *SummaryService) {
+	t.summary = s
+	log.Printf("[TurnEngine] 剧情摘要服务已注入")
 }
 
 // SetConfigStore 注入运行时配置存储（热更新项每回合读取）。
@@ -126,18 +126,19 @@ func (t *TurnEngine) Run(
 
 	// 1. 加载 WorldState
 	// normal 模式 = 纯对话：不加载/注入世界上下文；freechat = 世界内扮演。
-	var state *world.WorldState
-	if session.Mode != core.ModeNormal {
-		state = t.loadOrCreateState(sessionID)
-	}
+	// 会话模式只存在内存（SessionManager），进程重启后回落 normal；
+	// 而"离开世界"会删除世界状态，因此世界状态存在即视为世界内扮演——
+	// normal 但世界状态仍在（重启前已进入世界）时恢复 freechat，避免
+	// 玩家明明在世界中却走纯对话路径（世界观/人设/历史全部不注入）。
+	state := t.resolveState(session, sessionID)
 	if state == nil {
 		// 无世界状态（普通对话）-> 直接叙事（人设只有全局默认一档）
 		gameContext := t.narrator.buildGameContext(sessionID)
-		userMessage := t.ctxBuilder.BuildNarratorMessage(nil, nil, nil, gameContext, "", "", playerMessage,
-			LengthHintFromSession(session), t.globalPersonaBlock(userID))
-		return t.narrator.NarrateMessage(ctx.Ctx, userMessage, sessionID, userID)
+		p := t.globalPersona(userID)
+		input := t.ctxBuilder.BuildNarratorInput(nil, nil, nil, gameContext, "", nil, playerMessage,
+			LengthHintFromSession(session), buildPersonaBlock(p), personaName(p))
+		return t.narrator.NarrateMessage(ctx.Ctx, ResolveMainPrompt(nil, personaName(p)), input, sessionID, userID)
 	}
-	eventLogBase := len(state.EventLog) // 本回合开始前的事件数，供 AfterTurn 取增量
 	mode := world.GetMode(state.Mode)
 
 	// 回合快照：在任何 mutation 之前留存世界状态 + 本回合用户输入，
@@ -185,20 +186,18 @@ func (t *TurnEngine) Run(
 		t.refreshPlan(ctx.Ctx, state, playerMessage, sessionID, scanText, loreBudget, loreRecursion)
 	}
 
-	// 5. ContextBuilder 按预算组装上下文包（含记忆检索块、近期对话窗口与世界事件）
+	// 5. ContextBuilder 按预算组装结构化上下文（近期对话窗口以消息对承载；远期由 CampaignSummary 承载）
 	gameContext := t.narrator.buildGameContext(sessionID)
-	memoryBlock := worldEventsBlock
-	if mode.EnableMemory && t.memory != nil {
-		memoryBlock += t.memory.BuildMemoryBlock(state, playerMessage)
-	}
-	dialogueBlock := buildDialogueBlock(state)
-	personaBlock := buildPersonaBlock(state.EffectivePersona(userID, t.personaStore))
-	userMessage := t.ctxBuilder.BuildNarratorMessage(state, &lore, guidance, gameContext, memoryBlock, dialogueBlock, playerMessage,
-		LengthHintFromSession(session), personaBlock)
-	log.Printf("[TurnEngine] 上下文包: %d 字符（预算 %d）", len(userMessage), t.ctxBuilder.Budget)
+	eventsBlock := worldEventsBlock
+	dialoguePlayer := state.EffectivePersona(userID, t.personaStore)
+	input := t.ctxBuilder.BuildNarratorInput(state, &lore, guidance, gameContext, eventsBlock, state.RecentTurns, playerMessage,
+		LengthHintFromSession(session), buildPersonaBlock(dialoguePlayer), personaName(dialoguePlayer))
+	log.Printf("[TurnEngine] 上下文包: 设定 %d 字符 + 历史 %d 轮（预算 %d）",
+		len(input.ContextBlock), len(input.History), t.ctxBuilder.Budget)
 
-	// 6. Narrator 无状态调用
-	reply, err := t.narrator.NarrateMessage(ctx.Ctx, userMessage, sessionID, userID)
+	// 6. Narrator 无状态调用（系统提示词按世界预设/自定义每轮解析）
+	mainPrompt := ResolveMainPrompt(state.Style, personaName(dialoguePlayer))
+	reply, err := t.narrator.NarrateMessage(ctx.Ctx, mainPrompt, input, sessionID, userID)
 	if err != nil {
 		return "", fmt.Errorf("Narrator 执行失败: %w", err)
 	}
@@ -206,13 +205,9 @@ func (t *TurnEngine) Run(
 	// 7. 记账 + 持久化（重新加载最新状态，叠加本轮增量；含短期对话窗口）
 	saved := t.bookkeep(state, sessionID, playerMessage, reply)
 
-	// 8. 异步记忆写入（本回合事件增量 + 对话）
-	if t.memory != nil && saved != nil {
-		newEvents := []world.WorldEvent{}
-		if len(saved.EventLog) > eventLogBase {
-			newEvents = saved.EventLog[eventLogBase:]
-		}
-		go t.memory.AfterTurn(saved, playerMessage, reply, newEvents)
+	// 8. 滚动剧情摘要：窗口淘汰轮已记入 PendingSummaryTurns，攒够批次异步合并进摘要
+	if mode.EnableMemory && t.summary != nil && saved != nil {
+		go t.summary.MaybeSummarize(sessionID)
 	}
 
 	log.Printf("[TurnEngine] 回合完成 (%.1fs): session=%s, round=%d",
@@ -221,30 +216,51 @@ func (t *TurnEngine) Run(
 	return reply, nil
 }
 
-// globalPersonaBlock 读取玩家全局默认人设并格式化（存储未配置或为空返回空串）。
-func (t *TurnEngine) globalPersonaBlock(userID string) string {
+// globalPersona 读取玩家全局默认人设（存储未配置或读取出错返回 nil）。
+func (t *TurnEngine) globalPersona(userID string) *persona.Profile {
 	if t.personaStore == nil {
-		return ""
+		return nil
 	}
 	p, err := t.personaStore.Get(userID)
 	if err != nil {
+		return nil
+	}
+	return p
+}
+
+// personaName 返回人设名（nil 或空名返回 ""，由调用方决定回退文案）。
+func personaName(p *persona.Profile) string {
+	if p == nil {
 		return ""
 	}
-	return buildPersonaBlock(p)
+	return strings.TrimSpace(p.Name)
 }
 
 // buildDialogueBlock 把短期对话窗口格式化为注入文本（无记录时返回空串）。
-// 这是 Narrator 无状态调用下的"近期聊天记录"：玩家上轮说了什么、KP 答了什么，
-// 保证"你刚才说的那个…"这类指代可解。远期由 CampaignSummary + 记忆层承载。
-func buildDialogueBlock(state *world.WorldState) string {
+// 玩家侧标签用人设名（对齐 SillyTavern 的 {{user}} 效果），空则回退"玩家"；
+// AI 侧统一标"世界"（其输出混合场景叙述与 NPC 言行，不赋予主持人身份）。
+func buildDialogueBlock(state *world.WorldState, playerName string) string {
 	if state == nil || len(state.RecentTurns) == 0 {
 		return ""
 	}
+	return formatDialogueTurns(state.RecentTurns, playerName)
+}
+
+// formatDialogueTurns 把对话轮列表格式化为【近期对话】文本块。
+// 这是 NarratorInput.Flatten（测试/调试展示）与旧版单消息布局共用的格式化。
+// 实际请求中对话窗口以真实 user/assistant 消息对发送（buildNarratorMessages）。
+func formatDialogueTurns(turns []world.DialogueTurn, playerName string) string {
+	if len(turns) == 0 {
+		return ""
+	}
+	if playerName == "" {
+		playerName = "玩家"
+	}
 	var sb strings.Builder
 	sb.WriteString("【近期对话】\n")
-	for _, turn := range state.RecentTurns {
-		sb.WriteString("玩家: " + turn.Player + "\n")
-		sb.WriteString("KP: " + turn.Narrator + "\n")
+	for _, turn := range turns {
+		sb.WriteString(playerName + ": " + turn.Player + "\n")
+		sb.WriteString("世界: " + turn.Narrator + "\n")
 	}
 	return sb.String()
 }
@@ -285,6 +301,23 @@ func (t *TurnEngine) RecentInjections(worldID string) []world.LoreResult {
 	out := make([]world.LoreResult, len(src))
 	copy(out, src)
 	return out
+}
+
+// resolveState 决定本回合的世界状态：freechat 正常加载；normal 模式下
+// 若世界状态仍在（进程重启导致内存模式回落），恢复为 freechat 并加载。
+// 无世界状态时返回 nil，由调用方走纯对话路径。
+func (t *TurnEngine) resolveState(session *core.Session, sessionID string) *world.WorldState {
+	if session.Mode != core.ModeNormal {
+		return t.loadOrCreateState(sessionID)
+	}
+	if t.worldEngine != nil {
+		if ws := t.worldEngine.LoadOrNil(sessionID); ws != nil {
+			session.Mode = core.ModeFreeChat
+			log.Printf("[TurnEngine] 会话 %s 世界状态仍在，已从 normal 恢复为 freechat", sessionID)
+			return ws
+		}
+	}
+	return nil
 }
 
 // loadOrCreateState 加载 WorldState（不存在时返回 nil，由调用方走纯对话路径）。
@@ -430,7 +463,9 @@ func (t *TurnEngine) bookkeep(state *world.WorldState, sessionID, playerMessage,
 		latest.PlanNodeID = state.PlanNodeID
 		latest.PlanRound = state.PlanRound
 	}
-	latest.AppendTurn(playerMessage, reply)
+	// 短期窗口淘汰轮进入待总结队列（攒够批次后由 SummaryService 并入剧情摘要）
+	evicted := latest.AppendTurn(playerMessage, reply)
+	latest.PendingSummaryTurns = append(latest.PendingSummaryTurns, evicted...)
 	latest.RoundCount++
 
 	// 合并世界时钟（本回合已推进）与事件触发标记（按 ID 合并，

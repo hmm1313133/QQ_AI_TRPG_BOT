@@ -186,7 +186,7 @@ func (a *KPAgent) chatSingleAgent(ctx *core.MessageContext) (string, error) {
 	// 剥离 CoT 思考段（未启用 CoT 时是无害 no-op）
 	reply := StripThinking(replyBuilder.String())
 	if reply == "" {
-		reply = "（主持人沉思中...未生成回复）"
+		reply = "（世界静默了片刻……请重新尝试）"
 	}
 
 	log.Printf("[KPAgent] 会话 %s, 用户 %s: %s -> %s",

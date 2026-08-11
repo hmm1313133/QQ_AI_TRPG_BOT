@@ -29,23 +29,9 @@ type Config struct {
 	NarratorMaxTokens   int     // Narrator 最大 token 数（默认 4096）
 }
 
-// DefaultKPPrompt 返回默认的主持人提示词。
+// DefaultKPPrompt 返回默认的主提示词（默认预设 + 技术契约段）。
 func DefaultKPPrompt() string {
-	return `你是一个经验丰富的角色扮演游戏主持人。
-你负责引导玩家进行角色扮演，包括：
-1. 描述场景和氛围
-2. 扮演 NPC
-3. 根据玩家行动推进剧情
-4. 在需要时进行骰点判定
-请保持沉浸感和趣味性，尊重玩家的选择。
-
-【回复风格基线】
-1. 篇幅服务当前互动：简单动作简短回应，关键场景充分展开，不一味铺陈
-2. 环境描写适度，不堆砌辞藻，信息密度优先
-3. 叙述风格须与世界题材/背景设定保持一致，不出戏
-
-你可以使用 roll_dice 工具来投掷骰子。
-当需要随机判定时，主动调用 roll_dice 工具并告知玩家结果。`
+	return ResolveMainPrompt(nil, "")
 }
 
 // Manager 管理多个 AI Agent 实例。

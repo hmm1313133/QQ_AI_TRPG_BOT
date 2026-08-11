@@ -93,7 +93,7 @@ func TestKeyRegistry(t *testing.T) {
 	// 注册表覆盖全部已定义键
 	keys := []string{
 		KeyLLMModel, KeyNarratorTemp, KeyDirectorTemp,
-		KeyContextBudget, KeyPlanInterval, KeyExtractorEnabled,
+		KeyContextBudget, KeyPlanInterval, KeySummaryChunk,
 		KeyLLMAPIKey, KeyLLMBaseURL, KeyWebChatToken,
 	}
 	for _, k := range keys {

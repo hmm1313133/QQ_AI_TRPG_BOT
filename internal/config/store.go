@@ -29,7 +29,7 @@ const (
 	KeyLoreScanRounds   = "lore_scan_rounds"
 	KeyLoreRecursion    = "lore_recursion"
 	KeyPlanInterval     = "plan_interval"
-	KeyExtractorEnabled = "extractor_enabled"
+	KeySummaryChunk     = "summary_chunk_size"
 	KeyLLMAPIKey        = "llm_api_key"
 	KeyLLMBaseURL       = "llm_base_url"
 	KeyWebChatToken     = "web_chat_token"
@@ -67,7 +67,7 @@ var KeyRegistry = []KeyMeta{
 	{Key: KeyLoreBudget, Label: "设定库预算·字符", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
 	{Key: KeyLoreScanRounds, Label: "设定库扫描轮数", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
 	{Key: KeyLoreRecursion, Label: "设定库递归扫描开关", Group: "上下文与记忆", Type: "bool", Scope: ScopeHot},
-	{Key: KeyExtractorEnabled, Label: "对话记忆抽取开关", Group: "上下文与记忆", Type: "bool", Scope: ScopeHot},
+	{Key: KeySummaryChunk, Label: "剧情摘要批次·轮（默认6）", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
 	{Key: KeyPlanInterval, Label: "场景计划间隔·轮", Group: "时间轴", Type: "number", Scope: ScopeHot},
 }
 
@@ -89,12 +89,12 @@ func Registered(key string) bool {
 
 // HotKeys 立即生效的配置键（修改后下个回合即生效）。
 var HotKeys = map[string]bool{
-	KeyContextBudget:    true,
-	KeyPlanInterval:     true,
-	KeyExtractorEnabled: true,
-	KeyLoreBudget:       true,
-	KeyLoreScanRounds:   true,
-	KeyLoreRecursion:    true,
+	KeyContextBudget:   true,
+	KeyPlanInterval:    true,
+	KeySummaryChunk:    true,
+	KeyLoreBudget:      true,
+	KeyLoreScanRounds:  true,
+	KeyLoreRecursion:   true,
 }
 
 // Store 是 SQLite 配置存储。

@@ -70,8 +70,11 @@ type WorldState struct {
 	// SkillUses 待结算的技能成功使用记录（成长闭环，幕间统一结算）。
 	SkillUses  []SkillUseRecord           `json:"skill_uses,omitempty"`
 	// RecentTurns 最近对话回合（短期记忆窗口，环形保留最近 RecentTurnsCap 轮）。
-	// Narrator 是无状态调用，跨轮叙事连续性由本窗口 + CampaignSummary + 记忆层承载。
+	// Narrator 是无状态调用，跨轮叙事连续性由本窗口 + CampaignSummary（滚动剧情摘要）承载。
 	RecentTurns []DialogueTurn            `json:"recent_turns,omitempty"`
+	// PendingSummaryTurns 从 RecentTurns 窗口淘汰、等待并入剧情摘要的对话轮。
+	// 攒够 summary_chunk_size 轮后由 SummaryService 异步合并进 CampaignSummary。
+	PendingSummaryTurns []DialogueTurn    `json:"pending_summary_turns,omitempty"`
 	Metrics    Metrics                    `json:"metrics"`
 	RoundCount int                        `json:"round_count"`
 	LastUpdate string                     `json:"last_update"`
@@ -83,6 +86,10 @@ type StyleConfig struct {
 	Core      string `json:"core,omitempty"`       // 风格核心：tail 近底部注入（高浓度短文本）
 	EnableCoT bool   `json:"enable_cot,omitempty"` // 三段式思维链开关
 	CoTGuide  string `json:"cot_guide,omitempty"`  // 自定义思维链指导（空则用内置默认结构）
+	// PromptPreset 主提示词预设 key（对应 agent.BuiltinPresets；空=default）。
+	PromptPreset string `json:"prompt_preset,omitempty"`
+	// CustomPrompt 玩家自定义主提示词（非空时覆盖 PromptPreset）。
+	CustomPrompt string `json:"custom_prompt,omitempty"`
 }
 
 // EffectiveStyleCore 返回生效的风格核心：Style.Core 优先，空则回退旧 ReplyStyle 字段。
@@ -118,18 +125,23 @@ type DialogueTurn struct {
 }
 
 // AppendTurn 追加一轮对话到短期窗口（超出容量淘汰最旧）。
-func (ws *WorldState) AppendTurn(player, narrator string) {
+// 返回被淘汰的轮次（无淘汰返回 nil），调用方应将其并入 PendingSummaryTurns 待总结。
+func (ws *WorldState) AppendTurn(player, narrator string) []DialogueTurn {
 	ws.RecentTurns = append(ws.RecentTurns, DialogueTurn{
 		Round: ws.RoundCount, Player: player, Narrator: narrator,
 	})
 	if len(ws.RecentTurns) > RecentTurnsCap {
+		evicted := make([]DialogueTurn, len(ws.RecentTurns)-RecentTurnsCap)
+		copy(evicted, ws.RecentTurns[:len(ws.RecentTurns)-RecentTurnsCap])
 		ws.RecentTurns = ws.RecentTurns[len(ws.RecentTurns)-RecentTurnsCap:]
+		return evicted
 	}
+	return nil
 }
 
 // WorldClock 世界时钟（设计文档 4.2）。
-// 时间相关计算（情绪衰减、记忆 recency）一律使用世界时间，
-// 暂停一周的团不会"过期"。
+// 时间相关计算（情绪衰减、事件调度）一律使用世界时间，
+// 暂停一周的世界不会"过期"。
 type WorldClock struct {
 	WorldTime  int64 `json:"world_time"`  // 世界内时间（分钟计数）
 	RealLapsed int64 `json:"real_lapsed"` // 上次活跃时的现实时间戳（秒），离线演化依据

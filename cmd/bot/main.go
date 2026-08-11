@@ -16,15 +16,11 @@ import (
 
 	"trpc.group/trpc-go/trpc-go/log"
 
-	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
-	"trpc.group/trpc-go/trpc-agent-go/model/openai"
-
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/agent"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/assetparse"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
-	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/store"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/web"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
@@ -41,17 +37,6 @@ func main() {
 		log.Fatalf("打开数据库失败: %v", err)
 	}
 	defer dataDB.Close()
-
-	// 3. Initialize OpenViking client (with degradation support)
-	// 支持本地部署和火山引擎云上版本
-	openVikingClient := store.NewOpenVikingClient(&store.OpenVikingConfig{
-		BaseURL: getEnv("OPENVIKING_BASE_URL", "http://localhost:1933"),
-		Enabled: getEnv("OPENVIKING_ENABLED", "false") == "true",
-		APIKey:  os.Getenv("OPENVIKING_API_KEY"),
-		Account: os.Getenv("OPENVIKING_ACCOUNT"),
-		User:    os.Getenv("OPENVIKING_USER"),
-		Timeout: 10,
-	})
 
 	// 4. Initialize world engine（世界引擎：状态唯一真相；SQLite 存储 + 旧 JSON 目录自动迁移）
 	worldDir := getEnv("WORLD_DIR", "./data/worlds")
@@ -130,23 +115,6 @@ func main() {
 	turnEngine := agent.NewTurnEngine(narrator, director, metricsEvaluator, worldEngine,
 		agent.NewContextBuilder(0), agent.DefaultPlanInterval)
 
-	// 6c. Initialize memory service (记忆层：框架接口 + extractor 双轨写入)
-	memoryDir := getEnv("MEMORY_DIR", "./data/memories")
-	memoryStore, err := world.NewMemoryStore(memoryDir)
-	if err != nil {
-		log.Fatalf("初始化记忆存储失败: %v", err)
-	}
-	var memExtractor extractor.MemoryExtractor
-	if getEnv("MEMORY_EXTRACTOR_ENABLED", "true") == "true" {
-		memExtractor = extractor.NewExtractor(
-			openai.New(getEnv("LLM_MODEL", "deepseek-v4-flash"),
-				openai.WithVariant(openai.VariantDeepSeek)),
-			extractor.WithPrompt(agent.MemoryExtractPrompt),
-		)
-	}
-	memoryService := agent.NewMemoryService(memoryStore, openVikingClient, director, worldEngine, memExtractor)
-	turnEngine.SetMemory(memoryService)
-
 	kpAgent.SetTurnEngine(turnEngine)
 	turnEngine.SetPersonaStore(personaStore)
 	kpAgent.SetPersonaStore(personaStore)
@@ -169,15 +137,14 @@ func main() {
 	cfgStore.Seed(config.KeyLoreScanRounds, "4")
 	cfgStore.Seed(config.KeyLoreRecursion, "false")
 	cfgStore.Seed(config.KeyPlanInterval, "8")
-	cfgStore.Seed(config.KeyExtractorEnabled, getEnv("MEMORY_EXTRACTOR_ENABLED", "true"))
+	cfgStore.Seed(config.KeySummaryChunk, "6")
 	// 新键启动时从 env 播种（env 仅作初始值，之后以 DB 为准）
 	cfgStore.Seed(config.KeyLLMAPIKey, os.Getenv("LLM_API_KEY"))
 	cfgStore.Seed(config.KeyLLMBaseURL, getEnv("LLM_BASE_URL", "https://api.deepseek.com"))
 	cfgStore.Seed(config.KeyWebChatToken, os.Getenv("WEB_CHAT_TOKEN"))
 	turnEngine.SetConfigStore(cfgStore)
-	memoryService.SetEnabledFn(func() bool {
-		return cfgStore.GetBool(config.KeyExtractorEnabled, true)
-	})
+	// 滚动剧情摘要服务（RecentTurns 窗口淘汰轮攒批后并入 CampaignSummary）
+	turnEngine.SetSummary(agent.NewSummaryService(worldEngine, director, cfgStore))
 
 	// 9. Initialize router（所有消息经 core.Router 转给 Agent）
 	router := core.NewRouter(plugins, sessions)
@@ -194,7 +161,6 @@ func main() {
 			WorldEngine:  worldEngine,
 			AssetStore:   assetStore,
 			AssetParser:  assetParser,
-			MemoryStore:  memoryStore,
 			PersonaStore: personaStore,
 			ConfigStore:  cfgStore,
 			TurnEngine:   turnEngine,
@@ -211,11 +177,6 @@ func main() {
 	log.Infof("Voyage World Engine 已启动")
 	log.Infof("架构: 世界引擎(WorldState) + AI多层(Director->Narrator) + Web 渠道")
 	log.Infof("世界状态: %s", worldDir)
-	if openVikingClient.IsEnabled() {
-		log.Infof("OpenViking: 已连接")
-	} else {
-		log.Infof("OpenViking: 未启用（仅本地存储）")
-	}
 
 	// 12. Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)

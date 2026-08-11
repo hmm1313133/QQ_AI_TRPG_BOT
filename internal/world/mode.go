@@ -14,7 +14,7 @@ type GameMode struct {
 	EnableRules   bool   // 规则层（检定/成长）
 	EnableScript  bool   // 剧本/时间轴
 	EnablePlanner bool   // 低频场景规划
-	EnableMemory  bool   // 记忆层
+	EnableMemory  bool   // 滚动剧情摘要（RecentTurns 淘汰轮并入 CampaignSummary）
 	EnableMood    bool   // 情绪/关系模拟
 	EnableClock   bool   // 世界时钟与定时事件
 	EnableOffline bool   // 离线演化 fastForward

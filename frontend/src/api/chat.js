@@ -69,3 +69,48 @@ export function switchChatMessageVersion(token, auth = '', id, versionNo) {
     body: JSON.stringify({ version_no: versionNo }),
   })
 }
+
+// ---------- 玩家侧世界状态编辑（会话世界，世界 id 隐式 = 会话） ----------
+
+// 会话世界完整 WorldState（形状与 admin GET /api/admin/worlds/{id} 一致）；
+// 未进入世界时 404（err.status === 404）
+export function getChatWorldDetail(token, auth = '') {
+  return playerSaveReq('/api/chat/world/detail', { token, auth })
+}
+
+// 分区读取：part ∈ scene/characters/locations/factions/quests/hidden/metrics/items/storyline/style
+export function getChatWorldSection(token, auth = '', part) {
+  return playerSaveReq('/api/chat/world/section?part=' + encodeURIComponent(part), { token, auth })
+}
+
+// 分区保存（全量替换该分区）
+export function saveChatWorldSection(token, auth = '', part, data) {
+  return playerSaveReq('/api/chat/world/section', {
+    token,
+    auth,
+    method: 'PATCH',
+    body: JSON.stringify({ part, data }),
+  })
+}
+
+// ---------- 玩家侧剧情摘要 ----------
+
+// 剧情摘要：{ summary, pending_turns }
+export function getChatSummary(token, auth = '') {
+  return playerSaveReq('/api/chat/summary', { token, auth })
+}
+
+// 全量写回剧情摘要
+export function saveChatSummary(token, auth = '', summary) {
+  return playerSaveReq('/api/chat/summary', {
+    token,
+    auth,
+    method: 'PUT',
+    body: JSON.stringify({ summary }),
+  })
+}
+
+// 主提示词预设列表（内置只读）：[{ key, name, description, content }]
+export function getChatPromptPresets(token, auth = '') {
+  return playerSaveReq('/api/chat/prompt-presets', { token, auth })
+}

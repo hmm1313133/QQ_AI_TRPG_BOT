@@ -82,12 +82,18 @@ func newLoreID() string {
 
 // saveWithAuditNote 保存世界并追加一条 note 审计事件（GM 修正留痕，设计文档 §4.4）。
 func (a *adminAPI) saveWithAuditNote(ws *world.WorldState, target, value string) error {
-	if _, err := a.deps.WorldEngine.ApplyEvent(ws, world.WorldEvent{
-		Type: "note", Actor: "admin", Target: target, Value: value,
+	return saveWorldWithAuditNote(a.deps.WorldEngine, ws, "admin", target, value)
+}
+
+// saveWorldWithAuditNote 保存世界并追加一条 note 审计事件；
+// actor 区分修正来源（管理端 "admin" / 玩家侧 "player"）。
+func saveWorldWithAuditNote(engine *world.Engine, ws *world.WorldState, actor, target, value string) error {
+	if _, err := engine.ApplyEvent(ws, world.WorldEvent{
+		Type: "note", Actor: actor, Target: target, Value: value,
 	}); err != nil {
 		return err
 	}
-	return a.deps.WorldEngine.Save(ws)
+	return engine.Save(ws)
 }
 
 // loadWorldForEdit 加载世界并加写锁（调用方负责 Unlock）；不存在时写 404 并返回 nil。
@@ -432,7 +438,15 @@ func (a *adminAPI) handleSectionGet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "世界不存在", http.StatusNotFound)
 		return
 	}
-	switch part := r.URL.Query().Get("part"); part {
+	if part := r.URL.Query().Get("part"); !writeSectionJSON(w, ws, part) {
+		http.Error(w, "未知分区: "+part, http.StatusBadRequest)
+	}
+}
+
+// writeSectionJSON 把指定分区写入响应；part 非法时不写任何内容并返回 false。
+// 管理端与玩家侧共用，保证两侧返回形状一致。
+func writeSectionJSON(w http.ResponseWriter, ws *world.WorldState, part string) bool {
+	switch part {
 	case "scene":
 		writeJSON(w, ws.Scene)
 	case "characters":
@@ -462,8 +476,9 @@ func (a *adminAPI) handleSectionGet(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, v)
 	default:
-		http.Error(w, "未知分区: "+part, http.StatusBadRequest)
+		return false
 	}
+	return true
 }
 
 // handleSectionPatch 按 part 把 data 反序列化到对应字段后 Save + note 审计事件。
@@ -598,6 +613,8 @@ func applySection(ws *world.WorldState, part string, data json.RawMessage) error
 		v.Tone = strings.TrimSpace(v.Tone)
 		v.Core = strings.TrimSpace(v.Core)
 		v.CoTGuide = strings.TrimSpace(v.CoTGuide)
+		v.PromptPreset = strings.TrimSpace(v.PromptPreset)
+		v.CustomPrompt = strings.TrimSpace(v.CustomPrompt)
 		ws.Style = &v // 只写 Style，不动旧 ReplyStyle 字段（保留作兼容回退）
 	}
 	return nil

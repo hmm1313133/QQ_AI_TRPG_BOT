@@ -33,7 +33,6 @@ type AdminDeps struct {
 	WorldEngine *world.Engine
 	AssetStore  *world.AssetStore  // 全局素材库（设计 §9.3，可为 nil）
 	AssetParser *assetparse.Parser // 素材 LLM 解析器（设计 §11.4，可为 nil）
-	MemoryStore *world.MemoryStore
 	// PersonaStore 全局默认玩家人设存储（玩家侧 /api/chat/persona 用，可为 nil）。
 	PersonaStore *persona.Store
 	ConfigStore  ConfigStore // W4 接入，可为 nil
@@ -80,9 +79,10 @@ func (s *Server) registerAdmin(mux *http.ServeMux, deps AdminDeps, adminToken st
 	mux.HandleFunc("POST /api/admin/worlds/{id}/lore/import", a.wrap(a.handleLoreImport))
 	mux.HandleFunc("GET /api/admin/worlds/{id}/section", a.wrap(a.handleSectionGet))
 	mux.HandleFunc("PATCH /api/admin/worlds/{id}/section", a.wrap(a.handleSectionPatch))
-	mux.HandleFunc("GET /api/admin/memory/{world}/{entity}", a.wrap(a.handleMemory))
 	mux.HandleFunc("GET /api/admin/config", a.wrap(a.handleConfigGet))
 	mux.HandleFunc("PUT /api/admin/config", a.wrap(a.handleConfigSet))
+	// 主提示词预设列表（内置只读，与玩家端共用 handler）
+	mux.HandleFunc("GET /api/admin/prompt-presets", a.wrap(handlePromptPresets))
 	// 素材联动与游玩存档（《世界编辑器与素材联动设计.md》§四/§9.4）
 	a.registerAssetRoutes(mux)
 }
@@ -319,23 +319,6 @@ func (a *adminAPI) handleWorldDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"message": "已删除"})
-}
-
-// ============================================================
-// 记忆查看
-// ============================================================
-
-func (a *adminAPI) handleMemory(w http.ResponseWriter, r *http.Request) {
-	if a.deps.MemoryStore == nil {
-		http.Error(w, "记忆存储不可用", http.StatusServiceUnavailable)
-		return
-	}
-	entries, err := a.deps.MemoryStore.List(r.PathValue("world"), r.PathValue("entity"))
-	if err != nil {
-		http.Error(w, "读取失败: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, entries)
 }
 
 // ============================================================

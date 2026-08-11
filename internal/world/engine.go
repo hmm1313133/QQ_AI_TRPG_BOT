@@ -118,7 +118,7 @@ func (e *Engine) RestoreTurnSnapshot(worldID string) (userText string, ok bool, 
 
 // UpdateRecentNarrator 把 RecentTurns 窗口内最后一处 Narrator == oldText 替换为 newText
 // 并落库（编辑/版本切换后同步 LLM 近期对话上下文；窗口内未命中则静默跳过，尽力而为）。
-// 已知限制：已写入长期记忆（MemoryService.AfterTurn）的内容不回收。
+// 已知限制：已并入 PendingSummaryTurns / CampaignSummary 的文本不回改。
 func (e *Engine) UpdateRecentNarrator(worldID, oldText, newText string) error {
 	if oldText == "" || oldText == newText {
 		return nil

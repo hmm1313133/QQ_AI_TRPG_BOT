@@ -1,16 +1,29 @@
 <template>
-  <div>
+  <div :class="{ 'player-wrap': player }">
     <div class="editor-head">
       <div>
-        <div class="page-title">世界编辑器 <span class="mono">{{ worldId }}</span></div>
+        <div class="page-title">
+          {{ player ? '世界状态' : '世界编辑器' }}
+          <span class="mono">{{ player ? (detail?.world_id || '') : worldId }}</span>
+        </div>
         <div class="page-desc">
-          {{ detail ? `模式 ${detail.mode}` : '加载中…' }}
+          {{ detail ? `模式 ${detail.mode}` : (player && noWorld ? '当前会话还没有进行中的世界' : '加载中…') }}
         </div>
       </div>
-      <el-button size="small" @click="router.push('/admin/worlds')">← 返回世界列表</el-button>
+      <el-button size="small" @click="goBack">{{ player ? '← 返回聊天' : '← 返回世界列表' }}</el-button>
     </div>
 
-    <el-tabs v-model="activeTab" class="editor-tabs">
+    <!-- player 模式：会话尚未进入世界时的引导 -->
+    <div v-if="player && noWorld" class="card">
+      <div class="empty">
+        尚未进入世界——请先在聊天页进入一个世界，再回来查看 / 编辑世界状态。
+        <div style="margin-top:12px">
+          <el-button type="primary" plain size="small" @click="goBack">← 返回聊天</el-button>
+        </div>
+      </div>
+    </div>
+
+    <el-tabs v-else v-model="activeTab" class="editor-tabs">
       <!-- 概览 -->
       <el-tab-pane label="概览" name="overview">
         <div class="card">
@@ -28,7 +41,7 @@
             <p>{{ metricsText }}</p>
           </template>
         </div>
-        <div class="card danger-card">
+        <div v-if="!player" class="card danger-card">
           <div class="card-title">危险操作</div>
           <div style="display:flex;gap:10px">
             <el-button type="danger" plain size="small" @click="removeWorld">删除世界</el-button>
@@ -113,6 +126,33 @@
                   placeholder="自定义思维链指导；留空则使用内置默认三段式（检查判断 / 核心推演 / 描写渲染）" />
               </el-form-item>
             </el-form>
+          </template>
+        </div>
+
+        <div class="card">
+          <div class="card-title">主提示词</div>
+          <template v-if="sections.style !== null">
+            <div class="muted" style="margin-bottom:10px">
+              主提示词定义 AI 的身份与整体行为方式。选择预设或编写自定义提示词；导演指令、世界设定一致性、骰子工具等系统约定由系统自动追加，无需编写。自定义提示词中可用 <code v-text="'{{player}}'"></code> 表示玩家（会替换为人设名）。
+            </div>
+            <el-form label-width="90px" label-position="left">
+              <el-form-item label="预设">
+                <el-select v-model="sections.style.prompt_preset" :disabled="!!sections.style.custom_prompt.trim()"
+                  placeholder="默认（均衡叙事）" style="width:100%">
+                  <el-option v-for="p in promptPresets" :key="p.key" :value="p.key" :label="p.name">
+                    <span>{{ p.name }}</span>
+                    <span class="muted" style="float:right;font-size:12px">{{ p.description }}</span>
+                  </el-option>
+                </el-select>
+              </el-form-item>
+              <el-form-item v-if="!sections.style.custom_prompt.trim() && currentPreset" label="预设预览">
+                <div class="preset-preview">{{ currentPreset.content }}</div>
+              </el-form-item>
+              <el-form-item label="自定义">
+                <el-input v-model="sections.style.custom_prompt" type="textarea" :autosize="{ minRows: 6, maxRows: 24 }"
+                  placeholder="留空则使用上方预设；填写后覆盖预设（系统约定仍自动追加）" />
+              </el-form-item>
+            </el-form>
             <div style="margin-top:12px">
               <el-button type="primary" size="small" :loading="saving.style" @click="saveSection('style')">保存风格</el-button>
             </div>
@@ -128,7 +168,7 @@
           <template v-else>
             <div class="tab-toolbar">
               <el-button plain size="small" @click="addCharacter">+ 添加 NPC</el-button>
-              <el-button type="primary" plain size="small" @click="pickerVisible = true">从素材库导入</el-button>
+              <el-button v-if="!player" type="primary" plain size="small" @click="pickerVisible = true">从素材库导入</el-button>
             </div>
             <el-collapse v-if="charList.length" v-model="openChars">
               <el-collapse-item v-for="(c, i) in charList" :key="i" :name="i">
@@ -140,7 +180,7 @@
                 </template>
                 <CharacterForm v-model="charList[i]" />
                 <div class="char-ops">
-                  <el-button size="small" plain @click="collectEntity('character', c.name)">收藏到素材库</el-button>
+                  <el-button v-if="!player" size="small" plain @click="collectEntity('character', c.name)">收藏到素材库</el-button>
                   <el-button type="danger" plain size="small" @click="charList.splice(i, 1)">删除角色</el-button>
                 </div>
               </el-collapse-item>
@@ -161,7 +201,7 @@
           <template v-else>
             <div class="tab-toolbar">
               <el-button plain size="small" @click="addItem">+ 添加物品</el-button>
-              <el-button type="primary" plain size="small" @click="pickerVisible = true">从素材库导入</el-button>
+              <el-button v-if="!player" type="primary" plain size="small" @click="pickerVisible = true">从素材库导入</el-button>
             </div>
             <div v-for="(it, i) in itemList" :key="i" class="npc-card">
               <div class="npc-head">
@@ -206,7 +246,7 @@
                 <el-input v-model="l.atmosphere" size="small" placeholder="氛围（如 阴森潮湿）" style="width:180px" />
                 <el-input v-model="l.danger" size="small" placeholder="危险度（如 低危）" style="width:140px" />
                 <span class="spacer"></span>
-                <el-button size="small" plain @click="collectEntity('location', l.name)">收藏</el-button>
+                <el-button v-if="!player" size="small" plain @click="collectEntity('location', l.name)">收藏</el-button>
                 <el-button type="danger" plain size="small" circle @click="locList.splice(i, 1)">×</el-button>
               </div>
               <el-input v-model="l.description" type="textarea" :rows="2" placeholder="描述" style="margin-top:6px" />
@@ -230,7 +270,7 @@
                 <el-input v-model="f.name" size="small" placeholder="势力名（唯一键）" style="width:200px" />
                 <el-input v-model="f.leader" size="small" placeholder="领袖（角色名）" style="width:140px" />
                 <span class="spacer"></span>
-                <el-button size="small" plain @click="collectEntity('faction', f.name)">收藏</el-button>
+                <el-button v-if="!player" size="small" plain @click="collectEntity('faction', f.name)">收藏</el-button>
                 <el-button type="danger" plain size="small" circle @click="facList.splice(i, 1)">×</el-button>
               </div>
               <div class="npc-head" style="margin-top:6px">
@@ -289,15 +329,15 @@
         </div>
       </el-tab-pane>
 
-      <!-- 设定库 -->
-      <el-tab-pane label="设定库" name="lore" lazy>
+      <!-- 设定库（仅 admin） -->
+      <el-tab-pane v-if="!player" label="设定库" name="lore" lazy>
         <div class="card">
           <LorebookPanel v-if="activeTab === 'lore'" :world-id="worldId" />
         </div>
       </el-tab-pane>
 
-      <!-- 存档 -->
-      <el-tab-pane label="存档" name="saves" lazy>
+      <!-- 存档（仅 admin；玩家侧存档入口在聊天页顶栏） -->
+      <el-tab-pane v-if="!player" label="存档" name="saves" lazy>
         <div class="card">
           <div class="card-title">
             游玩存档
@@ -346,8 +386,8 @@
         </el-dialog>
       </el-tab-pane>
 
-      <!-- 注入记录 -->
-      <el-tab-pane label="注入记录" name="injections" lazy>
+      <!-- 注入记录（仅 admin） -->
+      <el-tab-pane v-if="!player" label="注入记录" name="injections" lazy>
         <div class="card">
           <div class="card-title">
             最近回合实际注入记录
@@ -413,8 +453,8 @@
       </el-tab-pane>
     </el-tabs>
 
-    <!-- 素材导入 -->
-    <AssetPicker v-model:visible="pickerVisible" :exclude-world-id="worldId" @confirm="onImportConfirm" />
+    <!-- 素材导入（仅 admin） -->
+    <AssetPicker v-if="!player" v-model:visible="pickerVisible" :exclude-world-id="worldId" @confirm="onImportConfirm" />
   </div>
 </template>
 
@@ -422,15 +462,51 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { worldApi, loreApi, assetApi, saveApi } from '../../api/admin'
+import { worldApi, loreApi, assetApi, saveApi, getPromptPresets } from '../../api/admin'
+import { getChatWorldDetail, getChatWorldSection, saveChatWorldSection, getChatPromptPresets } from '../../api/chat'
+import { ensureChatToken, getChatAuth } from '../../api/session'
 import LorebookPanel from '../../components/LorebookPanel.vue'
 import TagsInput from '../../components/TagsInput.vue'
 import CharacterForm from '../../components/CharacterForm.vue'
 import AssetPicker from '../../components/AssetPicker.vue'
 
+// player 模式：编辑当前会话世界（路由 /world，chat token 鉴权，世界 id 隐式）；
+// 默认 admin 模式：/admin/worlds/:id，行为与改造前一致。
+const props = defineProps({
+  player: { type: Boolean, default: false },
+})
+
 const route = useRoute()
 const router = useRouter()
 const worldId = route.params.id
+
+// player 模式会话无进行中世界时为 true（展示引导而非错误弹窗）
+const noWorld = ref(false)
+
+// 数据访问适配层：admin 走 worldApi + 路由世界 id；player 走 chat 会话端点
+const api = computed(() => {
+  if (!props.player) {
+    return {
+      detail: () => worldApi.detail(worldId),
+      section: (part) => worldApi.section(worldId, part),
+      saveSection: (part, data) => worldApi.saveSection(worldId, part, data),
+    }
+  }
+  return {
+    detail: async () => getChatWorldDetail(await ensureChatToken(), getChatAuth()),
+    section: async (part) => getChatWorldSection(await ensureChatToken(), getChatAuth(), part),
+    saveSection: async (part, data) => saveChatWorldSection(await ensureChatToken(), getChatAuth(), part, data),
+  }
+})
+
+function goBack() {
+  if (props.player) {
+    const auth = getChatAuth()
+    router.push({ path: '/chat', query: auth ? { auth } : {} })
+  } else {
+    router.push('/admin/worlds')
+  }
+}
 
 const activeTab = ref('overview')
 const detail = ref(null)
@@ -461,6 +537,24 @@ const itemList = ref([])
 const openChars = ref([])
 const storylineForm = ref(null)
 
+// 主提示词预设（内置只读，回复风格 tab 按需加载）
+const promptPresets = ref([])
+const currentPreset = computed(() => {
+  const key = sections.style?.prompt_preset || 'default'
+  return promptPresets.value.find((p) => p.key === key) || promptPresets.value[0] || null
+})
+
+async function loadPromptPresets() {
+  if (promptPresets.value.length) return
+  try {
+    promptPresets.value = props.player
+      ? await getChatPromptPresets(await ensureChatToken(), getChatAuth())
+      : await getPromptPresets()
+  } catch (e) {
+    ElMessage.error('加载主提示词预设失败：' + e.message)
+  }
+}
+
 // 素材导入
 const pickerVisible = ref(false)
 const importing = ref(false)
@@ -479,8 +573,15 @@ const metricsText = computed(() => {
 
 async function loadDetail() {
   try {
-    detail.value = await worldApi.detail(worldId)
+    detail.value = await api.value.detail()
+    noWorld.value = false
   } catch (e) {
+    // player 模式：会话未进入世界时展示引导页，不弹错误
+    if (props.player && e.status === 404) {
+      detail.value = null
+      noWorld.value = true
+      return
+    }
     ElMessage.error('加载世界详情失败：' + e.message)
   }
 }
@@ -516,7 +617,7 @@ async function removeWorld() {
 
 async function loadSection(part) {
   try {
-    const data = await worldApi.section(worldId, part)
+    const data = await api.value.section(part)
     sections[part] = data
     if (part === 'characters') {
       charList.value = Object.entries(data || {}).map(([k, v]) => normalizeChar(k, v))
@@ -567,9 +668,16 @@ async function loadSection(part) {
         core: data?.core || '',
         enable_cot: data?.enable_cot || false,
         cot_guide: data?.cot_guide || '',
+        prompt_preset: data?.prompt_preset || '',
+        custom_prompt: data?.custom_prompt || '',
       }
     }
   } catch (e) {
+    if (props.player && e.status === 404) {
+      // 会话世界已被离开/清除：回到引导页
+      noWorld.value = true
+      return
+    }
     ElMessage.error(`加载分区 ${part} 失败：` + e.message)
     sections[part] = null
     if (part === 'storyline') loaded.storylineDone = true
@@ -634,6 +742,7 @@ async function ensureTabData(tab) {
   } else if (tab === 'json' && jsonText.value === null) {
     await loadJson()
   }
+  if (tab === 'style') await loadPromptPresets()
 }
 
 watch(activeTab, ensureTabData)
@@ -643,7 +752,7 @@ watch(activeTab, ensureTabData)
 async function saveSection(part) {
   saving[part] = true
   try {
-    await worldApi.saveSection(worldId, part, sections[part])
+    await api.value.saveSection(part, sections[part])
     ElMessage.success('已保存')
   } catch (e) {
     ElMessage.error('保存失败：' + e.message)
@@ -660,7 +769,7 @@ async function saveCharacters() {
   for (const c of charList.value) map[c.name.trim()] = c
   saving.characters = true
   try {
-    await worldApi.saveSection(worldId, 'characters', map)
+    await api.value.saveSection('characters', map)
     ElMessage.success('角色已保存')
     sections.characters = map
   } catch (e) {
@@ -678,7 +787,7 @@ async function saveMapSection(part, list, label) {
   for (const x of list) map[x.name.trim()] = x
   saving[part] = true
   try {
-    await worldApi.saveSection(worldId, part, map)
+    await api.value.saveSection(part, map)
     ElMessage.success(`${label}已保存`)
     sections[part] = map
   } catch (e) {
@@ -714,7 +823,7 @@ async function saveStoryline() {
   }
   saving.storyline = true
   try {
-    await worldApi.saveSection(worldId, 'storyline', data)
+    await api.value.saveSection('storyline', data)
     ElMessage.success('主线已保存')
     sections.storyline = data
   } catch (e) {
@@ -736,7 +845,7 @@ async function clearStoryline() {
   }
   saving.storyline = true
   try {
-    await worldApi.saveSection(worldId, 'storyline', null)
+    await api.value.saveSection('storyline', null)
     ElMessage.success('主线已清空')
     sections.storyline = null
     storylineForm.value = null
@@ -902,7 +1011,7 @@ const JSON_WRITABLE = [
 async function loadJson() {
   jsonError.value = ''
   try {
-    const full = await worldApi.detail(worldId)
+    const full = await api.value.detail()
     jsonText.value = JSON.stringify(full, null, 2)
   } catch (e) {
     ElMessage.error('加载失败：' + e.message)
@@ -927,7 +1036,7 @@ async function saveJson() {
   try {
     for (const [field, part] of JSON_WRITABLE) {
       if (obj[field] !== undefined && obj[field] !== null) {
-        await worldApi.saveSection(worldId, part, obj[field])
+        await api.value.saveSection(part, obj[field])
       }
     }
     ElMessage.success('可写分区已全部保存')
@@ -944,6 +1053,22 @@ onMounted(loadDetail)
 </script>
 
 <style scoped>
+/* 主提示词预设预览：等宽只读块，限高滚动 */
+.preset-preview {
+  width: 100%;
+  white-space: pre-wrap;
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-2, #666);
+}
+/* player 模式（/world 路由）脱离 AdminLayout，需要自带页面容器 */
+.player-wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 40px; }
 .editor-head { display: flex; justify-content: space-between; align-items: flex-start; }
 .overview-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 .overview-grid p { font-size: 13.5px; margin-top: 2px; }

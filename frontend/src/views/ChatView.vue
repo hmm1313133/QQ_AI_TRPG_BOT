@@ -137,9 +137,9 @@
               </div>
               <template v-else>
                 <div class="bubble"><MarkdownText :text="m.text" /></div>
-                <div v-if="m.type === 'kp' && m.id" class="msg-ops">
+                <div v-if="(m.type === 'kp' || m.type === 'user') && m.id" class="msg-ops">
                   <button
-                    v-if="m.id === lastKpId"
+                    v-if="m.type === 'kp' && m.id === lastKpId"
                     class="op-btn"
                     :disabled="thinking || !!editingId"
                     title="重新生成该回复"
@@ -148,10 +148,16 @@
                   <button
                     class="op-btn"
                     :disabled="thinking"
-                    title="编辑该回复"
+                    :title="m.type === 'kp' ? '编辑该回复' : '编辑该发言'"
                     @click="startEdit(m)"
                   >✎ 编辑</button>
-                  <span v-if="m.version_count > 1" class="ver-switch">
+                  <button
+                    class="op-btn op-danger"
+                    :disabled="thinking || !!editingId"
+                    title="删除该消息"
+                    @click="del(m)"
+                  >✕ 删除</button>
+                  <span v-if="m.type === 'kp' && m.version_count > 1" class="ver-switch">
                     <button
                       class="op-btn ver-btn"
                       :disabled="m.version_no <= 1 || m.versionSwitching"
@@ -253,6 +259,7 @@ import {
   leaveWorld,
   editChatMessage,
   switchChatMessageVersion,
+  deleteChatMessage,
 } from '../api/chat'
 import MarkdownText from '../components/MarkdownText.vue'
 import PlayerSummaryPanel from '../components/PlayerSummaryPanel.vue'
@@ -369,6 +376,10 @@ function connect() {
           }
           break
         case 'push': addMsg('push', msg.text); break
+        case 'ack':
+          // 玩家消息落库回执：回填行 id（该气泡才能编辑/删除）
+          applyAck(msg)
+          break
         case 'session': addMsg('system', msg.text); break
         case 'progress': addMsg('system', msg.text); break
         case 'error':
@@ -392,6 +403,19 @@ function applyRegenReply(msg) {
   if (msg.version_no) target.version_no = msg.version_no
   if (msg.version_count) target.version_count = msg.version_count
   if (target.version_no > 0) target.versionsCache[target.version_no] = msg.text
+}
+
+// 玩家消息落库回执帧：{ type:'ack', id, text }
+// 从后往前找最近一条还没拿到 id 的本地 user 气泡回填（连续发多条时按序对应）
+function applyAck(msg) {
+  if (!msg.id) return
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i]
+    if (m.type === 'user' && !m.id) {
+      m.id = msg.id
+      return
+    }
+  }
 }
 
 function send() {
@@ -418,7 +442,7 @@ function onInput() {
   }
 }
 
-// ---------- AI 回复：重试 / 编辑 / 版本切换 ----------
+// ---------- 消息操作：重试 / 编辑 / 删除 / 版本切换 ----------
 
 // 仅最后一条 kp 消息允许重试（后端同样校验）
 const lastKpId = computed(() => {
@@ -477,6 +501,29 @@ async function saveEdit(m) {
     ElMessage.error('保存失败：' + e.message)
   } finally {
     editSaving.value = false
+  }
+}
+
+// 删除消息（user / kp）：确认后调接口并从本地列表移除
+async function del(m) {
+  if (!m.id || thinking.value || editingId.value) return
+  try {
+    await ElMessageBox.confirm(
+      m.type === 'kp' ? '删除这条 AI 回复？（其全部版本一并删除）' : '删除这条发言？',
+      '删除消息',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return // 用户取消
+  }
+  try {
+    const t = await ensureToken()
+    await deleteChatMessage(t, chatAuth, m.id)
+    const i = messages.value.indexOf(m)
+    if (i >= 0) messages.value.splice(i, 1)
+    ElMessage.success('已删除')
+  } catch (e) {
+    ElMessage.error('删除失败：' + e.message)
   }
 }
 
@@ -883,7 +930,7 @@ async function restoreSave(row) {
   font-size: 13px; border-radius: 10px; border: 1px solid #f5e3b3;
 }
 
-/* ===== kp 气泡操作区（重试 / 编辑 / 版本切换） ===== */
+/* ===== 气泡操作区（重试 / 编辑 / 删除 / 版本切换） ===== */
 .msg-main { display: flex; flex-direction: column; min-width: 0; }
 .msg.user .msg-main { align-items: flex-end; }
 .msg-ops { display: flex; align-items: center; gap: 6px; margin-top: 4px; padding: 0 4px; }
@@ -895,6 +942,7 @@ async function restoreSave(row) {
 }
 .msg:hover .op-btn { opacity: 1; }
 .op-btn:hover:not(:disabled) { background: var(--bg); color: var(--text); }
+.op-btn.op-danger:hover:not(:disabled) { background: #fdecec; color: #d43030; }
 .op-btn:disabled { cursor: not-allowed; color: #c3c9d4; }
 /* 版本切换器常显（让用户可发现多版本），其余按钮 hover 显示 */
 .ver-switch { display: flex; align-items: center; gap: 2px; }
@@ -905,7 +953,7 @@ async function restoreSave(row) {
    祖先有确定宽度后 autosize 才能正确计算行高 */
 .msg:has(.edit-bubble) { width: 100%; }
 .msg:has(.edit-bubble) .msg-main { width: 100%; }
-.msg.kp .bubble.edit-bubble { width: 100%; }
+.msg .bubble.edit-bubble { width: 100%; }
 .edit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 
 /* ===== 气泡内 markdown 内容 ===== */

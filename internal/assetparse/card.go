@@ -306,7 +306,7 @@ func (p *Parser) ParseCard(ctx context.Context, card *CharaCardData) (*Result, e
 		// 卡上没有可整理的自由文本，直接程序化直映
 		return CardToDrafts(card), nil
 	}
-	out, err := p.parseStructured(ctx, text)
+	out, err := p.parseStructured(ctx, "请从以下文本中提取创作素材，输出 JSON：\n\n---\n"+text+"\n---")
 	if err != nil {
 		log.Printf("[AssetParser] 角色卡 LLM 整理失败，降级程序化直映: %v", err)
 		return CardToDrafts(card), nil

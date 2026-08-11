@@ -125,9 +125,16 @@ func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) stri
 		state.Metrics.PlayerAgency, state.Metrics.ObjectiveProgress,
 		state.RoundCount))
 
-	// 战役摘要（滚动压缩产物，保持原样注入）；背景全文已由 lore 分区取代
-	if state.CampaignSummary != "" {
-		sb.WriteString(fmt.Sprintf("\n【剧情摘要】\n%s\n", state.CampaignSummary))
+	// 阶段性剧情摘要（滑出对话窗口的远期剧情以此为准）；背景全文已由 lore 分区取代
+	if entries := state.SummaryEntries(); len(entries) > 0 {
+		sb.WriteString("\n【剧情回顾】（按时间先后的阶段摘要；更早的剧情以这些摘要为准，不要与近期对话重复叙述）\n")
+		for _, e := range entries {
+			if e.RoundTo > 0 {
+				sb.WriteString(fmt.Sprintf("  · [第%d-%d轮] %s\n", e.RoundFrom, e.RoundTo, e.Text))
+			} else {
+				sb.WriteString(fmt.Sprintf("  · %s\n", e.Text))
+			}
+		}
 	}
 
 	return sb.String()

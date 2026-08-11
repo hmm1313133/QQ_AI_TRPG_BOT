@@ -17,7 +17,7 @@ import (
 // Asset 素材库条目。
 type Asset struct {
 	ID        string          `json:"id"`
-	Kind      string          `json:"kind"` // character / location / item / faction / storyline / world
+	Kind      string          `json:"kind"` // character / location / item / faction / storyline / world / lore
 	Name      string          `json:"name"`
 	Tags      []string        `json:"tags,omitempty"`
 	Summary   string          `json:"summary,omitempty"`
@@ -31,6 +31,7 @@ type Asset struct {
 var AssetKinds = map[string]bool{
 	"character": true, "location": true, "item": true, "faction": true, "storyline": true,
 	"world": true, // 世界观（payload 为 Worldview，设计 §11.3）
+	"lore":  true, // 通用设定条目（payload 为 LoreEntry：仪式/时间线/习俗等非实体设定）
 }
 
 // AssetStore 素材库 SQLite 存储。

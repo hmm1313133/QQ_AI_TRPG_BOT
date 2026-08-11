@@ -109,6 +109,7 @@ const KIND_OPTIONS = [
   { label: '势力', value: 'faction' },
   { label: '主线', value: 'storyline' },
   { label: '世界观', value: 'world' },
+  { label: '设定', value: 'lore' },
 ]
 const KIND_LABELS = Object.fromEntries(KIND_OPTIONS.map((k) => [k.value, k.label]))
 
@@ -147,6 +148,7 @@ const worldGroups = computed(() => {
     { kind: 'location', label: '地点', names: w.locations || [] },
     { kind: 'item', label: '物品', names: w.items || [] },
     { kind: 'faction', label: '势力', names: w.factions || [] },
+    { kind: 'lore', label: '设定', names: w.lore || [] },
   ]
 })
 

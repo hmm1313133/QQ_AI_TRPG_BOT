@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="page-title">素材库</div>
-    <div class="page-desc">跨世界复用的创作素材：角色 / 地点 / 物品 / 势力 / 主线 / 世界观</div>
+    <div class="page-desc">跨世界复用的创作素材：角色 / 地点 / 物品 / 势力 / 主线 / 世界观 / 设定</div>
 
     <div class="card">
       <div class="toolbar">
@@ -216,6 +216,29 @@
         </el-form-item>
       </el-form>
 
+      <!-- lore：通用设定条目（仪式/时间线/习俗/规则等非实体设定） -->
+      <el-form v-else-if="dialog.kind === 'lore'" label-width="90px" size="small">
+        <div class="meta-grid">
+          <el-form-item label="分类">
+            <el-select v-model="dialog.payload.category">
+              <el-option v-for="c in LORE_CATEGORIES" :key="c.value" :label="c.label" :value="c.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="注入位置">
+            <el-select v-model="dialog.payload.position">
+              <el-option label="front 世界观区（默认）" value="front" />
+              <el-option label="tail 风格指令区" value="tail" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <el-form-item label="触发词">
+          <TagsInput v-model="dialog.payload.keys" placeholder="提到这些词时该设定会被调出" />
+        </el-form-item>
+        <el-form-item label="正文">
+          <el-input v-model="dialog.payload.content" type="textarea" :rows="8" placeholder="设定正文，建议保留原文" />
+        </el-form-item>
+      </el-form>
+
       <template #footer>
         <el-button size="small" @click="dialog.visible = false">取消</el-button>
         <el-button type="primary" size="small" :loading="dialog.saving" @click="saveAsset">{{ dialog.id ? '保存' : '创建' }}</el-button>
@@ -248,6 +271,10 @@
 
       <template v-if="parseDlg.drafts.length">
         <el-divider content-position="left">解析草稿（{{ parseDlg.drafts.length }} 条，来源：{{ parseDlg.parser || '-' }}）</el-divider>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <el-button size="small" plain :loading="parseDlg.completing" :disabled="!checkedCount" @click="completeDrafts">AI 补全素材</el-button>
+          <span class="muted">根据勾选的草稿查漏补缺（补人物/地点/习俗/剧情钩子），结果追加到下方列表</span>
+        </div>
         <div class="draft-list">
           <div v-for="g in draftGroups" :key="g.kind" class="draft-group">
             <div class="draft-group-title">
@@ -258,6 +285,7 @@
               <el-checkbox v-model="d.checked" style="margin-right:8px" />
               <div class="draft-body">
                 <div class="draft-row">
+                  <el-tag v-if="d._gen" size="small" type="warning" effect="plain" style="flex-shrink:0">AI补全</el-tag>
                   <el-input v-model="d.name" size="small" placeholder="素材名称" style="width:200px" />
                   <el-input v-model="d.summary" size="small" placeholder="一句话摘要" style="flex:1" />
                 </div>
@@ -271,12 +299,40 @@
       <template #footer>
         <el-button size="small" @click="parseDlg.visible = false">取消</el-button>
         <el-button
+          size="small"
+          :disabled="!checkedCount"
+          @click="openGenWorld"
+        >生成世界…</el-button>
+        <el-button
           type="primary"
           size="small"
           :loading="parseDlg.importing"
           :disabled="!checkedCount"
           @click="importDrafts"
         >入库所选（{{ checkedCount }}）</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 用勾选的解析草稿直接生成新世界 -->
+    <el-dialog v-model="genWorldDlg.visible" title="用所选草稿生成世界" width="440px" append-to-body :close-on-click-modal="false">
+      <el-form label-width="80px" size="small">
+        <el-form-item label="世界名称">
+          <el-input v-model="genWorldDlg.name" placeholder="可选，便于世界列表展示" />
+        </el-form-item>
+        <el-form-item label="模式">
+          <el-radio-group v-model="genWorldDlg.mode">
+            <el-radio value="roleplay">roleplay 角色扮演</el-radio>
+            <el-radio value="simrpg">simrpg 开放模拟</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="素材库">
+          <el-checkbox v-model="genWorldDlg.alsoImport">同时将草稿入库素材库（便于其他世界复用）</el-checkbox>
+        </el-form-item>
+      </el-form>
+      <div class="muted">将用解析弹窗中勾选的 {{ checkedCount }} 条草稿创建新世界；roleplay 模式至少需要一名角色。</div>
+      <template #footer>
+        <el-button size="small" @click="genWorldDlg.visible = false">取消</el-button>
+        <el-button type="primary" size="small" :loading="genWorldDlg.creating" @click="createWorldFromDrafts">生成世界</el-button>
       </template>
     </el-dialog>
   </div>
@@ -286,6 +342,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { assetApi } from '../../api/admin'
+import { LORE_CATEGORIES } from '../../components/loreMeta'
 import TagsInput from '../../components/TagsInput.vue'
 import CharacterForm from '../../components/CharacterForm.vue'
 
@@ -296,6 +353,7 @@ const KIND_OPTIONS = [
   { label: '势力', value: 'faction' },
   { label: '主线', value: 'storyline' },
   { label: '世界观', value: 'world' },
+  { label: '设定', value: 'lore' },
 ]
 const KIND_LABELS = Object.fromEntries(KIND_OPTIONS.map((k) => [k.value, k.label]))
 // 草稿分组的标签着色
@@ -306,6 +364,7 @@ const KIND_TAG_TYPES = {
   faction: 'danger',
   storyline: 'info',
   world: 'primary',
+  lore: 'success',
 }
 
 const assets = ref([])
@@ -346,6 +405,8 @@ function emptyPayload(kind) {
       return { title: '', premise: '', acts: [] }
     case 'world':
       return { setting: '', era: '', location: '', atmosphere: '', tone: '', backstory: '', themes: [], lore: [] }
+    case 'lore':
+      return { title: '', category: 'background', keys: [], content: '', position: 'front' }
     default:
       return {}
   }
@@ -406,12 +467,14 @@ async function openEdit(row) {
 
 function buildPayload() {
   const p = { ...dialog.payload }
-  // 实体名与素材名保持一致（storyline 用标题承载名称；world payload 没有 name 字段，跳过回写）
+  // 实体名与素材名保持一致（storyline/lore 用标题承载名称；world payload 没有 name 字段，跳过回写）
   if (dialog.kind === 'storyline') {
     p.title = p.title || dialog.name.trim()
     p.acts = (p.acts || [])
       .filter((a) => a.title.trim())
       .map((a, i) => ({ id: a.id || `act_${i + 1}`, title: a.title.trim(), summary: a.summary || '', status: a.status || 'pending' }))
+  } else if (dialog.kind === 'lore') {
+    p.title = dialog.name.trim()
   } else if (dialog.kind !== 'world') {
     p.name = dialog.name.trim()
   }
@@ -474,8 +537,9 @@ const parseDlg = reactive({
   text: '',
   parsing: false,
   parser: '',
-  drafts: [], // [{ _key, checked, kind, name, summary, tags, payload }]
+  drafts: [], // [{ _key, _gen, checked, kind, name, summary, tags, payload }]
   importing: false,
+  completing: false,
 })
 let draftSeq = 0
 
@@ -501,7 +565,7 @@ function truncate(s, n) {
 // 草稿 payload 摘要预览：按类型挑最有代表性的字段截断展示
 function draftPreview(d) {
   const p = d.payload || {}
-  const text = p.setting || p.backstory || p.personality || p.description || p.premise || d.summary || ''
+  const text = p.setting || p.backstory || p.personality || p.description || p.premise || p.content || d.summary || ''
   return truncate(text, 100)
 }
 
@@ -511,7 +575,7 @@ function onParseFile(e) {
 }
 
 function openParse() {
-  Object.assign(parseDlg, { visible: true, file: null, text: '', parsing: false, parser: '', drafts: [], importing: false })
+  Object.assign(parseDlg, { visible: true, file: null, text: '', parsing: false, parser: '', drafts: [], importing: false, completing: false })
   if (parseFileEl.value) parseFileEl.value.value = ''
 }
 
@@ -526,6 +590,7 @@ async function startParse() {
     parseDlg.parser = res?.parser || ''
     parseDlg.drafts = (res?.drafts || []).map((d) => ({
       _key: ++draftSeq,
+      _gen: false,
       checked: true,
       kind: d.kind || 'item',
       name: d.name || '',
@@ -538,6 +603,38 @@ async function startParse() {
     ElMessage.error('解析失败：' + e.message)
   } finally {
     parseDlg.parsing = false
+  }
+}
+
+// AI 补全：以勾选草稿为参考查漏补缺，结果追加进列表（标记 _gen 便于识别）
+async function completeDrafts() {
+  const chosen = parseDlg.drafts.filter((d) => d.checked)
+  if (!chosen.length) { ElMessage.warning('请先勾选作为参考的草稿'); return }
+  parseDlg.completing = true
+  try {
+    const res = await assetApi.complete(chosen.map((d) => ({
+      kind: d.kind, name: d.name.trim(), summary: d.summary, tags: d.tags, payload: d.payload,
+    })))
+    const added = (res?.drafts || []).map((d) => ({
+      _key: ++draftSeq,
+      _gen: true,
+      checked: true,
+      kind: d.kind || 'item',
+      name: d.name || '',
+      summary: d.summary || '',
+      tags: d.tags || [],
+      payload: d.payload || {},
+    }))
+    if (!added.length) {
+      ElMessage.info('AI 没有产出新的补充素材')
+      return
+    }
+    parseDlg.drafts.push(...added)
+    ElMessage.success(`AI 补全了 ${added.length} 条素材，已追加到列表（可取消勾选不需要的）`)
+  } catch (e) {
+    ElMessage.error('AI 补全失败：' + e.message)
+  } finally {
+    parseDlg.completing = false
   }
 }
 
@@ -566,6 +663,62 @@ async function importDrafts() {
     ElMessage.error('入库失败：' + e.message)
   } finally {
     parseDlg.importing = false
+  }
+}
+
+// ---------- 草稿直接生成世界 ----------
+
+const genWorldDlg = reactive({ visible: false, name: '', mode: 'roleplay', creating: false, alsoImport: false })
+
+function openGenWorld() {
+  if (!checkedCount.value) { ElMessage.warning('请至少勾选一条草稿'); return }
+  // 默认世界名：世界观草稿名，其次角色名
+  const wv = parseDlg.drafts.find((d) => d.checked && d.kind === 'world')
+  const ch = parseDlg.drafts.find((d) => d.checked && d.kind === 'character')
+  genWorldDlg.name = (wv && wv.name) || (ch && ch.name ? `${ch.name} 的世界` : '')
+  genWorldDlg.visible = true
+}
+
+async function createWorldFromDrafts() {
+  const chosen = parseDlg.drafts.filter((d) => d.checked)
+  genWorldDlg.creating = true
+  try {
+    const res = await assetApi.createWorldFromDrafts({
+      name: genWorldDlg.name.trim(),
+      mode: genWorldDlg.mode,
+      drafts: chosen.map((d) => ({ kind: d.kind, name: d.name.trim(), payload: d.payload })),
+    })
+    const errs = res?.errors || []
+    // 勾选「同时入库」时把同一批草稿也收进素材库（生成世界成功后才入库）
+    let importedNote = ''
+    if (genWorldDlg.alsoImport) {
+      try {
+        const imp = await assetApi.batchCreate(chosen.map((d) => ({
+          kind: d.kind,
+          name: d.name.trim(),
+          tags: d.tags,
+          summary: d.summary,
+          source: `解析导入（${parseDlg.parser || 'unknown'}）`,
+          payload: d.payload,
+        })))
+        importedNote = `，并已入库素材库 ${imp?.created || 0} 条`
+        const impErrs = imp?.errors || []
+        if (impErrs.length) importedNote += `（${impErrs.length} 条入库失败：${impErrs.join('；')}）`
+      } catch (e) {
+        importedNote = `，但入库素材库失败：${e.message}`
+      }
+    }
+    if (errs.length) {
+      ElMessage.warning(`世界已生成${importedNote}，但 ${errs.length} 条草稿失败：${errs.join('；')}`)
+    } else {
+      ElMessage.success(`世界已生成${importedNote}，可在「世界」页查看`)
+    }
+    genWorldDlg.visible = false
+    parseDlg.visible = false
+  } catch (e) {
+    ElMessage.error('生成失败：' + e.message)
+  } finally {
+    genWorldDlg.creating = false
   }
 }
 

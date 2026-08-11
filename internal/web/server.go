@@ -60,7 +60,7 @@ type wsConn struct {
 
 // wsMessage 客户端/服务端消息帧。
 type wsMessage struct {
-	Type  string `json:"type"` // chat / regen / reply / status / push / progress / error / session
+	Type  string `json:"type"` // chat / regen / reply / status / push / progress / error / session / ack
 	Text  string `json:"text,omitempty"`
 	State string `json:"state,omitempty"` // status: thinking / idle
 	Round int    `json:"round,omitempty"`
@@ -213,8 +213,9 @@ func (s *Server) handleChatWS(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// 记录玩家消息（历史恢复用）
-		s.recordChat(sessionID, "user", strings.TrimSpace(msg.Text))
+		// 记录玩家消息（历史恢复用），并回执行 id 让前端气泡可编辑/删除
+		userMsgID := s.recordChat(sessionID, "user", strings.TrimSpace(msg.Text))
+		s.send(wc, wsMessage{Type: "ack", ID: userMsgID, Text: strings.TrimSpace(msg.Text)})
 
 		// 构建统一消息上下文，走共享路由
 		mc := &core.MessageContext{
@@ -236,7 +237,9 @@ func (s *Server) handleChatWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRegen 处理"AI 回复重试"请求：校验目标 → 回滚世界状态（有快照时）→ 用原用户输入重跑。
+// handleRegen 处理"AI 回复重试"请求：校验目标 → 回滚世界状态（有快照时）→ 重跑用户输入。
+// 重放输入优先取聊天历史里目标 reply 前最近一条 user 消息的当前文本（玩家可能编辑过
+// 自己的发言，编辑后重试应按新文本生成）；历史缺失（如发言已删）才退回快照原文。
 // 校验失败回 error 帧；重试回复不新增 chat_messages 行，而是作为 ref_id 消息的新版本。
 func (s *Server) handleRegen(wc *wsConn, sessionID, token string, refID int64) {
 	fail := func(text string) {
@@ -271,23 +274,25 @@ func (s *Server) handleRegen(wc *wsConn, sessionID, token string, refID int64) {
 		return
 	}
 
-	// 世界状态回滚：freechat 且有快照则恢复（拿到当时的用户输入）；
-	// 无快照（normal 模式或老数据）取目标 reply 前最近一条 user 消息直接重跑（无状态/接受漂移）。
-	var userText string
-	ok := false
+	// 世界状态回滚：freechat 且有快照则恢复（快照原文留作兜底输入）；
+	// 无快照（normal 模式或老数据）直接重跑（无状态/接受漂移）。
+	var snapshotText string
 	if s.adminReady && s.adminDeps.WorldEngine != nil {
 		ut, has, rerr := s.adminDeps.WorldEngine.RestoreTurnSnapshot(sessionID)
 		if rerr != nil {
 			log.Printf("[Web] 回合快照恢复失败（直接重跑）: %v", rerr)
+		} else if has {
+			snapshotText = ut
 		}
-		userText, ok = ut, has
 	}
-	if !ok {
-		userText, ok = s.history.UserTextBefore(sessionID, refID)
-		if !ok || strings.TrimSpace(userText) == "" {
-			fail("找不到可重放的用户输入")
-			return
-		}
+	// 重放输入：聊天历史里的当前文本优先（反映玩家编辑），快照原文兜底。
+	userText, ok := s.history.UserTextBefore(sessionID, refID)
+	if !ok || strings.TrimSpace(userText) == "" {
+		userText = snapshotText
+	}
+	if strings.TrimSpace(userText) == "" {
+		fail("找不到可重放的用户输入")
+		return
 	}
 
 	// 重试路径不重复记录 user 消息；Extra 标记让 TurnEngine 跳过回合快照写入。

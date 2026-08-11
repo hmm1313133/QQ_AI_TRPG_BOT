@@ -3,8 +3,6 @@
     :model-value="modelValue"
     title="剧情摘要"
     width="640px"
-    :close-on-click-modal="false"
-    :before-close="requestClose"
     @update:model-value="(v) => emit('update:modelValue', v)"
     @open="init"
   >
@@ -14,35 +12,70 @@
     </div>
     <template v-else>
       <div class="sum-hint">
-        摘要由 AI 随剧情滚动更新，与近期对话窗口一起构成 AI 的上下文；可以手动修正。
+        摘要由 AI 按阶段生成：对话滑出近期窗口后，每个阶段总结为一条；多条摘要按时间顺序注入上下文，替代远期对话。
+        可以修改、删除已有条目，或手动补录。
         <span v-if="pendingTurns > 0" class="muted">（还有 {{ pendingTurns }} 轮对话待总结）</span>
-        <span v-if="dirty" class="dirty-hint">● 有未保存更改</span>
       </div>
-      <el-input
-        v-model="summary"
-        type="textarea"
-        :autosize="{ minRows: 8, maxRows: 24 }"
-        placeholder="暂无剧情摘要——进行几轮对话后会自动生成"
-      />
+
+      <div v-if="entries.length === 0" class="empty">
+        暂无剧情摘要——多进行几轮对话后会自动生成，也可以在下方手动补录
+      </div>
+      <div v-for="e in entries" :key="e.id" class="entry">
+        <div class="entry-head">
+          <span class="entry-range">{{ rangeLabel(e) }}</span>
+          <span class="entry-ops">
+            <template v-if="editingId === e.id">
+              <el-button size="small" text @click="cancelEdit">取消</el-button>
+              <el-button type="primary" size="small" :loading="saving" @click="saveEdit(e)">保存</el-button>
+            </template>
+            <template v-else>
+              <el-button size="small" text :disabled="editingId !== null" @click="startEdit(e)">编辑</el-button>
+              <el-button size="small" text type="danger" :disabled="editingId !== null" @click="del(e)">删除</el-button>
+            </template>
+          </span>
+        </div>
+        <el-input
+          v-if="editingId === e.id"
+          v-model="editText"
+          type="textarea"
+          :autosize="{ minRows: 3, maxRows: 16 }"
+        />
+        <div v-else class="entry-text">{{ e.text }}</div>
+      </div>
+
+      <!-- 手动补录 -->
+      <div class="add-box">
+        <el-input
+          v-model="newText"
+          type="textarea"
+          :autosize="{ minRows: 2, maxRows: 8 }"
+          placeholder="手动补录一条摘要（追加到列表末尾）…"
+        />
+        <el-button
+          size="small"
+          style="margin-top: 6px"
+          :loading="saving"
+          :disabled="!newText.trim()"
+          @click="add"
+        >+ 补录一条</el-button>
+      </div>
     </template>
 
     <template #footer>
-      <el-button size="small" @click="close">关闭</el-button>
-      <el-button
-        type="primary"
-        size="small"
-        :loading="saving"
-        :disabled="loading || noWorld"
-        @click="save"
-      >保存</el-button>
+      <el-button size="small" @click="emit('update:modelValue', false)">关闭</el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup>
-import { nextTick, ref, watch } from 'vue'
+import { ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getChatSummary, saveChatSummary } from '../api/chat'
+import {
+  getChatSummary,
+  addChatSummaryEntry,
+  editChatSummaryEntry,
+  deleteChatSummaryEntry,
+} from '../api/chat'
 import { ensureChatToken, getChatAuth } from '../api/session'
 
 const props = defineProps({
@@ -50,30 +83,34 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:modelValue'])
 
-const summary = ref('')
+const entries = ref([])
 const pendingTurns = ref(0)
 const loading = ref(false)
 const noWorld = ref(false)
 const saving = ref(false)
-const dirty = ref(false)
 
-// 变更标记未保存；加载完成后由 init 复位
-watch(summary, () => { dirty.value = true })
+const editingId = ref(null)
+const editText = ref('')
+const newText = ref('')
+
+function rangeLabel(e) {
+  if (e.round_to > 0) return `第 ${e.round_from}–${e.round_to} 轮`
+  return '手动补录'
+}
 
 async function init() {
   loading.value = true
   noWorld.value = false
-  summary.value = ''
+  entries.value = []
   pendingTurns.value = 0
-  dirty.value = false
+  editingId.value = null
+  editText.value = ''
+  newText.value = ''
   try {
     const t = await ensureChatToken()
     const r = await getChatSummary(t, getChatAuth())
-    summary.value = r?.summary || ''
+    entries.value = r?.entries || []
     pendingTurns.value = r?.pending_turns || 0
-    // 等 watch 跑完再复位 dirty，避免加载本身被当成用户修改
-    await nextTick()
-    dirty.value = false
   } catch (e) {
     // 404 = 会话未进入世界，展示引导文案
     if (e.status === 404) {
@@ -86,47 +123,83 @@ async function init() {
   }
 }
 
-async function confirmDiscard(action) {
-  if (!dirty.value) return true
-  try {
-    await ElMessageBox.confirm(`有未保存的更改，${action}会丢弃这些更改。继续？`, '未保存更改', {
-      type: 'warning',
-      confirmButtonText: '放弃更改',
-      cancelButtonText: '取消',
-    })
-    return true
-  } catch {
-    return false
-  }
+function startEdit(e) {
+  editingId.value = e.id
+  editText.value = e.text
 }
 
-async function save() {
+function cancelEdit() {
+  editingId.value = null
+  editText.value = ''
+}
+
+async function saveEdit(e) {
+  const text = editText.value.trim()
+  if (!text) {
+    ElMessage.warning('内容不能为空')
+    return
+  }
   saving.value = true
   try {
     const t = await ensureChatToken()
-    await saveChatSummary(t, getChatAuth(), summary.value.trim())
-    ElMessage.success('剧情摘要已保存')
-    dirty.value = false
-  } catch (e) {
-    ElMessage.error('保存失败：' + e.message)
+    await editChatSummaryEntry(t, getChatAuth(), e.id, text)
+    e.text = text
+    ElMessage.success('已保存')
+    cancelEdit()
+  } catch (err) {
+    ElMessage.error('保存失败：' + err.message)
   } finally {
     saving.value = false
   }
 }
 
-// el-dialog 的 before-close（X / ESC）
-async function requestClose(done) {
-  if (await confirmDiscard('关闭')) done()
+async function del(e) {
+  try {
+    await ElMessageBox.confirm('删除这条摘要？AI 将不再记得这段剧情。', '删除摘要', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return // 用户取消
+  }
+  saving.value = true
+  try {
+    const t = await ensureChatToken()
+    await deleteChatSummaryEntry(t, getChatAuth(), e.id)
+    entries.value = entries.value.filter((x) => x.id !== e.id)
+    ElMessage.success('已删除')
+  } catch (err) {
+    ElMessage.error('删除失败：' + err.message)
+  } finally {
+    saving.value = false
+  }
 }
 
-// 底部「关闭」按钮
-async function close() {
-  if (await confirmDiscard('关闭')) emit('update:modelValue', false)
+async function add() {
+  const text = newText.value.trim()
+  if (!text) return
+  saving.value = true
+  try {
+    const t = await ensureChatToken()
+    const r = await addChatSummaryEntry(t, getChatAuth(), text)
+    entries.value.push({ id: r.id, round_from: 0, round_to: 0, text })
+    newText.value = ''
+    ElMessage.success('已补录')
+  } catch (err) {
+    ElMessage.error('补录失败：' + err.message)
+  } finally {
+    saving.value = false
+  }
 }
 </script>
 
 <style scoped>
 .sum-hint { font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; line-height: 1.6; }
-.dirty-hint { color: var(--el-color-warning, #e6a23c); margin-left: 6px; }
 .empty { padding: 24px 0; text-align: center; color: var(--text-secondary); font-size: 13px; }
+.entry { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.entry-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.entry-range { font-size: 12px; color: var(--text-secondary); }
+.entry-text { font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.add-box { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
 </style>

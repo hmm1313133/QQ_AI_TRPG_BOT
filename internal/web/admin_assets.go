@@ -29,6 +29,8 @@ func (a *adminAPI) registerAssetRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/admin/assets/library/{aid}", a.wrap(a.handleAssetUpdate))
 	mux.HandleFunc("DELETE /api/admin/assets/library/{aid}", a.wrap(a.handleAssetDelete))
 	mux.HandleFunc("POST /api/admin/assets/parse", a.wrap(a.handleAssetParse))
+	mux.HandleFunc("POST /api/admin/assets/complete", a.wrap(a.handleAssetComplete))
+	mux.HandleFunc("POST /api/admin/worlds/from-drafts", a.wrap(a.handleWorldFromDrafts))
 	mux.HandleFunc("POST /api/admin/worlds/{id}/assets/collect", a.wrap(a.handleAssetCollect))
 	mux.HandleFunc("POST /api/admin/worlds/{id}/assets/import", a.wrap(a.handleAssetImport))
 	mux.HandleFunc("GET /api/admin/worlds/{id}/saves", a.wrap(a.handleSaveList))
@@ -60,6 +62,7 @@ func (a *adminAPI) handleAssetsCatalog(w http.ResponseWriter, r *http.Request) {
 		Locations  []string `json:"locations"`
 		Items      []string `json:"items"`
 		Factions   []string `json:"factions"`
+		Lore       []string `json:"lore"` // 设定条目标题
 	}
 
 	catalog := map[string]any{
@@ -94,6 +97,11 @@ func (a *adminAPI) handleAssetsCatalog(w http.ResponseWriter, r *http.Request) {
 			}
 			for name := range ws.Factions {
 				wi.Factions = append(wi.Factions, name)
+			}
+			for _, e := range ws.Lore {
+				if e.Title != "" {
+					wi.Lore = append(wi.Lore, e.Title)
+				}
 			}
 			worlds = append(worlds, wi)
 		}
@@ -303,6 +311,19 @@ func extractEntityPayload(ws *world.WorldState, kind, name string) (json.RawMess
 			outName = ws.WorldID
 		}
 		outName += " 的世界观"
+	case "lore":
+		// 通用设定条目：按标题查找
+		found := false
+		for _, e := range ws.Lore {
+			if e.Title == name {
+				v = e
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, "", fmt.Errorf("设定条目不存在: %s", name)
+		}
 	default:
 		return nil, "", fmt.Errorf("未知素材类型: %s", kind)
 	}
@@ -409,6 +430,14 @@ func (a *adminAPI) handleAssetImport(w http.ResponseWriter, r *http.Request) {
 			if err := json.Unmarshal(asset.Payload, &v); err == nil && !v.Empty() {
 				pendingEntities = append(pendingEntities, pendingEntity{"world", "素材:" + asset.Name, &v})
 			}
+		case "lore":
+			var v world.LoreEntry
+			if err := json.Unmarshal(asset.Payload, &v); err == nil && v.Content != "" {
+				if v.Title == "" {
+					v.Title = asset.Name
+				}
+				pendingEntities = append(pendingEntities, pendingEntity{"lore", "素材:" + asset.Name, &v})
+			}
 		}
 	}
 
@@ -453,6 +482,11 @@ func (a *adminAPI) handleAssetImport(w http.ResponseWriter, r *http.Request) {
 			var v world.Worldview
 			if json.Unmarshal(payload, &v) == nil {
 				pendingEntities = append(pendingEntities, pendingEntity{"world", "复制:" + name, &v})
+			}
+		case "lore":
+			var v world.LoreEntry
+			if json.Unmarshal(payload, &v) == nil && v.Content != "" {
+				pendingEntities = append(pendingEntities, pendingEntity{"lore", "复制:" + name, &v})
 			}
 		}
 	}
@@ -509,6 +543,35 @@ func (a *adminAPI) handleAssetImport(w http.ResponseWriter, r *http.Request) {
 			v := p.value.(*world.Worldview)
 			exists := strings.TrimSpace(ws.Background) != ""
 			applyEntity("world", p.label, exists, func() { world.ApplyWorldview(ws, v, true) })
+		case "lore":
+			v := p.value.(*world.LoreEntry)
+			existing := -1
+			for i, e := range ws.Lore {
+				if e.Title == v.Title {
+					existing = i
+					break
+				}
+			}
+			applyEntity("lore", v.Title, existing >= 0, func() {
+				entry := *v
+				entry.Enabled = true
+				if entry.Category == "" {
+					entry.Category = world.LoreCategoryBackground
+				}
+				if entry.Position == "" {
+					entry.Position = world.LorePositionFront
+				}
+				if entry.Source == "" {
+					entry.Source = world.LoreSourceManual
+				}
+				if existing >= 0 {
+					entry.ID = ws.Lore[existing].ID // overwrite：保留原 ID 替换内容
+					ws.Lore[existing] = entry
+				} else {
+					entry.ID = fmt.Sprintf("lor_imp_%d", len(ws.Lore))
+					ws.Lore = append(ws.Lore, entry)
+				}
+			})
 		}
 	}
 

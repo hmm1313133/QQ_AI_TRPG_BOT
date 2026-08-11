@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/assetparse"
@@ -165,6 +166,154 @@ func TestAdmin_AssetParseNoLLM(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("未配置 LLM 应 503: %d", resp.StatusCode)
 	}
+}
+
+// 解析草稿直接生成世界：角色/地点/主线落地，世界观写入背景与 lore，坏草稿不阻塞。
+func TestAdmin_WorldFromDrafts(t *testing.T) {
+	ts, deps := newAssetTestServer(t)
+	defer ts.Close()
+
+	body := `{
+		"name": "雾都之夜",
+		"drafts": [
+			{"kind":"character","name":"艾拉","payload":{"name":"艾拉","kind":"npc","personality":"好奇","backstory":"银发法师"}},
+			{"kind":"location","name":"雾都","payload":{"name":"雾都","description":"常年浓雾的港口城市","atmosphere":"阴郁"}},
+			{"kind":"world","name":"雾都世界观","payload":{"setting":"蒸汽雾都","location":"雾都","lore":[{"title":"雾都警厅","keys":["警厅"],"content":"腐朽的执法机构"}]}},
+			{"kind":"storyline","name":"失踪案","payload":{"title":"失踪案","premise":"码头连续有人失踪","acts":[{"id":"act_1","title":"调查码头","status":"active"}]}},
+			{"kind":"character","name":"坏草稿","payload":"not-json"}
+		]
+	}`
+	resp := adminReq(t, "POST", ts.URL+"/api/admin/worlds/from-drafts", body)
+	var res map[string]any
+	readJSON(t, resp, &res)
+	worldID, _ := res["world_id"].(string)
+	if worldID == "" {
+		t.Fatalf("应返回 world_id: %v", res)
+	}
+	if errs, _ := res["errors"].([]any); len(errs) != 1 {
+		t.Fatalf("坏草稿应汇总 1 条错误: %v", res["errors"])
+	}
+
+	ws := deps.WorldEngine.LoadOrNil(worldID)
+	if ws == nil {
+		t.Fatal("世界应已创建")
+	}
+	if ws.Mode != world.ModeRoleplay {
+		t.Fatalf("缺省模式应为 roleplay: %s", ws.Mode)
+	}
+	if ws.ScriptName != "雾都之夜" {
+		t.Fatalf("世界名称应写入 ScriptName: %q", ws.ScriptName)
+	}
+	if ws.Characters["艾拉"] == nil || ws.Characters["艾拉"].Backstory != "银发法师" {
+		t.Fatalf("角色应落地: %+v", ws.Characters["艾拉"])
+	}
+	if ws.Locations["雾都"] == nil && !locationExists(ws, "雾都") {
+		t.Fatalf("地点应落地: %+v", ws.Locations)
+	}
+	if !strings.Contains(ws.Background, "蒸汽雾都") {
+		t.Fatalf("世界观应写入背景: %q", ws.Background)
+	}
+	foundLore := false
+	for _, e := range ws.Lore {
+		if e.Title == "雾都警厅" {
+			foundLore = true
+		}
+	}
+	if !foundLore {
+		t.Fatalf("世界书条目应落地: %+v", ws.Lore)
+	}
+	if ws.Storyline == nil || ws.Storyline.Title != "失踪案" {
+		t.Fatalf("主线应落地: %+v", ws.Storyline)
+	}
+	if ws.Scene.Description != "雾都" {
+		t.Fatalf("初始场景应取世界观主要地点: %+v", ws.Scene)
+	}
+}
+
+// 解析草稿直接生成世界：lore 草稿落地为设定库条目（标题去重、重发 ID、缺省值补齐）。
+func TestAdmin_WorldFromDraftsLore(t *testing.T) {
+	ts, deps := newAssetTestServer(t)
+	defer ts.Close()
+
+	body := `{
+		"name": "李家村",
+		"drafts": [
+			{"kind":"character","name":"王婶","payload":{"name":"王婶","kind":"npc"}},
+			{"kind":"lore","name":"祭山神仪式","payload":{"title":"祭山神仪式","category":"rule","keys":["山神"],"content":"每年霜降后第一个逢七的日子……"}},
+			{"kind":"lore","name":"李家村编年史","payload":{"title":"李家村编年史","category":"history","keys":["编年史"],"content":"1983 年包产到户……"}},
+			{"kind":"lore","name":"重复条目","payload":{"title":"祭山神仪式","content":"重复内容应被去重"}}
+		]
+	}`
+	resp := adminReq(t, "POST", ts.URL+"/api/admin/worlds/from-drafts", body)
+	var res map[string]any
+	readJSON(t, resp, &res)
+	worldID, _ := res["world_id"].(string)
+	if worldID == "" {
+		t.Fatalf("应返回 world_id: %v", res)
+	}
+
+	ws := deps.WorldEngine.LoadOrNil(worldID)
+	if ws == nil {
+		t.Fatal("世界应已创建")
+	}
+	byTitle := map[string]world.LoreEntry{}
+	for _, e := range ws.Lore {
+		byTitle[e.Title] = e
+	}
+	entry, ok := byTitle["祭山神仪式"]
+	if !ok {
+		t.Fatalf("lore 草稿应落地为设定条目: %+v", ws.Lore)
+	}
+	if entry.Category != "rule" || entry.Position != "front" || !entry.Enabled || entry.ID == "" {
+		t.Fatalf("lore 条目缺省值/ID 应补齐: %+v", entry)
+	}
+	if len(byTitle) != 2 {
+		t.Fatalf("同名 lore 草稿应按标题去重: %+v", byTitle)
+	}
+	if _, ok := byTitle["李家村编年史"]; !ok {
+		t.Fatalf("编年史条目应落地: %+v", ws.Lore)
+	}
+}
+
+// 素材 AI 补全：未配置 LLM → 503；空草稿 → 400。
+func TestAdmin_AssetCompleteNoLLM(t *testing.T) {
+	ts, _ := newAssetTestServer(t)
+	defer ts.Close()
+
+	body := `{"drafts":[{"kind":"character","name":"王婶","payload":{"name":"王婶"}}]}`
+	resp := adminReq(t, "POST", ts.URL+"/api/admin/assets/complete", body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("未配置 LLM 应 503: %d", resp.StatusCode)
+	}
+
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/assets/complete", `{"drafts":[]}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("空草稿应 400: %d", resp.StatusCode)
+	}
+}
+
+// roleplay 无角色草稿 → 校验失败返回 400。
+func TestAdmin_WorldFromDraftsNoCharacter(t *testing.T) {
+	ts, _ := newAssetTestServer(t)
+	defer ts.Close()
+
+	resp := adminReq(t, "POST", ts.URL+"/api/admin/worlds/from-drafts",
+		`{"drafts":[{"kind":"item","name":"银钥匙","payload":{"name":"银钥匙"}}]}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("roleplay 无角色应 400: %d", resp.StatusCode)
+	}
+}
+
+func locationExists(ws *world.WorldState, name string) bool {
+	for _, l := range ws.Locations {
+		if l != nil && l.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // buildTestPNG 构造含 tEXt 角色卡 chunk 的最小 PNG。

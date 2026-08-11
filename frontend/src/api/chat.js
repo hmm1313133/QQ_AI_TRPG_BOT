@@ -70,6 +70,11 @@ export function switchChatMessageVersion(token, auth = '', id, versionNo) {
   })
 }
 
+// 删除一条消息（user / reply / push；级联删除版本记录）
+export function deleteChatMessage(token, auth = '', id) {
+  return playerSaveReq(`/api/chat/messages/${id}`, { token, auth, method: 'DELETE' })
+}
+
 // ---------- 玩家侧世界状态编辑（会话世界，世界 id 隐式 = 会话） ----------
 
 // 会话世界完整 WorldState（形状与 admin GET /api/admin/worlds/{id} 一致）；
@@ -93,21 +98,36 @@ export function saveChatWorldSection(token, auth = '', part, data) {
   })
 }
 
-// ---------- 玩家侧剧情摘要 ----------
+// ---------- 玩家侧剧情摘要（阶段性多条） ----------
 
-// 剧情摘要：{ summary, pending_turns }
+// 摘要列表：{ entries: [{id, round_from, round_to, text, created_at}], pending_turns }
 export function getChatSummary(token, auth = '') {
   return playerSaveReq('/api/chat/summary', { token, auth })
 }
 
-// 全量写回剧情摘要
-export function saveChatSummary(token, auth = '', summary) {
-  return playerSaveReq('/api/chat/summary', {
+// 手动补录一条摘要，返回 { ok, id }
+export function addChatSummaryEntry(token, auth = '', text) {
+  return playerSaveReq('/api/chat/summary/entries', {
+    token,
+    auth,
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  })
+}
+
+// 修改一条摘要的文本
+export function editChatSummaryEntry(token, auth = '', id, text) {
+  return playerSaveReq(`/api/chat/summary/entries/${id}`, {
     token,
     auth,
     method: 'PUT',
-    body: JSON.stringify({ summary }),
+    body: JSON.stringify({ text }),
   })
+}
+
+// 删除一条摘要
+export function deleteChatSummaryEntry(token, auth = '', id) {
+  return playerSaveReq(`/api/chat/summary/entries/${id}`, { token, auth, method: 'DELETE' })
 }
 
 // 主提示词预设列表（内置只读）：[{ key, name, description, content }]

@@ -15,6 +15,14 @@ import (
 	"nhooyr.io/websocket/wsjson"
 )
 
+// echoAgent 测试用 Agent：回复 "回复:<输入>"，用于观测（重试）重放的输入文本。
+type echoAgent struct{}
+
+func (echoAgent) AgentID() string { return "kp" }
+func (echoAgent) Chat(ctx *core.MessageContext, _ *core.Session) (string, error) {
+	return "回复:" + ctx.Content, nil
+}
+
 // newRegenTestServer 启动带聊天记录存储（可选世界引擎）的 WS 测试服务。
 func newRegenTestServer(t *testing.T, withWorld bool) (*httptest.Server, *ChatHistoryStore, *world.Engine) {
 	t.Helper()
@@ -29,7 +37,11 @@ func newRegenTestServer(t *testing.T, withWorld bool) (*httptest.Server, *ChatHi
 	}
 
 	sessions := core.NewSessionManager()
-	router := core.NewRouter(core.NewPluginManager(), sessions)
+	plugins := core.NewPluginManager()
+	if err := plugins.RegisterAgent(echoAgent{}); err != nil {
+		t.Fatalf("注册测试 Agent 失败: %v", err)
+	}
+	router := core.NewRouter(plugins, sessions)
 	srv := NewServer(Config{}, router, sessions)
 	srv.SetChatHistory(history)
 
@@ -201,6 +213,55 @@ func TestWebChannel_RegenRestoresSnapshot(t *testing.T) {
 	// 世界状态应回滚到快照（RoundCount=5，无回合落账的 RecentTurns）
 	got := engine.LoadOrNil(sessionID)
 	if got == nil || got.RoundCount != 5 || len(got.RecentTurns) != 0 {
+		t.Fatalf("世界状态应回滚到快照: %+v", got)
+	}
+}
+
+// 编辑玩家发言后重试：重放输入应取聊天历史里的当前文本（编辑后），而非快照原文；
+// 世界状态仍回滚到快照。
+func TestWebChannel_RegenUsesEditedUserText(t *testing.T) {
+	ts, history, engine := newRegenTestServer(t, true)
+	defer ts.Close()
+
+	token := getToken(t, ts.URL)
+	sessionID := "web:" + token
+
+	// 会话世界：回合前快照（原文"冲进去"），随后模拟回合落账
+	ws := world.NewWorldState(sessionID, world.ModeSimRPG)
+	ws.RoundCount = 5
+	if err := engine.Save(ws); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.SaveTurnSnapshot(sessionID, ws, "冲进去"); err != nil {
+		t.Fatal(err)
+	}
+	mutated := engine.LoadOrNil(sessionID)
+	mutated.RoundCount = 6
+	mutated.AppendTurn("冲进去", "旧回复")
+	if err := engine.Save(mutated); err != nil {
+		t.Fatal(err)
+	}
+
+	// 历史：user + reply，随后玩家编辑自己的发言
+	userID := history.Add(sessionID, "user", "冲进去")
+	replyID := history.Add(sessionID, "reply", "旧回复")
+	if err := history.UpdateActiveText(userID, "悄悄推门"); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := dialChat(t, ts.URL, token)
+	sendWS(t, conn, wsMessage{Type: "regen", RefID: replyID})
+	regen := readUntil(t, conn, "reply")
+	if regen.RefID != replyID || regen.VersionNo != 2 {
+		t.Fatalf("重试 reply 帧错误: %+v", regen)
+	}
+	if regen.Text != "回复:悄悄推门" {
+		t.Fatalf("重试应按编辑后的发言重跑，得到: %q", regen.Text)
+	}
+
+	// 世界状态仍回滚到快照（RoundCount=5）
+	got := engine.LoadOrNil(sessionID)
+	if got == nil || got.RoundCount != 5 {
 		t.Fatalf("世界状态应回滚到快照: %+v", got)
 	}
 }

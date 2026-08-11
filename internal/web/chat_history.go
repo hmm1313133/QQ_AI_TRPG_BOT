@@ -51,6 +51,8 @@ type ChatLogger interface {
 	HasNewerUserAfter(sessionID string, messageID int64) (bool, error)
 	// UserTextBefore 取指定消息之前最近一条 user 消息文本（无快照重试的兜底输入）。
 	UserTextBefore(sessionID string, messageID int64) (string, bool)
+	// DeleteMessage 删除一条消息（级联删版本行；校验属于该会话）。
+	DeleteMessage(sessionID string, messageID int64) error
 }
 
 // ChatMessage 一条聊天记录。
@@ -358,16 +360,37 @@ func (s *ChatHistoryStore) UserTextBefore(sessionID string, messageID int64) (st
 	return text, true
 }
 
+// DeleteMessage 删除一条消息（事务内级联删版本行；不存在或不属于该会话返回错误）。
+func (s *ChatHistoryStore) DeleteMessage(sessionID string, messageID int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM chat_messages WHERE id = ? AND session_id = ?`, messageID, sessionID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("消息不存在或不属于本会话")
+	}
+	if _, err := tx.Exec(`DELETE FROM chat_reply_versions WHERE message_id = ?`, messageID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // SetChatHistory 配置聊天记录存储（Start 前调用；nil 则历史功能关闭）。
 func (s *Server) SetChatHistory(st ChatLogger) {
 	s.history = st
 }
 
-// recordChat 记录一条聊天消息（存储未配置或失败时静默跳过）。
-func (s *Server) recordChat(sessionID, typ, text string) {
+// recordChat 记录一条聊天消息，返回新行 id（存储未配置或失败时静默返回 0）。
+func (s *Server) recordChat(sessionID, typ, text string) int64 {
 	if s.history != nil {
-		s.history.Add(sessionID, typ, text)
+		return s.history.Add(sessionID, typ, text)
 	}
+	return 0
 }
 
 // handleChatHistory 返回会话最近聊天记录（鉴权与玩家侧存档一致：auth + token）。

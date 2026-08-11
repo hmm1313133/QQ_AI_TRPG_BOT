@@ -32,8 +32,14 @@ type WorldState struct {
 
 	// Background 是不可变的剧本/世界设定（旧 StoryContext 拆分而来）。
 	Background string `json:"background"`
-	// CampaignSummary 是滚动更新的战役摘要（不再覆盖 Background）。
+	// Deprecated: 滚动单条摘要已被 Summaries（阶段性多条摘要）取代。
+	// 仅为兼容既有存储中的 JSON 保留；读取经 SummaryEntries() 懒迁移视图，
+	// 首次 AppendSummary 时迁移为 Summaries 首条并清空本字段。
 	CampaignSummary string `json:"campaign_summary,omitempty"`
+	// Summaries 阶段性剧情摘要：对话轮滑出 RecentTurns 窗口后攒批总结，
+	// 一个批次追加一条（不再滚动合并成单条）。注入上下文时按顺序全量列出，
+	// 与 RecentTurns 窗口一起构成跨轮叙事连续性（远期剧情由本列表承载）。
+	Summaries []SummaryEntry `json:"summaries,omitempty"`
 	// ReplyStyle 是本世界的回复风格指令（自由文本，如"冷峻克苏鲁风，重对话少环境铺陈"），
 	// 非空时每轮经 ContextBuilder 注入 Narrator（Author's Note 位置）。
 	// 兼容回退：Style 为 nil 或 Style.Core 为空时，本字段充当 Style.Core。
@@ -70,10 +76,10 @@ type WorldState struct {
 	// SkillUses 待结算的技能成功使用记录（成长闭环，幕间统一结算）。
 	SkillUses  []SkillUseRecord           `json:"skill_uses,omitempty"`
 	// RecentTurns 最近对话回合（短期记忆窗口，环形保留最近 RecentTurnsCap 轮）。
-	// Narrator 是无状态调用，跨轮叙事连续性由本窗口 + CampaignSummary（滚动剧情摘要）承载。
+	// Narrator 是无状态调用，跨轮叙事连续性由本窗口 + Summaries（阶段摘要）承载。
 	RecentTurns []DialogueTurn            `json:"recent_turns,omitempty"`
-	// PendingSummaryTurns 从 RecentTurns 窗口淘汰、等待并入剧情摘要的对话轮。
-	// 攒够 summary_chunk_size 轮后由 SummaryService 异步合并进 CampaignSummary。
+	// PendingSummaryTurns 从 RecentTurns 窗口淘汰、等待总结的对话轮。
+	// 攒够 summary_chunk_size 轮后由 SummaryService 异步总结为一条阶段摘要（Summaries）。
 	PendingSummaryTurns []DialogueTurn    `json:"pending_summary_turns,omitempty"`
 	Metrics    Metrics                    `json:"metrics"`
 	RoundCount int                        `json:"round_count"`
@@ -137,6 +143,73 @@ func (ws *WorldState) AppendTurn(player, narrator string) []DialogueTurn {
 		return evicted
 	}
 	return nil
+}
+
+// ============================================================
+// 阶段性剧情摘要
+// ============================================================
+
+// SummaryEntry 一条阶段性剧情摘要（覆盖 RoundFrom~RoundTo 轮；手动补录的条目轮次为 0）。
+type SummaryEntry struct {
+	ID        int    `json:"id"`
+	RoundFrom int    `json:"round_from,omitempty"`
+	RoundTo   int    `json:"round_to,omitempty"`
+	Text      string `json:"text"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// SummaryEntries 返回阶段摘要列表（只读视图）。
+// 旧数据只有 CampaignSummary 时返回懒迁移视图（不落库，首次 AppendSummary 才真正迁移）。
+func (ws *WorldState) SummaryEntries() []SummaryEntry {
+	if len(ws.Summaries) == 0 {
+		if legacy := strings.TrimSpace(ws.CampaignSummary); legacy != "" {
+			return []SummaryEntry{{ID: 1, Text: legacy}}
+		}
+	}
+	return ws.Summaries
+}
+
+// AppendSummary 追加一条阶段摘要，返回新条目 ID。
+// 旧 CampaignSummary 未迁移时先迁移为首条（保持时间顺序）并清空 legacy 字段。
+func (ws *WorldState) AppendSummary(text string, roundFrom, roundTo int, createdAt string) int {
+	if legacy := strings.TrimSpace(ws.CampaignSummary); legacy != "" {
+		ws.CampaignSummary = ""
+		ws.Summaries = append([]SummaryEntry{{Text: legacy}}, ws.Summaries...)
+		for i := range ws.Summaries {
+			ws.Summaries[i].ID = i + 1
+		}
+	}
+	id := 1
+	if n := len(ws.Summaries); n > 0 {
+		id = ws.Summaries[n-1].ID + 1
+	}
+	ws.Summaries = append(ws.Summaries, SummaryEntry{
+		ID: id, RoundFrom: roundFrom, RoundTo: roundTo,
+		Text: text, CreatedAt: createdAt,
+	})
+	return id
+}
+
+// EditSummary 按 ID 修改条目文本（不存在返回 false）。
+func (ws *WorldState) EditSummary(id int, text string) bool {
+	for i := range ws.Summaries {
+		if ws.Summaries[i].ID == id {
+			ws.Summaries[i].Text = text
+			return true
+		}
+	}
+	return false
+}
+
+// DeleteSummary 按 ID 删除条目（不存在返回 false）。
+func (ws *WorldState) DeleteSummary(id int) bool {
+	for i := range ws.Summaries {
+		if ws.Summaries[i].ID == id {
+			ws.Summaries = append(ws.Summaries[:i], ws.Summaries[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // WorldClock 世界时钟（设计文档 4.2）。

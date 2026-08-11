@@ -98,17 +98,43 @@ func (r *JSONRepository) Save(state *WorldState) error {
 		_ = os.Rename(path, path+".bak")
 	}
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := writeFileWithRetry(tmpPath, data, 0644); err != nil {
 		return fmt.Errorf("写入 WorldState 文件失败: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := renameWithRetry(tmpPath, path); err != nil {
 		// Windows 上目标已存在时 rename 失败，回退为 remove+rename
 		_ = os.Remove(path)
-		if err2 := os.Rename(tmpPath, path); err2 != nil {
+		if err2 := renameWithRetry(tmpPath, path); err2 != nil {
 			return fmt.Errorf("重命名 WorldState 文件失败: %w", err2)
 		}
 	}
 	return nil
+}
+
+// Windows 上杀毒/索引软件会短暂锁住刚创建或刚写入的文件，
+// 导致 WriteFile/Rename 偶发 "being used by another process"，重试几次规避。
+const winLockRetries = 5
+
+func writeFileWithRetry(path string, data []byte, perm os.FileMode) error {
+	var err error
+	for i := 0; i < winLockRetries; i++ {
+		if err = os.WriteFile(path, data, perm); err == nil {
+			return nil
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	return err
+}
+
+func renameWithRetry(oldPath, newPath string) error {
+	var err error
+	for i := 0; i < winLockRetries; i++ {
+		if err = os.Rename(oldPath, newPath); err == nil {
+			return nil
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	return err
 }
 
 // Delete 删除世界状态。

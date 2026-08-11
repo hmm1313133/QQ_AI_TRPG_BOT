@@ -116,6 +116,16 @@ export const assetApi = {
     method: 'POST',
     body: JSON.stringify({ text }),
   }),
+  // AI 补全：根据已有草稿生成补充素材（不落库）
+  complete: (drafts) => adminReq('/api/admin/assets/complete', {
+    method: 'POST',
+    body: JSON.stringify({ drafts }),
+  }),
+  // 解析草稿直接生成世界：{ name, mode, drafts } -> { world_id, name, errors }
+  createWorldFromDrafts: (body) => adminReq('/api/admin/worlds/from-drafts', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
   // 批量入库：{ assets: [{kind, name, tags, summary, source, payload}] } -> { created, errors }
   batchCreate: (assets) => adminReq('/api/admin/assets/library/batch', {
     method: 'POST',

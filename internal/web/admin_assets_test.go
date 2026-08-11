@@ -13,6 +13,92 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
+// lore 素材：库导入世界（skip/overwrite）、反向收藏、跨世界复制。
+func TestAdmin_LoreAssetImport(t *testing.T) {
+	ts, deps := newAssetTestServer(t)
+	defer ts.Close()
+
+	// 创建 lore 素材
+	resp := adminReq(t, "POST", ts.URL+"/api/admin/assets/library",
+		`{"kind":"lore","name":"祭山神仪式","payload":{"title":"祭山神仪式","category":"rule","keys":["山神"],"content":"每年霜降后第一个逢七的日子……"}}`)
+	var asset world.Asset
+	readJSON(t, resp, &asset)
+	if asset.ID == "" {
+		t.Fatal("lore 素材应创建成功")
+	}
+
+	// 目标世界
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds",
+		`{"world_id":"w_lore","mode":"simrpg","background":"测试世界"}`)
+	resp.Body.Close()
+
+	// 导入 → 落进设定库
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds/w_lore/assets/import",
+		`{"library":["`+asset.ID+`"]}`)
+	var result map[string]any
+	readJSON(t, resp, &result)
+	if int(result["imported"].(float64)) != 1 {
+		t.Fatalf("lore 应导入成功: %+v", result)
+	}
+	ws := deps.WorldEngine.LoadOrNil("w_lore")
+	var entry *world.LoreEntry
+	for i := range ws.Lore {
+		if ws.Lore[i].Title == "祭山神仪式" {
+			entry = &ws.Lore[i]
+		}
+	}
+	if entry == nil || entry.Category != "rule" || !entry.Enabled || entry.ID == "" {
+		t.Fatalf("lore 应落进设定库: %+v", ws.Lore)
+	}
+
+	// 重复导入 → 冲突跳过；overwrite → 覆盖
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds/w_lore/assets/import",
+		`{"library":["`+asset.ID+`"]}`)
+	result = map[string]any{}
+	readJSON(t, resp, &result)
+	if len(result["conflicts"].([]any)) != 1 {
+		t.Fatalf("重复导入应冲突: %+v", result)
+	}
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds/w_lore/assets/import",
+		`{"library":["`+asset.ID+`"],"on_conflict":"overwrite"}`)
+	result = map[string]any{}
+	readJSON(t, resp, &result)
+	if int(result["imported"].(float64)) != 1 {
+		t.Fatalf("overwrite 应导入: %+v", result)
+	}
+
+	// 反向收藏：世界设定条目 → lore 素材
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds/w_lore/assets/collect",
+		`{"kind":"lore","name":"祭山神仪式"}`)
+	var collected world.Asset
+	readJSON(t, resp, &collected)
+	if collected.Kind != "lore" || collected.Name != "祭山神仪式" {
+		t.Fatalf("收藏 lore 素材失败: %+v", collected)
+	}
+
+	// 跨世界复制：w_lore → w_lore2
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds",
+		`{"world_id":"w_lore2","mode":"simrpg","background":"另一个世界"}`)
+	resp.Body.Close()
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds/w_lore2/assets/import",
+		`{"copy":[{"world_id":"w_lore","kind":"lore","name":"祭山神仪式"}]}`)
+	result = map[string]any{}
+	readJSON(t, resp, &result)
+	if int(result["imported"].(float64)) != 1 {
+		t.Fatalf("跨世界复制 lore 应成功: %+v", result)
+	}
+	ws2 := deps.WorldEngine.LoadOrNil("w_lore2")
+	found := false
+	for _, e := range ws2.Lore {
+		if e.Title == "祭山神仪式" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("复制的 lore 应落进目标世界设定库: %+v", ws2.Lore)
+	}
+}
+
 // newAssetTestServer 启动 SQLite 存储 + 素材库的管理后台测试服务。
 func newAssetTestServer(t *testing.T) (*httptest.Server, AdminDeps) {
 	t.Helper()

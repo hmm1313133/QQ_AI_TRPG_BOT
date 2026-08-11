@@ -118,7 +118,7 @@ func (e *Engine) RestoreTurnSnapshot(worldID string) (userText string, ok bool, 
 
 // UpdateRecentNarrator 把 RecentTurns 窗口内最后一处 Narrator == oldText 替换为 newText
 // 并落库（编辑/版本切换后同步 LLM 近期对话上下文；窗口内未命中则静默跳过，尽力而为）。
-// 已知限制：已并入 PendingSummaryTurns / CampaignSummary 的文本不回改。
+// 已知限制：已并入 PendingSummaryTurns / Summaries 的文本不回改。
 func (e *Engine) UpdateRecentNarrator(worldID, oldText, newText string) error {
 	if oldText == "" || oldText == newText {
 		return nil
@@ -134,6 +134,59 @@ func (e *Engine) UpdateRecentNarrator(worldID, oldText, newText string) error {
 			ws.RecentTurns[i].Narrator = newText
 			return e.repo.Save(ws)
 		}
+	}
+	return nil
+}
+
+// UpdateRecentPlayer 把 RecentTurns 窗口内最后一处 Player == oldText 替换为 newText
+// 并落库（编辑玩家发言后同步 LLM 近期对话上下文；窗口内未命中则静默跳过，尽力而为）。
+// 已知限制同 UpdateRecentNarrator：已并入摘要的文本不回改。
+func (e *Engine) UpdateRecentPlayer(worldID, oldText, newText string) error {
+	if oldText == "" || oldText == newText {
+		return nil
+	}
+	e.Lock(worldID)
+	defer e.Unlock(worldID)
+	ws := e.LoadOrNil(worldID)
+	if ws == nil {
+		return nil
+	}
+	for i := len(ws.RecentTurns) - 1; i >= 0; i-- {
+		if ws.RecentTurns[i].Player == oldText {
+			ws.RecentTurns[i].Player = newText
+			return e.repo.Save(ws)
+		}
+	}
+	return nil
+}
+
+// RemoveRecentText 删除聊天消息后同步 RecentTurns：在窗口内找最后一处
+// Player 或 Narrator 等于 text 的轮次，清空对应字段；若该轮两个字段都空了
+// 则整轮移除。未命中静默跳过（尽力而为）。
+func (e *Engine) RemoveRecentText(worldID, text string) error {
+	if text == "" {
+		return nil
+	}
+	e.Lock(worldID)
+	defer e.Unlock(worldID)
+	ws := e.LoadOrNil(worldID)
+	if ws == nil {
+		return nil
+	}
+	for i := len(ws.RecentTurns) - 1; i >= 0; i-- {
+		turn := &ws.RecentTurns[i]
+		switch {
+		case turn.Narrator == text:
+			turn.Narrator = ""
+		case turn.Player == text:
+			turn.Player = ""
+		default:
+			continue
+		}
+		if turn.Player == "" && turn.Narrator == "" {
+			ws.RecentTurns = append(ws.RecentTurns[:i], ws.RecentTurns[i+1:]...)
+		}
+		return e.repo.Save(ws)
 	}
 	return nil
 }
@@ -440,16 +493,6 @@ func (e *Engine) RecordDecision(worldID, action, outcome string) error {
 	if err != nil {
 		return err
 	}
-	return e.repo.Save(state)
-}
-
-// UpdateSummary 更新战役摘要（写入 CampaignSummary，不再覆盖 Background）。
-func (e *Engine) UpdateSummary(worldID, summary string) error {
-	state, err := e.repo.Load(worldID)
-	if err != nil {
-		return err
-	}
-	state.CampaignSummary = summary
 	return e.repo.Save(state)
 }
 

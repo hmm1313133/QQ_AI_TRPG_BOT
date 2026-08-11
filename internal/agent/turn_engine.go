@@ -363,8 +363,12 @@ func (t *TurnEngine) refreshPlan(ctx context.Context, state *world.WorldState, p
 		// 兜底：无 lore 条目命中时回退 Background（如条目被清空的旧世界）
 		scriptContext = state.Background
 	}
-	if state.CampaignSummary != "" {
-		scriptContext += "\n剧情摘要: " + state.CampaignSummary
+	if entries := state.SummaryEntries(); len(entries) > 0 {
+		parts := make([]string, 0, len(entries))
+		for _, e := range entries {
+			parts = append(parts, e.Text)
+		}
+		scriptContext += "\n剧情摘要: " + strings.Join(parts, "；")
 	}
 
 	directive, err := t.director.Decide(ctx, state, playerMessage, scriptContext, sessionID)

@@ -1,4 +1,4 @@
-# Voyage World Engine
+# QQ AI TRPG Bot
 
 纯 Web 的 AI 世界引擎 / 角色扮演平台。基于 AI 多层架构（Director + Narrator）、确定性世界引擎、设定库（Lorebook）与素材库，通过浏览器聊天页进行沉浸式文字扮演，并配备可视化管理后台（世界编辑器 / 素材库 / 配置中心）。
 

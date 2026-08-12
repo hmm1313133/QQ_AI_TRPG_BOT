@@ -1,4 +1,4 @@
-// Package main is the entry point for Voyage World Engine.
+// Package main is the entry point for QQ AI TRPG Bot.
 //
 // Architecture:
 //   - Core Layer (core): session/router/plugin abstractions
@@ -174,7 +174,7 @@ func main() {
 	}
 
 	// 11. Start
-	log.Infof("Voyage World Engine 已启动")
+	log.Infof("QQ AI TRPG Bot 已启动")
 	log.Infof("架构: 世界引擎(WorldState) + AI多层(Director->Narrator) + Web 渠道")
 	log.Infof("世界状态: %s", worldDir)
 
@@ -184,7 +184,7 @@ func main() {
 	sig := <-sigCh
 
 	fmt.Printf("\n收到信号 %v，正在关闭...\n", sig)
-	log.Infof("Voyage World Engine 已停止")
+	log.Infof("QQ AI TRPG Bot 已停止")
 }
 
 func getEnv(key, fallback string) string {

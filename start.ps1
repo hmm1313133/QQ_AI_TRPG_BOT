@@ -1,4 +1,4 @@
-﻿# Voyage World Engine 启动脚本 (PowerShell)
+﻿# QQ AI TRPG Bot 启动脚本 (PowerShell)
 # 用法: .\start.ps1
 
 $ErrorActionPreference = "Stop"
@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Voyage World Engine 启动脚本" -ForegroundColor Cyan
+Write-Host "  QQ AI TRPG Bot 启动脚本" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # 读取 .env 文件并设置环境变量

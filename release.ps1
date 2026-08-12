@@ -1,4 +1,4 @@
-# QQ AI TRPG Bot 一键发布打包脚本
+﻿# QQ AI TRPG Bot 一键发布打包脚本
 # 用法: .\release.ps1
 # 产物: dist/qq-ai-trpg-bot-<version>-windows-amd64.zip
 
@@ -113,7 +113,8 @@ echo.
 bot.exe
 pause
 '@
-$startScript | Out-File -FilePath "$workDir\start.bat" -Encoding utf8
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText("$workDir\start.bat", $startScript, $utf8NoBom)
 
 #   PowerShell 启动脚本
 $startPsScript = @'
@@ -155,7 +156,7 @@ Write-Host ""
 
 & "$PSScriptRoot\bot.exe"
 '@
-$startPsScript | Out-File -FilePath "$workDir\start.ps1" -Encoding utf8
+[System.IO.File]::WriteAllText("$workDir\start.ps1", $startPsScript, $utf8NoBom)
 
 #   快速开始说明
 $readme = @'
@@ -222,7 +223,7 @@ A: 检查 .env 中 LLM_API_KEY 是否正确
 Q: 如何重置数据
 A: 删除 data/ 目录下的 .db 文件后重启
 '@
-$readme | Out-File -FilePath "$workDir\README.txt" -Encoding utf8
+[System.IO.File]::WriteAllText("$workDir\README.txt", $readme, $utf8NoBom)
 
 Write-Host "[OK] 发布目录组装完成" -ForegroundColor Green
 

@@ -17,14 +17,16 @@ func (s *Server) registerChatWorldRoutes(mux *http.ServeMux) {
 // chatWorldBrief 可进入世界的列表项。
 type chatWorldBrief struct {
 	ID             string `json:"id"`
+	Name           string `json:"name"` // 显示名（Name/ScriptName 回退，可为空）
 	Mode           string `json:"mode"`
 	ScriptName     string `json:"script_name,omitempty"`
 	Background     string `json:"background,omitempty"` // 背景摘要（前 20 字）
 	RoundCount     int    `json:"round_count"`
 	CharacterCount int    `json:"character_count"`
+	HasProgress    bool   `json:"has_progress"` // 本会话在该世界有自动保存的进度快照
 }
 
-// handleChatWorlds 返回当前会话状态与可进入的世界列表（排除当前会话自己的世界）。
+// handleChatWorlds 返回当前会话状态与可进入的世界列表（排除会话实例世界与进度快照）。
 func (s *Server) handleChatWorlds(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.ChatToken != "" && r.URL.Query().Get("auth") != s.cfg.ChatToken {
 		http.Error(w, "未授权", http.StatusUnauthorized)
@@ -53,8 +55,8 @@ func (s *Server) handleChatWorlds(w http.ResponseWriter, r *http.Request) {
 	}
 	list := []chatWorldBrief{}
 	for _, id := range ids {
-		if id == worldID {
-			continue // 排除当前会话自己的世界
+		if isHiddenWorldID(id) {
+			continue // 会话实例世界（含其他玩家的）与进度快照不可直接进入
 		}
 		ws := s.adminDeps.WorldEngine.LoadOrNil(id)
 		if ws == nil {
@@ -62,11 +64,13 @@ func (s *Server) handleChatWorlds(w http.ResponseWriter, r *http.Request) {
 		}
 		list = append(list, chatWorldBrief{
 			ID:             ws.WorldID,
+			Name:           ws.DisplayName(),
 			Mode:           ws.Mode,
 			ScriptName:     ws.ScriptName,
 			Background:     firstRunes(ws.Background, 20),
 			RoundCount:     ws.RoundCount,
 			CharacterCount: len(ws.Characters),
+			HasProgress:    s.adminDeps.WorldEngine.LoadOrNil(snapshotWorldID(worldID, id)) != nil,
 		})
 	}
 	resp["worlds"] = list

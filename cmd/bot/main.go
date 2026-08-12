@@ -112,10 +112,21 @@ func main() {
 		log.Fatalf("初始化 Narrator 失败: %v", err)
 	}
 
+	// 6c. Initialize AI guidance (每轮 AI 叙事指导，低成本模型，超时/失败降级规则版)
+	guider, err := agent.NewAIGuidance(&agent.Config{
+		LLMModel:   getEnv("LLM_MODEL", "deepseek-v4-flash"),
+		LLMAPIKey:  os.Getenv("LLM_API_KEY"),
+		LLMBaseURL: getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
+	})
+	if err != nil {
+		log.Fatalf("初始化 AI 叙事指导失败: %v", err)
+	}
+
 	turnEngine := agent.NewTurnEngine(narrator, director, metricsEvaluator, worldEngine,
 		agent.NewContextBuilder(0), agent.DefaultPlanInterval)
 
 	kpAgent.SetTurnEngine(turnEngine)
+	turnEngine.SetGuider(guider)
 	turnEngine.SetPersonaStore(personaStore)
 	kpAgent.SetPersonaStore(personaStore)
 
@@ -138,6 +149,7 @@ func main() {
 	cfgStore.Seed(config.KeyLoreRecursion, "false")
 	cfgStore.Seed(config.KeyPlanInterval, "8")
 	cfgStore.Seed(config.KeySummaryChunk, "6")
+	cfgStore.Seed(config.KeyAIGuidance, "true")
 	// 新键启动时从 env 播种（env 仅作初始值，之后以 DB 为准）
 	cfgStore.Seed(config.KeyLLMAPIKey, os.Getenv("LLM_API_KEY"))
 	cfgStore.Seed(config.KeyLLMBaseURL, getEnv("LLM_BASE_URL", "https://api.deepseek.com"))

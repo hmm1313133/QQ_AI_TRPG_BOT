@@ -346,7 +346,7 @@ func (a *adminAPI) handleWorldFromDrafts(w http.ResponseWriter, r *http.Request)
 		world.ApplyWorldview(state, &world.Worldview{Lore: loreEntries}, false)
 	}
 	if name := strings.TrimSpace(req.Name); name != "" {
-		state.ScriptName = name
+		state.Name = name
 	}
 	if err := a.deps.WorldEngine.Save(state); err != nil {
 		a.deps.WorldEngine.Unlock(worldID)
@@ -357,7 +357,7 @@ func (a *adminAPI) handleWorldFromDrafts(w http.ResponseWriter, r *http.Request)
 
 	writeJSON(w, map[string]any{
 		"world_id": worldID,
-		"name":     state.ScriptName,
+		"name":     state.DisplayName(),
 		"errors":   errs,
 	})
 }

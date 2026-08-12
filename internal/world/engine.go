@@ -285,6 +285,8 @@ func (e *Engine) ApplyEvent(ws *WorldState, ev WorldEvent) (bool, error) {
 		matched = e.applyFactInvalidate(ws, ev)
 	case "decision", "note":
 		matched = true // 纯日志型事件
+	case "rename":
+		matched = applyRename(ws, ev)
 	default:
 		return false, fmt.Errorf("未知事件类型: %s", ev.Type)
 	}
@@ -296,6 +298,20 @@ func (e *Engine) ApplyEvent(ws *WorldState, ev WorldEvent) (bool, error) {
 		}
 	}
 	return matched, nil
+}
+
+// applyRename 重命名世界（仅显示名，不改 WorldID）。空名或与现名相同不命中。
+func applyRename(ws *WorldState, ev WorldEvent) bool {
+	name := strings.TrimSpace(ev.Value)
+	if name == "" || name == ws.Name {
+		return false
+	}
+	runes := []rune(name)
+	if len(runes) > 50 {
+		name = string(runes[:50])
+	}
+	ws.Name = name
+	return true
 }
 
 // ApplyEvents 批量应用，返回命中条数。

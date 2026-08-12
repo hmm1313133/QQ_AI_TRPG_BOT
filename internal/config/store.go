@@ -30,6 +30,7 @@ const (
 	KeyLoreRecursion    = "lore_recursion"
 	KeyPlanInterval     = "plan_interval"
 	KeySummaryChunk     = "summary_chunk_size"
+	KeyAIGuidance       = "ai_guidance"
 	KeyLLMAPIKey        = "llm_api_key"
 	KeyLLMBaseURL       = "llm_base_url"
 	KeyWebChatToken     = "web_chat_token"
@@ -69,6 +70,7 @@ var KeyRegistry = []KeyMeta{
 	{Key: KeyLoreRecursion, Label: "设定库递归扫描开关", Group: "上下文与记忆", Type: "bool", Scope: ScopeHot},
 	{Key: KeySummaryChunk, Label: "剧情摘要批次·轮（默认6）", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
 	{Key: KeyPlanInterval, Label: "场景计划间隔·轮", Group: "时间轴", Type: "number", Scope: ScopeHot},
+	{Key: KeyAIGuidance, Label: "AI 叙事指导开关（关闭后退回规则指导）", Group: "导演系统", Type: "bool", Scope: ScopeHot},
 }
 
 // Meta 查询键的注册元数据；未注册返回 false。
@@ -95,6 +97,7 @@ var HotKeys = map[string]bool{
 	KeyLoreBudget:      true,
 	KeyLoreScanRounds:  true,
 	KeyLoreRecursion:   true,
+	KeyAIGuidance:      true,
 }
 
 // Store 是 SQLite 配置存储。

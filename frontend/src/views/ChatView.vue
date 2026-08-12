@@ -70,20 +70,21 @@
     <!-- 进入世界 -->
     <el-dialog v-model="worldsVisible" title="进入世界" width="520px">
       <div v-if="currentWorldId" class="empty" style="padding:0 0 10px">
-        当前正在世界「{{ currentWorldName || currentWorldId }}」中，进入新世界前会先退出当前世界（清除当前进度，进度可先在「存档」中备份）
+        当前正在世界「{{ currentWorldName || currentWorldId }}」中，进入新世界前会先退出当前世界（进度自动保存，可随时回来继续）
       </div>
       <div v-if="worldsLoading" class="empty">加载中…</div>
       <div v-else-if="!worldList.length" class="empty">暂无可进入的世界（请先在管理后台创建）</div>
       <el-radio-group v-else v-model="selectedWorldId" class="world-list">
         <el-radio v-for="w in worldList" :key="w.id" :value="w.id" class="world-item">
-          <b>{{ w.id }}</b> <span class="muted">[{{ w.mode }}]</span>
+          <b>{{ w.name || w.background || w.id }}</b> <span class="muted">[{{ w.mode }}]</span>
+          <el-tag v-if="w.has_progress" size="small" type="success" effect="plain">有进度</el-tag>
           {{ w.background || '（无描述）' }}
           <span class="muted">轮次 {{ w.round_count }} · 角色 {{ w.character_count }}</span>
         </el-radio>
       </el-radio-group>
       <template #footer>
         <el-button size="small" @click="worldsVisible = false">取消</el-button>
-        <el-button type="primary" size="small" :disabled="!selectedWorldId" :loading="worldBusy" @click="enterSelectedWorld">进入</el-button>
+        <el-button type="primary" size="small" :disabled="!selectedWorldId" :loading="worldBusy" @click="enterSelectedWorld">{{ selectedHasProgress ? '继续' : '进入' }}</el-button>
       </template>
     </el-dialog>
 
@@ -223,7 +224,8 @@
           <div class="side-title">世界</div>
           <div v-if="currentWorldId" class="world-now">
             <div class="world-now-name">当前：{{ currentWorldName || currentWorldId }}</div>
-            <button class="header-btn persona-btn" @click="openWorlds">切换世界…</button>
+            <button class="header-btn persona-btn" @click="renameCurrentWorld">改名…</button>
+            <button class="header-btn persona-btn" style="margin-top:6px" @click="openWorlds">切换世界…</button>
             <button class="header-btn persona-btn" style="margin-top:6px" @click="goWorldState">世界状态…</button>
             <button class="header-btn persona-btn" style="margin-top:6px" @click="summaryVisible = true">剧情摘要…</button>
             <button class="header-btn persona-btn" style="margin-top:6px" @click="leaveCurrentWorld">离开世界</button>
@@ -682,14 +684,19 @@ async function openWorlds() {
   }
 }
 
-// 确认进入：已有进行中世界时二次确认，先离开再进入（会清除当前进度）
+// 选中世界是否有已保存的进度（决定按钮文案与成功提示）
+const selectedHasProgress = computed(
+  () => !!worldList.value.find((w) => w.id === selectedWorldId.value)?.has_progress
+)
+
+// 确认进入：已有进行中世界时二次确认，先离开（自动保存进度）再进入
 async function enterSelectedWorld() {
   const id = selectedWorldId.value
   if (!id) return
   if (currentWorldId.value) {
     try {
       await ElMessageBox.confirm(
-        '进入新世界会先退出当前世界并清除当前进度（可在「存档」中提前备份）。继续？',
+        '进入新世界会先退出当前世界（当前进度自动保存，可随时回来继续）。继续？',
         '进入世界',
         { type: 'warning', confirmButtonText: '退出并进入', cancelButtonText: '取消' }
       )
@@ -706,7 +713,9 @@ async function enterSelectedWorld() {
     const r = await enterWorld(t, chatAuth, id)
     await loadChatState()
     worldsVisible.value = false
-    addMsg('system', `🌍 已进入世界「${r?.world_name || id}」`)
+    addMsg('system', r?.restored
+      ? `🌍 已进入世界「${r?.world_name || id}」，已恢复上次进度`
+      : `🌍 已进入世界「${r?.world_name || id}」`)
   } catch (e) {
     ElMessage.error('进入世界失败：' + e.message)
     loadChatState().catch(() => {})
@@ -715,10 +724,40 @@ async function enterSelectedWorld() {
   }
 }
 
+// 重命名当前世界：PUT /api/chat/state { world_name }，响应里的 world_name 优先返回真实名称
+async function renameCurrentWorld() {
+  if (!currentWorldId.value) return
+  let name
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新的世界名称：', '世界改名', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValue: currentWorldName.value || '',
+      inputValidator: (v) => {
+        const s = (v || '').trim()
+        if (!s) return '名称不能为空'
+        if ([...s].length > 50) return '名称不能超过 50 字'
+        return true
+      },
+    })
+    name = value.trim()
+  } catch {
+    return
+  }
+  try {
+    const t = await ensureToken()
+    applyState(await updateChatState(t, chatAuth, { world_name: name }))
+    ElMessage.success(`世界已改名为「${currentWorldName.value || name}」`)
+  } catch (e) {
+    ElMessage.error('改名失败：' + e.message)
+    loadChatState().catch(() => {})
+  }
+}
+
 async function leaveCurrentWorld() {
   try {
     await ElMessageBox.confirm(
-      '离开世界会清除本会话在该世界的进度（可在「存档」中提前备份）。继续？',
+      '离开世界会自动保存当前进度（与存档相互独立），下次进入该世界可继续。继续？',
       '离开世界',
       { type: 'warning', confirmButtonText: '离开世界', cancelButtonText: '取消' }
     )

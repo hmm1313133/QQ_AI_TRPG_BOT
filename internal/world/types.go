@@ -29,6 +29,9 @@ type WorldState struct {
 	ScriptID string `json:"script_id,omitempty"`
 	// Deprecated: 剧本系统已移除，字段仅为兼容既有存储中的 JSON 而保留，不再写入。
 	ScriptName string `json:"script_name,omitempty"`
+	// Name 世界显示名（玩家/管理端可编辑，经 ApplyEvent "rename" 修改）。
+	// 仅作展示用途，不参与任何逻辑定位；定位仍用 WorldID。
+	Name string `json:"name,omitempty"`
 
 	// Background 是不可变的剧本/世界设定（旧 StoryContext 拆分而来）。
 	Background string `json:"background"`
@@ -385,7 +388,7 @@ type Fact struct {
 // Type 取值：
 //   npc_disposition / hidden_discovered / event_triggered / objective_completed /
 //   mood_change / relation_change / quest_advance / lock / unlock /
-//   fact_add / fact_invalidate / decision / note
+//   fact_add / fact_invalidate / decision / note / rename
 type WorldEvent struct {
 	Type     string `json:"type"`
 	Actor    string `json:"actor,omitempty"`    // 行为发起者（玩家/NPC/引擎）
@@ -405,6 +408,15 @@ type Metrics struct {
 }
 
 // --- 辅助方法 ---
+
+// DisplayName 世界显示名：Name 优先，兼容旧数据回退 ScriptName；
+// 均无返回空串（由调用方自行回退为世界 ID 或背景摘要）。
+func (ws *WorldState) DisplayName() string {
+	if n := strings.TrimSpace(ws.Name); n != "" {
+		return n
+	}
+	return strings.TrimSpace(ws.ScriptName)
+}
 
 // NewWorldState 创建初始 WorldState。
 func NewWorldState(worldID, mode string) *WorldState {

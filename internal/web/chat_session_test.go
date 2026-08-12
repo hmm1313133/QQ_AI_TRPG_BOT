@@ -228,7 +228,11 @@ func TestChatWorld_EnterLeave(t *testing.T) {
 		t.Fatalf("已有世界时应 409: %d", resp.StatusCode)
 	}
 
-	// 离开 → ok，世界删除，切回 normal
+	// 制造一点进度（重命名会话世界），验证离开后进度快照可恢复
+	resp = chatReq(t, "PUT", ts.URL+"/api/chat/state?token=t1", `{"world_name":"我的边境小镇"}`)
+	resp.Body.Close()
+
+	// 离开 → ok，会话世界删除、进度快照落盘，切回 normal
 	resp = chatReq(t, "POST", ts.URL+"/api/chat/world/leave?token=t1", "")
 	var leaveResp map[string]bool
 	readJSON(t, resp, &leaveResp)
@@ -244,11 +248,105 @@ func TestChatWorld_EnterLeave(t *testing.T) {
 	if deps.WorldEngine.LoadOrNil("tpl") == nil {
 		t.Fatal("源世界模板不应被删除")
 	}
+	snapID := snapshotWorldID("web:t1", "tpl")
+	snap := deps.WorldEngine.LoadOrNil(snapID)
+	if snap == nil || snap.Name != "我的边境小镇" {
+		t.Fatalf("离开后应保存进度快照: %+v", snap)
+	}
+
+	// 再次进入同一世界 → 从进度快照恢复（restored=true），快照被消费
+	resp = chatReq(t, "POST", ts.URL+"/api/chat/world/enter?token=t1", `{"world_id":"tpl"}`)
+	var reenter struct {
+		OK       bool   `json:"ok"`
+		Restored bool   `json:"restored"`
+	}
+	readJSON(t, resp, &reenter)
+	if !reenter.OK || !reenter.Restored {
+		t.Fatalf("应恢复进度快照: %+v", reenter)
+	}
+	ws = deps.WorldEngine.LoadOrNil("web:t1")
+	if ws == nil || ws.Name != "我的边境小镇" {
+		t.Fatalf("恢复后应带进度: %+v", ws)
+	}
+	if deps.WorldEngine.LoadOrNil(snapID) != nil {
+		t.Fatal("进度快照恢复后应被消费")
+	}
+
+	// 再离开（供后续幂等断言），再进一个新世界验证无快照时 restored=false
+	resp = chatReq(t, "POST", ts.URL+"/api/chat/world/leave?token=t1", "")
+	resp.Body.Close()
+	if _, err := deps.WorldEngine.SeedWorld("tpl2", world.SeedSpec{
+		Mode: world.ModeSimRPG, Background: "幽暗森林",
+	}); err != nil {
+		t.Fatalf("播种失败: %v", err)
+	}
+	resp = chatReq(t, "POST", ts.URL+"/api/chat/world/enter?token=t1", `{"world_id":"tpl2"}`)
+	var fresh struct {
+		OK       bool `json:"ok"`
+		Restored bool `json:"restored"`
+	}
+	readJSON(t, resp, &fresh)
+	if !fresh.OK || fresh.Restored {
+		t.Fatalf("无进度快照应为全新进入: %+v", fresh)
+	}
+	resp = chatReq(t, "POST", ts.URL+"/api/chat/world/leave?token=t1", "")
+	readJSON(t, resp, &leaveResp)
 
 	// 幂等：再离开仍 ok
 	resp = chatReq(t, "POST", ts.URL+"/api/chat/world/leave?token=t1", "")
 	readJSON(t, resp, &leaveResp)
 	if !leaveResp["ok"] {
 		t.Fatal("重复离开应幂等返回 ok")
+	}
+}
+
+// TestChatWorlds_HiddenFilter 会话实例世界与进度快照不进管理端/玩家端世界列表。
+func TestChatWorlds_HiddenFilter(t *testing.T) {
+	ts, deps, _ := newChatSessionTestServer(t)
+	defer ts.Close()
+
+	if _, err := deps.WorldEngine.SeedWorld("tpl", world.SeedSpec{
+		Mode: world.ModeSimRPG, Background: "剑与魔法的边境小镇",
+	}); err != nil {
+		t.Fatalf("播种失败: %v", err)
+	}
+
+	// 玩家 t1 进入世界（产生会话实例世界），玩家列表不应出现 web: 实例
+	resp := chatReq(t, "POST", ts.URL+"/api/chat/world/enter?token=t1", `{"world_id":"tpl"}`)
+	resp.Body.Close()
+
+	// 玩家 t2 视角的世界列表：只有模板世界
+	resp = chatReq(t, "GET", ts.URL+"/api/worlds?token=t2", "")
+	var list2 struct {
+		Worlds []chatWorldBrief `json:"worlds"`
+	}
+	readJSON(t, resp, &list2)
+	if len(list2.Worlds) != 1 || list2.Worlds[0].ID != "tpl" {
+		t.Fatalf("玩家列表应只含模板世界: %+v", list2.Worlds)
+	}
+	if list2.Worlds[0].HasProgress {
+		t.Fatal("t2 在 tpl 无进度快照")
+	}
+
+	// t1 离开后产生进度快照：管理端列表仍只有模板世界，t1 列表带 has_progress
+	resp = chatReq(t, "POST", ts.URL+"/api/chat/world/leave?token=t1", "")
+	resp.Body.Close()
+
+	resp = adminReq(t, "GET", ts.URL+"/api/admin/worlds", "")
+	var adminList []struct {
+		ID string `json:"id"`
+	}
+	readJSON(t, resp, &adminList)
+	if len(adminList) != 1 || adminList[0].ID != "tpl" {
+		t.Fatalf("管理端列表应过滤实例与快照: %+v", adminList)
+	}
+
+	resp = chatReq(t, "GET", ts.URL+"/api/worlds?token=t1", "")
+	var list1 struct {
+		Worlds []chatWorldBrief `json:"worlds"`
+	}
+	readJSON(t, resp, &list1)
+	if len(list1.Worlds) != 1 || !list1.Worlds[0].HasProgress {
+		t.Fatalf("t1 应看到 tpl 且带进度标识: %+v", list1.Worlds)
 	}
 }

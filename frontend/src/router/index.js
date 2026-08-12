@@ -6,6 +6,7 @@ import WorldsView from '../views/admin/WorldsView.vue'
 import WorldEditor from '../views/admin/WorldEditor.vue'
 import ConfigView from '../views/admin/ConfigView.vue'
 import AssetsView from '../views/admin/AssetsView.vue'
+import DirectorView from '../views/admin/DirectorView.vue'
 
 const routes = [
   { path: '/', redirect: '/chat' },
@@ -22,6 +23,7 @@ const routes = [
       { path: 'worlds/:id', name: 'admin-world-editor', component: WorldEditor },
       { path: 'config', name: 'admin-config', component: ConfigView },
       { path: 'assets', name: 'admin-assets', component: AssetsView },
+      { path: 'director', name: 'admin-director', component: DirectorView, meta: { title: '导演系统' } },
     ],
   },
 ]

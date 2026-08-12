@@ -13,7 +13,10 @@
       <div class="card-title">活跃会话</div>
       <el-table :data="sessions" size="default" empty-text="暂无会话">
         <el-table-column prop="id" label="会话">
-          <template #default="{ row }"><span class="mono">{{ row.id }}</span></template>
+          <template #default="{ row }">
+            <div><b>{{ row.world_name || row.id }}</b></div>
+            <div v-if="row.world_name" class="mono muted">{{ row.id }}</div>
+          </template>
         </el-table-column>
         <el-table-column prop="mode" label="模式" />
       </el-table>

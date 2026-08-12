@@ -10,7 +10,10 @@
       </div>
       <el-table :data="worlds" empty-text="暂无世界，点击上方按钮创建">
         <el-table-column prop="id" label="世界">
-          <template #default="{ row }"><span class="mono">{{ row.id }}</span></template>
+          <template #default="{ row }">
+            <div><b>{{ row.name || row.id }}</b></div>
+            <div v-if="row.name" class="mono muted">{{ row.id }}</div>
+          </template>
         </el-table-column>
         <el-table-column prop="mode" label="模式" />
         <el-table-column label="当前场景">
@@ -44,6 +47,9 @@
             <el-radio value="roleplay">roleplay 角色扮演</el-radio>
           </el-radio-group>
           <div class="muted mode-desc">{{ MODE_DESC[form.mode] }}</div>
+        </el-form-item>
+        <el-form-item label="世界名称">
+          <el-input v-model="form.name" placeholder="留空则用世界 ID" style="max-width:320px" />
         </el-form-item>
         <el-form-item label="世界 ID">
           <el-input v-model="form.world_id" placeholder="留空由服务端自动生成" style="max-width:320px" />
@@ -235,6 +241,7 @@
       <div v-show="step === 4" class="wizard-step">
         <div class="summary-block">
           <div class="summary-row"><span class="muted">模式</span><b>{{ form.mode }}</b></div>
+          <div class="summary-row"><span class="muted">世界名称</span><b>{{ form.name.trim() || '（未命名，用世界 ID）' }}</b></div>
           <div class="summary-row"><span class="muted">世界 ID</span><span class="mono">{{ form.world_id || '（自动生成）' }}</span></div>
           <div class="summary-row"><span class="muted">背景</span><span>{{ form.background ? form.background.slice(0, 60) + (form.background.length > 60 ? '…' : '') : '（未填写）' }}</span></div>
           <div class="summary-row"><span class="muted">设定条目</span><span>{{ validLore.length }} 条</span></div>
@@ -288,6 +295,7 @@ const openNpcs = ref([])
 const form = reactive({
   mode: 'simrpg',
   world_id: '',
+  name: '',
   background: '',
   scene: '',
   locations: [],
@@ -416,7 +424,7 @@ function nextStep() {
 
 async function openCreate() {
   Object.assign(form, {
-    mode: 'simrpg', world_id: '', background: '', scene: '',
+    mode: 'simrpg', world_id: '', name: '', background: '', scene: '',
     locations: [], npcs: [],
     asset_sel: { library_rows: [], copy: [], on_conflict: 'skip' },
     items: [], factions: [],
@@ -485,6 +493,7 @@ async function createWorld() {
 
   const body = {
     world_id: f.world_id.trim(),
+    name: f.name.trim(),
     mode: f.mode,
     background: f.background,
     scene: f.mode === 'simrpg' ? f.scene : '',

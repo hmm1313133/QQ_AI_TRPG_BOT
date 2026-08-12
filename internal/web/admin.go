@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -81,6 +82,8 @@ func (s *Server) registerAdmin(mux *http.ServeMux, deps AdminDeps, adminToken st
 	mux.HandleFunc("PATCH /api/admin/worlds/{id}/section", a.wrap(a.handleSectionPatch))
 	mux.HandleFunc("GET /api/admin/config", a.wrap(a.handleConfigGet))
 	mux.HandleFunc("PUT /api/admin/config", a.wrap(a.handleConfigSet))
+	// 导演系统运行记录（叙事指导 + 场景计划刷新，内存环形缓存）
+	mux.HandleFunc("GET /api/admin/director/logs", a.wrap(a.handleDirectorLogs))
 	// 主提示词预设列表（内置只读，与玩家端共用 handler）
 	mux.HandleFunc("GET /api/admin/prompt-presets", a.wrap(handlePromptPresets))
 	// 素材联动与游玩存档（《世界编辑器与素材联动设计.md》§四/§9.4）
@@ -123,20 +126,43 @@ func (a *adminAPI) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (a *adminAPI) handleSessions(w http.ResponseWriter, r *http.Request) {
 	type sessionInfo struct {
-		ID      string `json:"id"`
-		Mode    string `json:"mode"`
-		AgentID string `json:"agent_id,omitempty"`
+		ID        string `json:"id"`
+		Mode      string `json:"mode"`
+		AgentID   string `json:"agent_id,omitempty"`
+		WorldName string `json:"world_name,omitempty"` // 会话对应世界的显示名（会话即世界）
 	}
 	var list []sessionInfo
 	for _, sess := range a.deps.Sessions.List() {
-		list = append(list, sessionInfo{ID: sess.ID, Mode: sess.Mode.String(), AgentID: sess.AgentID})
+		info := sessionInfo{ID: sess.ID, Mode: sess.Mode.String(), AgentID: sess.AgentID}
+		if a.deps.WorldEngine != nil {
+			if ws := a.deps.WorldEngine.LoadOrNil(sess.ID); ws != nil {
+				info.WorldName = ws.DisplayName()
+			}
+		}
+		list = append(list, info)
 	}
 	writeJSON(w, list)
 }
 
 // ============================================================
-// 世界管理
+// 导演系统可观测性
 // ============================================================
+
+// handleDirectorLogs 导演系统运行记录（新->旧）。
+// 查询参数：session_id（可选，按会话过滤）、limit（可选，默认 50）。
+func (a *adminAPI) handleDirectorLogs(w http.ResponseWriter, r *http.Request) {
+	if a.deps.TurnEngine == nil {
+		http.Error(w, "回合引擎不可用", http.StatusServiceUnavailable)
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	writeJSON(w, a.deps.TurnEngine.RecentDirectorLogs(r.URL.Query().Get("session_id"), limit))
+}
 
 func (a *adminAPI) handleWorlds(w http.ResponseWriter, r *http.Request) {
 	ids, err := a.deps.WorldEngine.ListWorlds()
@@ -146,6 +172,7 @@ func (a *adminAPI) handleWorlds(w http.ResponseWriter, r *http.Request) {
 	}
 	type worldInfo struct {
 		ID         string `json:"id"`
+		Name       string `json:"name"` // 显示名（Name/ScriptName 回退，可为空）
 		Mode       string `json:"mode"`
 		ScriptName string `json:"script_name,omitempty"`
 		Scene      string `json:"scene"`
@@ -154,12 +181,15 @@ func (a *adminAPI) handleWorlds(w http.ResponseWriter, r *http.Request) {
 	}
 	var list []worldInfo
 	for _, id := range ids {
+		if isHiddenWorldID(id) {
+			continue // 会话实例世界与进度快照不属于管理端世界列表
+		}
 		ws := a.deps.WorldEngine.LoadOrNil(id)
 		if ws == nil {
 			continue
 		}
 		list = append(list, worldInfo{
-			ID: ws.WorldID, Mode: ws.Mode, ScriptName: ws.ScriptName,
+			ID: ws.WorldID, Name: ws.DisplayName(), Mode: ws.Mode, ScriptName: ws.ScriptName,
 			Scene: ws.Scene.NodeName, Round: ws.RoundCount, UpdatedAt: ws.LastUpdate,
 		})
 	}
@@ -219,6 +249,7 @@ func (a *adminAPI) handleWorldPatch(w http.ResponseWriter, r *http.Request) {
 // worldCreateReq 手动创建世界请求（见《管理后台扩展设计.md》2.5）。
 type worldCreateReq struct {
 	WorldID    string          `json:"world_id"` // 可选，缺省自动生成
+	Name       string          `json:"name"`     // 世界显示名（可选）
 	Mode       string          `json:"mode"`     // simrpg / roleplay
 	Background string          `json:"background"`
 	Scene      string          `json:"scene"`
@@ -266,6 +297,7 @@ func (a *adminAPI) handleWorldCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := a.deps.WorldEngine.SeedWorld(req.WorldID, world.SeedSpec{
 		Mode:         req.Mode,
+		Name:         req.Name,
 		Background:   req.Background,
 		Scene:        req.Scene,
 		NPCs:         req.NPCs,

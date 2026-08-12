@@ -11,6 +11,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -22,6 +23,21 @@ import (
 
 // sessionKeyWorldSource 会话中记录"当前世界复制自哪个源世界"的键。
 const sessionKeyWorldSource = "world_source_id"
+
+// snapshotWorldPrefix 切换世界自动进度快照的世界 ID 前缀（隐藏世界，
+// 不出现在管理端/玩家端世界列表；与玩家手动存档相互独立）。
+const snapshotWorldPrefix = "websnap:"
+
+// snapshotWorldID 进度快照世界 ID：websnap:<会话ID>:<源世界ID>。
+func snapshotWorldID(sessionID, sourceID string) string {
+	return snapshotWorldPrefix + sessionID + ":" + sourceID
+}
+
+// isHiddenWorldID 判断是否为会话实例世界（web:*）或进度快照（websnap:*），
+// 管理端/玩家端世界列表统一过滤，避免实例复制与快照污染世界管理视图。
+func isHiddenWorldID(id string) bool {
+	return strings.HasPrefix(id, "web:") || strings.HasPrefix(id, snapshotWorldPrefix)
+}
 
 // registerChatSessionRoutes 注册玩家侧会话状态路由（buildMux 中调用）。
 func (s *Server) registerChatSessionRoutes(mux *http.ServeMux) {
@@ -106,8 +122,11 @@ func (s *Server) buildChatState(sessionID string) chatStateResp {
 	return resp
 }
 
-// chatWorldName 世界显示名：背景摘要（前 20 字），退化为世界 ID。
+// chatWorldName 世界显示名：显示名（Name/ScriptName）→ 背景摘要（前 20 字）→ 世界 ID。
 func chatWorldName(ws *world.WorldState) string {
+	if name := ws.DisplayName(); name != "" {
+		return name
+	}
 	if name := firstRunes(strings.TrimSpace(ws.Background), 20); name != "" {
 		return name
 	}
@@ -123,13 +142,14 @@ func (s *Server) handleChatStateGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.buildChatState(sessionID))
 }
 
-// chatStatePutReq 更新会话状态请求（两字段均可选，只更新传入的）。
+// chatStatePutReq 更新会话状态请求（字段均可选，只更新传入的）。
 type chatStatePutReq struct {
 	Mode        *string `json:"mode"`
 	ReplyLength *string `json:"reply_length"`
+	WorldName   *string `json:"world_name"` // 重命名当前世界（需在世界内）
 }
 
-// handleChatStatePut 更新会话模式/回复长度，返回更新后的完整状态。
+// handleChatStatePut 更新会话模式/回复长度/世界名称，返回更新后的完整状态。
 func (s *Server) handleChatStatePut(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := s.chatSessionContext(w, r)
 	if !ok {
@@ -161,7 +181,41 @@ func (s *Server) handleChatStatePut(w http.ResponseWriter, r *http.Request) {
 		}
 		agent.SetSessionReplyLength(s.sess.GetSession(sessionID), pref)
 	}
+	if req.WorldName != nil {
+		if err := s.renameChatWorld(sessionID, *req.WorldName); err != nil {
+			writeChatError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	writeJSON(w, s.buildChatState(sessionID))
+}
+
+// renameChatWorld 重命名当前会话的世界（经 ApplyEvent 单写入口）。
+func (s *Server) renameChatWorld(sessionID, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("世界名称不能为空")
+	}
+	if len([]rune(name)) > 50 {
+		return fmt.Errorf("世界名称不能超过 50 字")
+	}
+	if !s.adminReady || s.adminDeps.WorldEngine == nil {
+		return fmt.Errorf("世界引擎不可用")
+	}
+	ws := s.adminDeps.WorldEngine.LoadOrNil(sessionID)
+	if ws == nil {
+		return fmt.Errorf("当前不在世界中，无法命名")
+	}
+	s.adminDeps.WorldEngine.Lock(sessionID)
+	defer s.adminDeps.WorldEngine.Unlock(sessionID)
+	if ok, err := s.adminDeps.WorldEngine.ApplyEvent(ws, world.WorldEvent{
+		Type: "rename", Actor: "player", Target: ws.WorldID, Value: name,
+	}); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("名称未变化")
+	}
+	return s.adminDeps.WorldEngine.Save(ws)
 }
 
 // ============================================================
@@ -276,7 +330,8 @@ type chatWorldEnterReq struct {
 	WorldID string `json:"world_id"`
 }
 
-// handleChatWorldEnter 进入世界：把源世界实例化复制到当前会话（整体快照），
+// handleChatWorldEnter 进入世界：优先恢复该会话在此世界的进度快照（切换世界时
+// 自动保存的进度），无快照则把源世界实例化复制到当前会话（整体快照），
 // 并切换到 freechat（世界内扮演）模式。
 func (s *Server) handleChatWorldEnter(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := s.chatSessionContext(w, r)
@@ -310,30 +365,42 @@ func (s *Server) handleChatWorldEnter(w http.ResponseWriter, r *http.Request) {
 		writeChatError(w, "当前会话已有进行中的世界，先离开后再进入", http.StatusConflict)
 		return
 	}
-	src := engine.LoadOrNil(req.WorldID)
-	if src == nil {
-		writeChatError(w, "世界不存在: "+req.WorldID, http.StatusNotFound)
-		return
+
+	// 优先恢复进度快照（切换世界自动保存的进度）；无快照则从源世界模板实例化。
+	snapID := snapshotWorldID(sessionID, req.WorldID)
+	src := engine.LoadOrNil(snapID)
+	restored := src != nil
+	if !restored {
+		src = engine.LoadOrNil(req.WorldID)
+		if src == nil {
+			writeChatError(w, "世界不存在: "+req.WorldID, http.StatusNotFound)
+			return
+		}
 	}
 
 	worldName := chatWorldName(src)
 	// 实例化复制：repo Load 返回的是新解码对象，直接改 ID 写回即为整体快照，
-	// 轮次/场景/角色等状态原样带入，源世界不受影响。
+	// 轮次/场景/角色等状态原样带入，源世界（模板或进度快照）不受影响。
 	src.WorldID = sessionID
 	if err := engine.Save(src); err != nil {
 		writeChatError(w, "进入失败: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if restored {
+		// 快照被消费：离开时会重新保存最新进度，避免残留旧档
+		_ = engine.Delete(snapID)
 	}
 
 	session := s.sess.GetSession(sessionID)
 	session.Set(sessionKeyWorldSource, req.WorldID)
 	s.sess.SetMode(sessionID, core.ModeFreeChat)
 
-	writeJSON(w, map[string]any{"ok": true, "world_name": worldName})
+	writeJSON(w, map[string]any{"ok": true, "world_name": worldName, "restored": restored})
 }
 
-// handleChatWorldLeave 离开世界：删除当前会话的世界状态（源世界模板与其存档不受影响），
-// 并切回 normal（纯对话）模式。幂等：无进行中世界也返回 ok。
+// handleChatWorldLeave 离开世界：把当前进度自动保存为隐藏进度快照（下次进入同一
+// 世界时自动恢复；与手动存档相互独立），随后删除会话世界状态并切回 normal
+// （纯对话）模式。幂等：无进行中世界也返回 ok。
 func (s *Server) handleChatWorldLeave(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := s.chatSessionContext(w, r)
 	if !ok {
@@ -348,7 +415,19 @@ func (s *Server) handleChatWorldLeave(w http.ResponseWriter, r *http.Request) {
 	engine.Lock(sessionID)
 	defer engine.Unlock(sessionID)
 
-	if engine.LoadOrNil(sessionID) != nil {
+	if ws := engine.LoadOrNil(sessionID); ws != nil {
+		// 自动保存进度快照（按源世界归档）；无源世界记录的老数据直接删除
+		session := s.sess.GetSession(sessionID)
+		if v, ok := session.Get(sessionKeyWorldSource); ok {
+			if sourceID, ok := v.(string); ok && sourceID != "" {
+				snap := *ws // 拷贝后改 ID 另存，原会话世界随后删除
+				snap.WorldID = snapshotWorldID(sessionID, sourceID)
+				if err := engine.Save(&snap); err != nil {
+					writeChatError(w, "保存进度失败: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+		}
 		if err := engine.Delete(sessionID); err != nil {
 			writeChatError(w, "删除失败: "+err.Error(), http.StatusInternalServerError)
 			return

@@ -4,7 +4,7 @@
       <div>
         <div class="page-title">
           {{ player ? '世界状态' : '世界编辑器' }}
-          <span class="mono">{{ player ? (detail?.world_id || '') : worldId }}</span>
+          <span class="mono">{{ detail?.name || (player ? (detail?.world_id || '') : worldId) }}</span>
         </div>
         <div class="page-desc">
           {{ detail ? `模式 ${detail.mode}` : (player && noWorld ? '当前会话还没有进行中的世界' : '加载中…') }}
@@ -31,6 +31,13 @@
           <div v-if="!detail" class="empty">加载中…</div>
           <template v-else>
             <div class="overview-grid">
+              <div>
+                <div class="muted">世界名称</div>
+                <p>
+                  {{ detail.name || '（未命名）' }}
+                  <el-button v-if="!player" size="small" text type="primary" @click="renameWorld">编辑</el-button>
+                </p>
+              </div>
               <div><div class="muted">世界 ID</div><p class="mono">{{ detail.world_id }}</p></div>
               <div><div class="muted">模式</div><p>{{ detail.mode }}</p></div>
               <div><div class="muted">回合数</div><p>{{ detail.round_count }}</p></div>
@@ -583,6 +590,34 @@ async function loadDetail() {
       return
     }
     ElMessage.error('加载世界详情失败：' + e.message)
+  }
+}
+
+// 改名：PATCH state {type:"rename"}，名称非空、≤50 字（同名或空名后端返回未命中）
+async function renameWorld() {
+  let name
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新的世界名称：', '编辑世界名称', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValue: detail.value?.name || '',
+      inputValidator: (v) => {
+        const s = (v || '').trim()
+        if (!s) return '名称不能为空'
+        if ([...s].length > 50) return '名称不能超过 50 字'
+        return true
+      },
+    })
+    name = value.trim()
+  } catch {
+    return
+  }
+  try {
+    await worldApi.patchState(worldId, { type: 'rename', target: worldId, value: name })
+    ElMessage.success('世界名称已更新')
+    loadDetail()
+  } catch (e) {
+    ElMessage.error('改名失败：' + e.message)
   }
 }
 

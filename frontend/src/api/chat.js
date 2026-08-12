@@ -10,7 +10,7 @@ export function getChatState(token, auth = '') {
   return playerSaveReq('/api/chat/state', { token, auth })
 }
 
-// 更新会话状态（可选字段：mode / reply_length），返回完整 state
+// 更新会话状态（可选字段：mode / reply_length / world_name），返回完整 state
 export function updateChatState(token, auth = '', patch = {}) {
   return playerSaveReq('/api/chat/state', {
     token,

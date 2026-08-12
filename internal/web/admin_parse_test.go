@@ -201,8 +201,8 @@ func TestAdmin_WorldFromDrafts(t *testing.T) {
 	if ws.Mode != world.ModeRoleplay {
 		t.Fatalf("缺省模式应为 roleplay: %s", ws.Mode)
 	}
-	if ws.ScriptName != "雾都之夜" {
-		t.Fatalf("世界名称应写入 ScriptName: %q", ws.ScriptName)
+	if ws.Name != "雾都之夜" {
+		t.Fatalf("世界名称应写入 Name: %q", ws.Name)
 	}
 	if ws.Characters["艾拉"] == nil || ws.Characters["艾拉"].Backstory != "银发法师" {
 		t.Fatalf("角色应落地: %+v", ws.Characters["艾拉"])

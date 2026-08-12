@@ -7,7 +7,8 @@
 // 流程：
 //   1. 会话锁 + 加载 WorldState
 //   2. 规则化指标评估（确定性，零 LLM）
-//   3. RuleGuidance 规则叙事指导（确定性，零 LLM）
+//   3. 叙事指导：AIGuidance（同步 LLM，可回写 state_updates）优先，
+//      超时/失败/禁用时降级为 RuleGuidance 规则版（确定性，零 LLM）
 //   4. 低频 Planner：需要时调用 Director LLM 生成场景计划（存 WorldState.ScenePlan）
 //   5. ContextBuilder 按预算组装上下文包
 //   6. Narrator 无状态调用生成叙事
@@ -51,6 +52,7 @@ const recentInjectionsCap = 20
 type TurnEngine struct {
 	narrator     *Narrator
 	director     *Director // 低频 Planner 用（可为 nil 禁用规划）
+	guider       *AIGuidance // 每轮 AI 叙事指导（可为 nil 退回纯规则指导）
 	metrics      *MetricsEvaluator
 	worldEngine  *world.Engine
 	ctxBuilder   *ContextBuilder
@@ -62,6 +64,10 @@ type TurnEngine struct {
 	// injections 世界 ID -> 最近 N 回合 lore 注入清单（内存环形缓存）。
 	injMu      sync.Mutex
 	injections map[string][]world.LoreResult
+
+	// dirLogs 导演系统运行记录（全局环形缓存，管理端可视化用）。
+	dirLogMu sync.Mutex
+	dirLogs  []DirectorLogEntry
 }
 
 // NewTurnEngine 创建回合引擎。
@@ -94,6 +100,12 @@ func NewTurnEngine(
 func (t *TurnEngine) SetSummary(s *SummaryService) {
 	t.summary = s
 	log.Printf("[TurnEngine] 剧情摘要服务已注入")
+}
+
+// SetGuider 注入 AI 叙事指导器（由 main.go 在装配阶段调用；nil 时退回纯规则指导）。
+func (t *TurnEngine) SetGuider(g *AIGuidance) {
+	t.guider = g
+	log.Printf("[TurnEngine] AI 叙事指导已注入")
 }
 
 // SetConfigStore 注入运行时配置存储（热更新项每回合读取）。
@@ -178,8 +190,8 @@ func (t *TurnEngine) Run(
 		state.Metrics = t.metrics.Evaluate(state)
 	}
 
-	// 3. 规则叙事指导（确定性，替代每轮 Director LLM）
-	guidance := BuildGuidance(state)
+	// 3. 叙事指导：AI 指导（同步，可回写状态）优先，超时/失败/禁用降级规则版
+	guidance := t.applyGuidance(ctx.Ctx, state, playerMessage, sessionID, mode)
 
 	// 4. 低频 Planner：场景切换 / 间隔到期 / 无计划时生成场景计划
 	if mode.EnablePlanner && t.needsPlan(state) {
@@ -328,6 +340,65 @@ func (t *TurnEngine) loadOrCreateState(sessionID string) *world.WorldState {
 	return t.worldEngine.LoadOrNil(sessionID)
 }
 
+// applyGuidance 生成本回合叙事指导：AI 指导（同步，超时 5s）优先，
+// 超时/失败/配置禁用/非规划模式时降级为规则版 BuildGuidance。
+// AI 指导附带的状态更新经 world 引擎单写入口回写（Actor="guidance"），
+// 使规则指标能感知叙事变化（闭环）。每轮记录一条运行日志供管理端可视化。
+func (t *TurnEngine) applyGuidance(
+	ctx context.Context,
+	state *world.WorldState,
+	playerMessage string,
+	sessionID string,
+	mode world.GameMode,
+) *RuleGuidance {
+	entry := DirectorLogEntry{
+		SessionID: sessionID,
+		Round:     state.RoundCount,
+		Kind:      "guidance",
+	}
+
+	aiEnabled := t.guider != nil && mode.EnablePlanner
+	if aiEnabled && t.cfgStore != nil {
+		aiEnabled = t.cfgStore.GetBool(config.KeyAIGuidance, true)
+	}
+
+	// 纯规则路径（AI 未装配 / 配置关闭 / roleplay 模式）
+	if !aiEnabled {
+		g := BuildGuidance(state)
+		entry.Source = "rule"
+		entry.Tone, entry.Pacing = g.Tone, g.Pacing
+		entry.Focus, entry.Constraints = g.Focus, g.Constraints
+		t.recordDirectorLog(entry)
+		return g
+	}
+
+	res := t.guider.Guide(ctx, state, playerMessage, sessionID)
+
+	// 状态更新回写（与 Planner 同一单写入口、同一命中校验）
+	applied := 0
+	if len(res.StateUpdates) > 0 {
+		events := make([]world.WorldEvent, 0, len(res.StateUpdates))
+		for _, u := range res.StateUpdates {
+			events = append(events, world.WorldEvent{
+				Type: u.Type, Actor: "guidance", Target: u.Target, Value: u.Value,
+			})
+		}
+		applied = t.worldEngine.ApplyEvents(state, events)
+		log.Printf("[TurnEngine] 叙事指导状态更新: %d/%d 条命中", applied, len(res.StateUpdates))
+	}
+
+	entry.Source = res.Source
+	entry.ElapsedMs = res.ElapsedMs
+	entry.Tone, entry.Pacing = res.Guidance.Tone, res.Guidance.Pacing
+	entry.Focus, entry.Constraints = res.Guidance.Focus, res.Guidance.Constraints
+	entry.StateUpdates = res.StateUpdates
+	entry.AppliedUpdates = applied
+	entry.Error = res.Err
+	t.recordDirectorLog(entry)
+
+	return res.Guidance
+}
+
 // needsPlan 判断是否需要刷新场景计划。
 func (t *TurnEngine) needsPlan(state *world.WorldState) bool {
 	if t.director == nil {
@@ -382,6 +453,7 @@ func (t *TurnEngine) refreshPlan(ctx context.Context, state *world.WorldState, p
 	state.PlanRound = state.RoundCount
 
 	// Planner 的状态变更请求经单写入入口落库
+	applied := 0
 	if len(directive.StateUpdates) > 0 {
 		events := make([]world.WorldEvent, 0, len(directive.StateUpdates))
 		for _, u := range directive.StateUpdates {
@@ -389,9 +461,25 @@ func (t *TurnEngine) refreshPlan(ctx context.Context, state *world.WorldState, p
 				Type: u.Type, Actor: "planner", Target: u.Target, Value: u.Value,
 			})
 		}
-		applied := t.worldEngine.ApplyEvents(state, events)
+		applied = t.worldEngine.ApplyEvents(state, events)
 		log.Printf("[TurnEngine] Planner 状态更新: %d/%d 条命中", applied, len(directive.StateUpdates))
 	}
+
+	// 运行记录（管理端可视化）：Decide 内部 LLM 失败时已降级为规则指令
+	planSource := "ai"
+	if strings.HasPrefix(directive.Reasoning, "降级模式") {
+		planSource = "fallback"
+	}
+	t.recordDirectorLog(DirectorLogEntry{
+		SessionID:      sessionID,
+		Round:          state.RoundCount,
+		Kind:           "plan",
+		Source:         planSource,
+		ElapsedMs:      time.Since(pStart).Milliseconds(),
+		StateUpdates:   directive.StateUpdates,
+		AppliedUpdates: applied,
+		ScenePlan:      state.ScenePlan,
+	})
 
 	log.Printf("[TurnEngine] 场景计划已刷新 (%.1fs): %s", time.Since(pStart).Seconds(),
 		truncate(state.ScenePlan, 80))

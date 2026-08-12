@@ -1,8 +1,9 @@
 // Package agent - 规则指导器（RuleGuidance）。
 //
-// 替代每轮一次的 Director LLM：从 WorldState 的规则化指标确定性推导
+// 每轮叙事指导的规则版：从 WorldState 的规则化指标确定性推导
 // 叙事指导（基调/节奏/关注点/约束），零 LLM 调用、完全可测试。
 // 源自旧 Director.fallbackDirective 的逻辑转正（设计文档 8.2 第 5 条）。
+// 现作为 AIGuidance 的降级兜底（AI 未装配/超时/失败/配置禁用时使用）。
 package agent
 
 import (

@@ -15,8 +15,10 @@ Director 已经从早期设计中"跟随每条玩家消息的决策者"**降级�
 | 层 | 组件 | 调用频率 | LLM 调用 |
 |---|---|---|---|
 | 决策层 | Director LLM → `DecisionDirective` → `WorldState.ScenePlan` | 低频（场景切换 / 每 N 轮） | 低频 1 次 |
-| 规则层 | `MetricsEvaluator`（指标）+ `BuildGuidance`（叙事指导） | 每轮 | 无（确定性算法） |
-| 输出层 | Narrator 无状态调用 | 每轮 | 每轮 1 次（唯一必需） |
+| 指导层 | `AIGuidance`（AI 叙事指导，可回写 state_updates；超时/失败降级 `BuildGuidance` 规则版）+ `MetricsEvaluator`（指标） | 每轮 | 每轮 1 次（低成本模型，5s 超时） |
+| 输出层 | Narrator 无状态调用 | 每轮 | 每轮 1 次（必需） |
+
+> **更新说明**：指导层原为纯规则的 `BuildGuidance`（零 LLM），后改为 `AIGuidance` 每轮同步调用低成本 LLM（`internal/agent/ai_guidance.go`），规则版保留为降级兜底。改动动机：规则指导的指标只反映世界配置而非叙事状态，且 Narrator 行为无法反馈指标（开环）；AI 指导读取真实叙事上下文并可经 `state_updates` 回写世界状态，使指标被叙事驱动（闭环）。
 
 这一设计服务于 `context_builder.go:1-9` 的设计宣言：**成本 = f(回合复杂度)，而非 f(历史长度)**。Director 低频化是控制成本的关键手段。
 
@@ -67,7 +69,7 @@ Director 已经从早期设计中"跟随每条玩家消息的决策者"**降级�
 
 ### 3.3 剧情节奏控制（间接、建议性）
 
-通过 `narration_guide` 的 focus_points / constraints 文本影响 Narrator。**每轮的硬性节奏控制实际由规则层 `BuildGuidance` 完成**（`guidance.go:24-75`：张力>80 给喘息空间、张力<20 引入威胁、混乱>70 收束线索、掌控权<30 提供选择、进度满引导推进、停滞检测 `guidance.go:70-72`）。Director 的节奏影响是低频、软性、可裁剪的。
+通过 `narration_guide` 的 focus_points / constraints 文本影响 Narrator。每轮的叙事指导由指导层承担：**当前为 `AIGuidance`**（`ai_guidance.go`：读取场景/NPC/任务/最近对话/玩家最新行动，LLM 生成基调/节奏/关注/约束，并可输出 `state_updates` 回写世界状态）；AI 不可用时的规则兜底 `BuildGuidance`（`guidance.go:24-75`：张力>80 给喘息空间、张力<20 引入威胁、混乱>70 收束线索、掌控权<30 提供选择、进度满引导推进、停滞检测 `guidance.go:70-72`）。
 
 ### 3.4 LLM 失败时的规则化兜底
 
@@ -109,7 +111,7 @@ WS 消息
 5. **lore 检索**：`world.Resolve` 按需召回设定条目（`turn_engine.go:165-171`）。
 6. **世界时钟**：离线演化 + 本回合时间推进（`turn_engine.go:174`、`423-450`）。
 7. **规则化指标评估**：`metrics.Evaluate(state)`（`turn_engine.go:177-179`；算法在 `director_metrics.go:25-144`，确定性，相同状态必得相同分数）。
-8. **规则叙事指导**：`BuildGuidance(state)`（`turn_engine.go:182`）。
+8. **叙事指导**：`applyGuidance`（`turn_engine.go`）——AI 指导开启时（`mode.EnablePlanner` 且配置 `ai_guidance=true`）同步调用 `AIGuidance.Guide`（5s 超时），其 `state_updates` 经 `ApplyEvents` 回写（Actor="guidance"）；超时/失败/禁用降级 `BuildGuidance(state)` 规则版。每轮记录一条运行日志（见 6.5）。
 9. **低频 Planner 判断与调用**（`turn_engine.go:185-187`），触发条件 = `mode.EnablePlanner`（仅 simrpg 为 true，roleplay 为 false，`internal/world/mode.go:26,32`）且 `needsPlan`（`turn_engine.go:332-351`）为真——三者任一：
    - `ScenePlan == ""`（首次规划）；
    - `PlanNodeID != Scene.NodeID`（场景切换）；
@@ -123,13 +125,15 @@ WS 消息
 ### 4.3 同步/异步与时机结论
 
 - Director **不是每轮调用**；是同步低频调用，触发时会拉长该回合响应时间。
+- **AIGuidance 是每轮同步调用**（5s 超时，超时即降级规则版），为同步路径上的第二次 LLM 调用。
 - 摘要 LLM 异步（goroutine）；其余全部同步。
 
-### 4.4 失败降级策略（三层）
+### 4.4 失败降级策略（四层）
 
-1. **Director LLM 失败 / 空回复 / 无 JSON / JSON 解析失败** → `fallbackDirective` 规则化指令，流程继续（`director.go:107-139`）。
-2. **refreshPlan 整体失败** → 记日志"沿用旧计划"，不影响本回合叙事（`turn_engine.go:375-378`）。
-3. **TurnEngine 执行失败** → KPAgent 回退到单 agent 模式 `chatSingleAgent`（`kp_agent.go:121-131,135-196`）。
+1. **AIGuidance 超时（5s）/ 调用失败 / 空回复 / JSON 解析失败** → `BuildGuidance` 规则版指导，流程继续（`ai_guidance.go` Guide/fallback）。
+2. **Director LLM 失败 / 空回复 / 无 JSON / JSON 解析失败** → `fallbackDirective` 规则化指令，流程继续（`director.go:107-139`）。
+3. **refreshPlan 整体失败** → 记日志"沿用旧计划"，不影响本回合叙事（`turn_engine.go` refreshPlan）。
+4. **TurnEngine 执行失败** → KPAgent 回退到单 agent 模式 `chatSingleAgent`（`kp_agent.go:121-131,135-196`）。
 
 另有摘要失败 → 待总结队列保留、下轮重试（`summary.go:91-99`）。
 
@@ -168,13 +172,20 @@ WS 消息
 | 键 | 定义 | 生效级别 | 实际读取点 | 备注 |
 |---|---|---|---|---|
 | `director_temp` | `internal/config/store.go:26`，注册于 `store.go:65`（Label "Planner 温度"） | process-restart | **没有任何代码读取它** | main.go 只 Seed（`cmd/bot/main.go:134`）；Director 温度来自 `agent.Config.DirectorTemperature`（main.go 硬编码 0.2，`cmd/bot/main.go:97`；`director.go:39-42`）。**这是一个注册但失效的配置项** |
-| `plan_interval` | `store.go:31,71` | hot | `turn_engine.go:343-346`（needsPlan 每轮读） | 默认 8（`turn_engine.go:32`；Seed 于 `main.go:139`） |
+| `plan_interval` | `store.go:31,71` | hot | `turn_engine.go` needsPlan 每轮读 | 默认 8（`turn_engine.go` DefaultPlanInterval；Seed 于 main.go） |
+| `ai_guidance` | `store.go`（KeyAIGuidance） | hot | `turn_engine.go` applyGuidance 每轮读 | 默认 true；关闭后退回纯规则指导 |
 | `summary_chunk_size` | `store.go:32,70` | hot | `summary.go:50-57` | 默认 6（`summary.go:23`） |
 | `context_budget` / `lore_budget` / `lore_scan_rounds` / `lore_recursion` | `store.go:27-30` | hot | `turn_engine.go:157-161`；Planner 的 lore 预算 = `lore_budget*2`（`turn_engine.go:359`） | |
 | Director MaxTokens | 无运行时配置键 | — | `agent.Config.DirectorMaxTokens`，main.go 硬编码 2048（`cmd/bot/main.go:98`；`director.go:43-46`） | |
 | `EnablePlanner` | `internal/world/mode.go:16` | 模式预设 | `turn_engine.go:185` | simrpg=true / roleplay=false（`mode.go:26,32`） |
 
 热更新白名单见 `store.go:91-98`。
+
+### 6.5 运行可视化（管理后台）
+
+- 每轮指导与每次计划刷新记录一条 `DirectorLogEntry`（时间/会话/轮次/kind/source/耗时/指导内容/state_updates 命中数/降级原因），存全局环形缓存（100 条，`internal/agent/director_log.go`）。
+- 管理端 API：`GET /api/admin/director/logs?session_id=&limit=`（`internal/web/admin.go` handleDirectorLogs，Bearer 鉴权）。
+- 前端页面：管理后台"导演系统"页（`frontend/src/views/admin/DirectorView.vue`），含统计卡片（AI/兜底占比、状态更新命中率、平均耗时）与可展开明细表格。
 
 ### 6.2 与 Summary（摘要）的协作
 
@@ -183,11 +194,12 @@ WS 消息
   1. SummaryService 复用 `director.rawCompletion` 作为低温度补全通道（`summary.go:44`）；
   2. 阶段摘要会被拼进 Planner 的 scriptContext（`turn_engine.go:366-372`），即"摘要喂养规划"。
 
-### 6.3 与 Guidance（规则指导）的协作
+### 6.3 与 Guidance（叙事指导）的协作
 
-- RuleGuidance 是"每轮的 Director 替代品"：每轮确定性生成，作为 ContextBuilder 的**必需分区**（priority 1，永不裁剪）注入 Narrator（`turn_engine.go:182`；`context_builder.go:115-120`）。
-- 与 Planner 的分工：**RuleGuidance 管"本轮怎么讲"**（每轮、零成本、强制注入）；**Director 管"接下来几轮讲什么"**（低频、LLM、可裁剪的 scene_plan 分区）。
-- `guidance.go:5` 注释自述其逻辑源自旧 `Director.fallbackDirective` 转正——对比可见 `BuildGuidance`（`guidance.go:24-75`）与 `fallbackDirective` / `recommendTone` / `recommendPacing`（`director.go:175-243`）的规则高度同构。
+- 指导层现状：**`AIGuidance` 为主（每轮同步 LLM），`BuildGuidance` 规则版为兜底**。AI 指导读取真实叙事上下文（场景/NPC/任务/最近对话/玩家最新行动），输出基调/节奏/关注/约束 + 可选 `state_updates`。
+- AI 指导的 `state_updates` 与 Planner 走同一单写入口 `ApplyEvents`（Actor="guidance"），同一套类型白名单与 target 命中校验；这使 Narrator 的叙事行为能反馈到 WorldState，下一轮指标评估随之变化——**指导层从开环变为闭环**。
+- 与 Planner 的分工：Guidance 管"本轮怎么讲"（每轮、低成本模型、priority 1 必需分区注入 Narrator）；Director 管"接下来几轮讲什么"（低频、可裁剪的 scene_plan 分区）。
+- 兜底规则版与 Planner 的 `fallbackDirective`/`recommendTone`/`recommendPacing` 规则高度同构（`guidance.go:24-75` vs `director.go:175-243`），二者仍是两份独立维护的规则拷贝，阈值存在漂移（喘息阈值 80 vs 70），属已知技术债。
 
 ### 6.4 与 world 引擎的协作
 

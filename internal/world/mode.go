@@ -5,6 +5,7 @@ package world
 import (
 	"fmt"
 	"log"
+	"strings"
 )
 
 // GameMode 游戏模式配置。
@@ -68,6 +69,7 @@ type NPCSeed struct {
 // SeedSpec 手动创建世界时的播种规格。
 type SeedSpec struct {
 	Mode       string    `json:"mode"`       // simrpg / roleplay
+	Name       string    `json:"name"`       // 世界显示名（可选）
 	Background string    `json:"background"` // 世界设定文本
 	Scene      string    `json:"scene"`      // 初始场景描述（可选）
 	NPCs       []NPCSeed `json:"npcs"`       // roleplay 至少 1 个
@@ -108,6 +110,7 @@ func (e *Engine) SeedWorld(worldID string, spec SeedSpec) (*WorldState, error) {
 	}
 
 	state := NewWorldState(worldID, spec.Mode)
+	state.Name = strings.TrimSpace(spec.Name)
 	state.Background = spec.Background
 	if spec.Scene != "" {
 		state.Scene.NodeName = "初始场景"

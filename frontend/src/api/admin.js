@@ -69,6 +69,11 @@ export const worldApi = {
     method: 'PATCH',
     body: JSON.stringify({ part, data }),
   }),
+  // 状态补丁：body 为 {type, target, value}；改名用 {type:"rename", target:<世界ID>, value:"<新名称>"}
+  patchState: (id, body) => adminReq(`/api/admin/worlds/${enc(id)}/state`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  }),
 }
 
 // ============================================================
@@ -184,6 +189,21 @@ export const loreApi = {
     method: 'POST',
     body: JSON.stringify({ text }),
   }),
+}
+
+// ============================================================
+// 导演系统（Director-Planner）运行记录
+// ============================================================
+
+export const directorApi = {
+  // 运行记录（可选 session_id / limit 过滤），返回 JSON 数组（新->旧）
+  logs: ({ session_id = '', limit = 0 } = {}) => {
+    const params = new URLSearchParams()
+    if (session_id) params.set('session_id', session_id)
+    if (limit) params.set('limit', String(limit))
+    const qs = params.toString()
+    return adminApi('/api/admin/director/logs' + (qs ? '?' + qs : ''))
+  },
 }
 
 // 主提示词预设列表（内置只读）：[{ key, name, description, content }]

@@ -38,6 +38,10 @@ const (
 	guidanceRecentTurns = 4
 	// guidanceTurnChars 每轮对话截断字符数。
 	guidanceTurnChars = 200
+	// guidanceSummaryEntries 注入的最近阶段摘要条数（补长期记忆，防指导"近视"）。
+	guidanceSummaryEntries = 2
+	// guidanceSummaryChars 每条摘要截断字符数。
+	guidanceSummaryChars = 300
 	// guidanceMaxUpdates 单轮状态更新条数上限（防幻觉批量改状态）。
 	guidanceMaxUpdates = 5
 )
@@ -70,7 +74,13 @@ func NewAIGuidance(cfg *Config) (*AIGuidance, error) {
 	maxTokens := guidanceMaxTokens
 	temp := guidanceTemperature
 
-	modelInstance := openai.New(cfg.LLMModel, openai.WithVariant(openai.VariantDeepSeek))
+	modelInstance := openai.New(cfg.LLMModel,
+		openai.WithVariant(openai.VariantDeepSeek),
+		// JSON 模式：指导输出固定为 JSON（DeepSeek 支持 response_format=json_object）。
+		openai.WithExtraFields(map[string]any{
+			"response_format": map[string]any{"type": "json_object"},
+		}),
+	)
 
 	a := llmagent.New("guidance",
 		llmagent.WithModel(modelInstance),
@@ -290,6 +300,18 @@ func buildGuidanceUserMessage(state *world.WorldState, playerMessage string) str
 
 	if state.ScenePlan != "" {
 		sb.WriteString("\n【当前场景计划】\n" + truncate(state.ScenePlan, 500) + "\n")
+	}
+
+	// 剧情前情：注入最近阶段摘要，使指导具备长期记忆（避免只盯最近几轮）。
+	if entries := state.SummaryEntries(); len(entries) > 0 {
+		from := len(entries) - guidanceSummaryEntries
+		if from < 0 {
+			from = 0
+		}
+		sb.WriteString("\n【剧情前情】\n")
+		for _, e := range entries[from:] {
+			sb.WriteString("- " + truncate(e.Text, guidanceSummaryChars) + "\n")
+		}
 	}
 
 	if n := len(state.RecentTurns); n > 0 {

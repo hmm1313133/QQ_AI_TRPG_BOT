@@ -126,6 +126,15 @@ func (ws *WorldState) EffectivePersona(userID string, global *persona.Store) *pe
 // RecentTurnsCap 短期对话窗口保留的回合数。
 const RecentTurnsCap = 10
 
+// MaxPendingSummaryTurns PendingSummaryTurns 的硬上限（轮）。
+// 摘要服务长期失败时防止待总结队列无界累积（队列会随 WorldState 落库并进入 Planner 输入）。
+const MaxPendingSummaryTurns = 48
+
+// EventLogKeepRounds EventLog 自动归档保留的最近轮数。
+// 记账时把早于 (RoundCount - EventLogKeepRounds) 的事件压缩为一条计数摘要，
+// 避免事件日志随团龄无界增长。0 或负值表示不自动归档。
+const EventLogKeepRounds = 150
+
 // DialogueTurn 一轮对话（玩家行动 + KP 叙事）。
 type DialogueTurn struct {
 	Round    int    `json:"round"`

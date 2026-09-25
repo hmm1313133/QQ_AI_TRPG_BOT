@@ -53,7 +53,7 @@ func TestAdmin_ConfigGetMasksSecrets(t *testing.T) {
 	ts, cfgStore := newConfigTestServer(t)
 	defer ts.Close()
 
-	cfgStore.Set(config.KeyLLMModel, "deepseek-v4-flash")
+	cfgStore.Set(config.KeyLLMModel, "deepseek-flash")
 	cfgStore.Set(config.KeyLLMAPIKey, "real-secret-value")
 
 	resp := adminReq(t, "GET", ts.URL+"/api/admin/config", "")
@@ -72,7 +72,7 @@ func TestAdmin_ConfigGetMasksSecrets(t *testing.T) {
 	for _, item := range list {
 		byKey[item["key"].(string)] = item
 	}
-	if got := byKey[config.KeyLLMModel]["value"]; got != "deepseek-v4-flash" {
+	if got := byKey[config.KeyLLMModel]["value"]; got != "deepseek-flash" {
 		t.Fatalf("普通键应返回明文: %v", got)
 	}
 	if got := byKey[config.KeyLLMAPIKey]["value"]; got != config.SecretMask {

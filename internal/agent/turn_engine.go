@@ -65,9 +65,9 @@ type TurnEngine struct {
 	injMu      sync.Mutex
 	injections map[string][]world.LoreResult
 
-	// dirLogs 导演系统运行记录（全局环形缓存，管理端可视化用）。
+	// dirLogs 导演系统运行记录（按会话分桶的环形缓存，管理端可视化用）。
 	dirLogMu sync.Mutex
-	dirLogs  []DirectorLogEntry
+	dirLogs  map[string][]DirectorLogEntry
 }
 
 // NewTurnEngine 创建回合引擎。
@@ -93,6 +93,7 @@ func NewTurnEngine(
 		ctxBuilder:   ctxBuilder,
 		planInterval: planInterval,
 		injections:   make(map[string][]world.LoreResult),
+		dirLogs:      make(map[string][]DirectorLogEntry),
 	}
 }
 
@@ -465,9 +466,9 @@ func (t *TurnEngine) refreshPlan(ctx context.Context, state *world.WorldState, p
 		log.Printf("[TurnEngine] Planner 状态更新: %d/%d 条命中", applied, len(directive.StateUpdates))
 	}
 
-	// 运行记录（管理端可视化）：Decide 内部 LLM 失败时已降级为规则指令
+	// 运行记录（管理端可视化）：Decide 内部 LLM 失败时已显式标注 Degraded
 	planSource := "ai"
-	if strings.HasPrefix(directive.Reasoning, "降级模式") {
+	if directive.Degraded {
 		planSource = "fallback"
 	}
 	t.recordDirectorLog(DirectorLogEntry{
@@ -479,6 +480,7 @@ func (t *TurnEngine) refreshPlan(ctx context.Context, state *world.WorldState, p
 		StateUpdates:   directive.StateUpdates,
 		AppliedUpdates: applied,
 		ScenePlan:      state.ScenePlan,
+		Reasoning:      directive.Reasoning,
 	})
 
 	log.Printf("[TurnEngine] 场景计划已刷新 (%.1fs): %s", time.Since(pStart).Seconds(),
@@ -488,6 +490,12 @@ func (t *TurnEngine) refreshPlan(ctx context.Context, state *world.WorldState, p
 // formatScenePlan 将 DecisionDirective 格式化为场景计划文本。
 func formatScenePlan(d *DecisionDirective) string {
 	var sb string
+	if d.NarrationGuide.Tone != "" {
+		sb += "叙事基调: " + d.NarrationGuide.Tone + "\n"
+	}
+	if d.NarrationGuide.Pacing != "" {
+		sb += "节奏: " + d.NarrationGuide.Pacing + "\n"
+	}
 	if d.NarrationGuide.FocusPoints != "" {
 		sb += "叙事重点: " + d.NarrationGuide.FocusPoints + "\n"
 	}
@@ -579,6 +587,31 @@ func (t *TurnEngine) bookkeep(state *world.WorldState, sessionID, playerMessage,
 	mode := world.GetMode(latest.Mode)
 	if mode.EnableMood {
 		world.DecayMoods(latest)
+	}
+
+	// 玩家决策事件入库：供 lore 关键词召回（RecentDecisions）与审计用。
+	// 此前 RecordDecision 从无调用方，导致 EventLog 里永远没有 decision 事件。
+	if strings.TrimSpace(playerMessage) != "" {
+		if _, err := t.worldEngine.ApplyEvent(latest, world.WorldEvent{
+			Type: "decision", Actor: "player",
+			Target: latest.Scene.NodeID, Value: truncate(playerMessage, 120),
+		}); err != nil {
+			log.Printf("[TurnEngine] 记录玩家决策失败: %v", err)
+		}
+	}
+
+	// EventLog 自动归档：把早于保留窗口的事件压缩为一条计数摘要，防无界增长。
+	if before := latest.RoundCount - world.EventLogKeepRounds; before > 0 {
+		if world.ArchiveEvents(latest, before) {
+			log.Printf("[TurnEngine] EventLog 已归档 (round < %d): session=%s", before, sessionID)
+		}
+	}
+
+	// 待总结队列硬上限：摘要服务长期失败时防止无界累积。
+	if len(latest.PendingSummaryTurns) > world.MaxPendingSummaryTurns {
+		drop := len(latest.PendingSummaryTurns) - world.MaxPendingSummaryTurns
+		latest.PendingSummaryTurns = latest.PendingSummaryTurns[drop:]
+		log.Printf("[TurnEngine] 待总结队列超上限，丢弃最早 %d 轮: session=%s", drop, sessionID)
 	}
 
 	if err := t.worldEngine.Save(latest); err != nil {

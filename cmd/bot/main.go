@@ -64,7 +64,7 @@ func main() {
 
 	// 5. Initialize asset parser（素材 LLM 解析器；设计 §11.4）
 	assetParser, err := assetparse.NewParser(&assetparse.Config{
-		LLMModel:    getEnv("LLM_MODEL", "deepseek-v4-flash"),
+		LLMModel:    getEnv("LLM_MODEL", "deepseek-flash"),
 		LLMAPIKey:   os.Getenv("LLM_API_KEY"),
 		LLMBaseURL:  getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
 		MaxTokens:   8192,
@@ -74,10 +74,31 @@ func main() {
 		log.Errorf("初始化素材解析器失败（素材解析功能不可用）: %v", err)
 	}
 
-	// 6. Initialize AI Agent (trpc-agent-go + DeepSeek)
+	// 6. Initialize runtime config store (SQLite, 运行时配置热更新)
+	// 提前到 Agent 构造之前：Director/Narrator 的温度等"进程重启生效"配置需从这里读取。
+	cfgStore, err := config.Open(getEnv("CONFIG_DB", "./data/app.db"))
+	if err != nil {
+		log.Fatalf("初始化配置存储失败: %v", err)
+	}
+	cfgStore.Seed(config.KeyLLMModel, getEnv("LLM_MODEL", "deepseek-flash"))
+	cfgStore.Seed(config.KeyNarratorTemp, "0.7")
+	cfgStore.Seed(config.KeyDirectorTemp, "0.2")
+	cfgStore.Seed(config.KeyContextBudget, "45000")
+	cfgStore.Seed(config.KeyLoreBudget, "4000")
+	cfgStore.Seed(config.KeyLoreScanRounds, "4")
+	cfgStore.Seed(config.KeyLoreRecursion, "false")
+	cfgStore.Seed(config.KeyPlanInterval, "8")
+	cfgStore.Seed(config.KeySummaryChunk, "6")
+	cfgStore.Seed(config.KeyAIGuidance, "true")
+	// 新键启动时从 env 播种（env 仅作初始值，之后以 DB 为准）
+	cfgStore.Seed(config.KeyLLMAPIKey, os.Getenv("LLM_API_KEY"))
+	cfgStore.Seed(config.KeyLLMBaseURL, getEnv("LLM_BASE_URL", "https://api.deepseek.com"))
+	cfgStore.Seed(config.KeyWebChatToken, os.Getenv("WEB_CHAT_TOKEN"))
+
+	// 6'. Initialize AI Agent (trpc-agent-go + DeepSeek)
 	kpAgent, err := agent.NewKPAgent(&agent.Config{
 		LLMProvider:  getEnv("LLM_PROVIDER", "deepseek"),
-		LLMModel:     getEnv("LLM_MODEL", "deepseek-v4-flash"),
+		LLMModel:     getEnv("LLM_MODEL", "deepseek-flash"),
 		LLMAPIKey:    os.Getenv("LLM_API_KEY"),
 		LLMBaseURL:   getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
 		MaxTokens:    4096,
@@ -91,10 +112,10 @@ func main() {
 	// 6b. Initialize turn engine (规则指导 + 低频 Planner + Narrator)
 	metricsEvaluator := agent.NewMetricsEvaluator()
 	director, err := agent.NewDirector(&agent.Config{
-		LLMModel:            getEnv("LLM_MODEL", "deepseek-v4-flash"),
+		LLMModel:            getEnv("LLM_MODEL", "deepseek-flash"),
 		LLMAPIKey:           os.Getenv("LLM_API_KEY"),
 		LLMBaseURL:          getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
-		DirectorTemperature: 0.2,
+		DirectorTemperature: cfgStore.GetFloat(config.KeyDirectorTemp, 0.2),
 		DirectorMaxTokens:   2048,
 	}, metricsEvaluator)
 	if err != nil {
@@ -102,10 +123,10 @@ func main() {
 	}
 
 	narrator, err := agent.NewNarrator(&agent.Config{
-		LLMModel:            getEnv("LLM_MODEL", "deepseek-v4-flash"),
+		LLMModel:            getEnv("LLM_MODEL", "deepseek-flash"),
 		LLMAPIKey:           os.Getenv("LLM_API_KEY"),
 		LLMBaseURL:          getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
-		NarratorTemperature: 0.7,
+		NarratorTemperature: cfgStore.GetFloat(config.KeyNarratorTemp, 0.7),
 		NarratorMaxTokens:   4096,
 	}, sessions)
 	if err != nil {
@@ -114,7 +135,7 @@ func main() {
 
 	// 6c. Initialize AI guidance (每轮 AI 叙事指导，低成本模型，超时/失败降级规则版)
 	guider, err := agent.NewAIGuidance(&agent.Config{
-		LLMModel:   getEnv("LLM_MODEL", "deepseek-v4-flash"),
+		LLMModel:   getEnv("LLM_MODEL", "deepseek-flash"),
 		LLMAPIKey:  os.Getenv("LLM_API_KEY"),
 		LLMBaseURL: getEnv("LLM_BASE_URL", "https://api.deepseek.com"),
 	})
@@ -135,27 +156,9 @@ func main() {
 		log.Fatalf("注册 Agent 失败: %v", err)
 	}
 
-	// 8. Initialize runtime config store (SQLite, 运行时配置热更新)
-	cfgStore, err := config.Open(getEnv("CONFIG_DB", "./data/app.db"))
-	if err != nil {
-		log.Fatalf("初始化配置存储失败: %v", err)
-	}
-	cfgStore.Seed(config.KeyLLMModel, getEnv("LLM_MODEL", "deepseek-v4-flash"))
-	cfgStore.Seed(config.KeyNarratorTemp, "0.7")
-	cfgStore.Seed(config.KeyDirectorTemp, "0.2")
-	cfgStore.Seed(config.KeyContextBudget, "45000")
-	cfgStore.Seed(config.KeyLoreBudget, "4000")
-	cfgStore.Seed(config.KeyLoreScanRounds, "4")
-	cfgStore.Seed(config.KeyLoreRecursion, "false")
-	cfgStore.Seed(config.KeyPlanInterval, "8")
-	cfgStore.Seed(config.KeySummaryChunk, "6")
-	cfgStore.Seed(config.KeyAIGuidance, "true")
-	// 新键启动时从 env 播种（env 仅作初始值，之后以 DB 为准）
-	cfgStore.Seed(config.KeyLLMAPIKey, os.Getenv("LLM_API_KEY"))
-	cfgStore.Seed(config.KeyLLMBaseURL, getEnv("LLM_BASE_URL", "https://api.deepseek.com"))
-	cfgStore.Seed(config.KeyWebChatToken, os.Getenv("WEB_CHAT_TOKEN"))
+	// 8. 接入运行时配置与滚动剧情摘要服务
 	turnEngine.SetConfigStore(cfgStore)
-	// 滚动剧情摘要服务（RecentTurns 窗口淘汰轮攒批后并入 CampaignSummary）
+	// 滚动剧情摘要服务（RecentTurns 窗口淘汰轮攒批后由 SummaryService 归纳为阶段摘要）
 	turnEngine.SetSummary(agent.NewSummaryService(worldEngine, director, cfgStore))
 
 	// 9. Initialize router（所有消息经 core.Router 转给 Agent）

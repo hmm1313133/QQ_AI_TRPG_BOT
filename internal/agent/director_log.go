@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"sort"
 	"time"
 )
 
@@ -25,39 +26,56 @@ type DirectorLogEntry struct {
 	Focus          []string      `json:"focus,omitempty"`
 	Constraints    []string      `json:"constraints,omitempty"`
 	StateUpdates   []StateUpdate `json:"state_updates,omitempty"`
-	AppliedUpdates int           `json:"applied_updates"`        // 状态更新命中数
-	ScenePlan      string        `json:"scene_plan,omitempty"`   // 计划文本（kind=plan）
-	Error          string        `json:"error,omitempty"`        // 降级/失败原因
+	AppliedUpdates int           `json:"applied_updates"`      // 状态更新命中数
+	ScenePlan      string        `json:"scene_plan,omitempty"` // 计划文本（kind=plan）
+	Reasoning      string        `json:"reasoning,omitempty"`  // 决策推理（kind=plan；此前被丢弃，仅观测用）
+	Error          string        `json:"error,omitempty"`      // 降级/失败原因
 }
 
-// recordDirectorLog 追加一条导演系统运行记录（全局环形缓存）。
+// recordDirectorLog 追加一条导演系统运行记录（按会话分桶的环形缓存）。
+// 分桶可避免多世界共享一个全局环形缓存时相互挤占历史。
 func (t *TurnEngine) recordDirectorLog(e DirectorLogEntry) {
 	if e.Time == "" {
 		e.Time = time.Now().Format(time.RFC3339)
 	}
 	t.dirLogMu.Lock()
 	defer t.dirLogMu.Unlock()
-	t.dirLogs = append(t.dirLogs, e)
-	if len(t.dirLogs) > directorLogCap {
-		t.dirLogs = t.dirLogs[len(t.dirLogs)-directorLogCap:]
+	if t.dirLogs == nil {
+		t.dirLogs = make(map[string][]DirectorLogEntry)
 	}
+	list := append(t.dirLogs[e.SessionID], e)
+	if len(list) > directorLogCap {
+		list = list[len(list)-directorLogCap:]
+	}
+	t.dirLogs[e.SessionID] = list
 }
 
 // RecentDirectorLogs 返回最近的导演系统运行记录（新->旧）。
-// sessionID 非空时按会话过滤；limit<=0 时返回全部匹配记录。
+// sessionID 非空时只返回该会话；为空时合并全部会话并按时间倒序取前 limit 条。
+// limit<=0 时返回全部匹配记录。
 func (t *TurnEngine) RecentDirectorLogs(sessionID string, limit int) []DirectorLogEntry {
 	t.dirLogMu.Lock()
 	defer t.dirLogMu.Unlock()
-	out := make([]DirectorLogEntry, 0, len(t.dirLogs))
-	for i := len(t.dirLogs) - 1; i >= 0; i-- {
-		e := t.dirLogs[i]
-		if sessionID != "" && e.SessionID != sessionID {
-			continue
+
+	if sessionID != "" {
+		list := t.dirLogs[sessionID]
+		out := make([]DirectorLogEntry, 0, len(list))
+		for i := len(list) - 1; i >= 0; i-- {
+			out = append(out, list[i])
+			if limit > 0 && len(out) >= limit {
+				break
+			}
 		}
-		out = append(out, e)
-		if limit > 0 && len(out) >= limit {
-			break
-		}
+		return out
 	}
-	return out
+
+	all := make([]DirectorLogEntry, 0)
+	for _, list := range t.dirLogs {
+		all = append(all, list...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Time > all[j].Time })
+	if limit > 0 && len(all) > limit {
+		all = all[:limit]
+	}
+	return all
 }

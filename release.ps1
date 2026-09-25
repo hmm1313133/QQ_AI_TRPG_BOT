@@ -184,7 +184,7 @@ $readme = @'
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
 | LLM_API_KEY | DeepSeek API 密钥（必填） | - |
-| LLM_MODEL | 模型名称 | deepseek-v4-flash |
+| LLM_MODEL | 模型名称 | deepseek-flash |
 | LLM_BASE_URL | API 地址 | https://api.deepseek.com |
 | WEB_CHAT_TOKEN | 聊天页访问令牌（留空不校验） | - |
 | ADMIN_TOKEN | 管理后台令牌（留空仅允许本机访问） | - |

@@ -10,6 +10,10 @@ type DecisionDirective struct {
 	Actions        []DirectorAction `json:"actions"`
 	StateUpdates   []StateUpdate    `json:"state_updates"`
 	Reasoning      string           `json:"reasoning"`
+	// Degraded 标记本条指令是否为"规则降级产出"（LLM 不可用）。
+	// 由 Decide 显式标注，不参与 JSON 序列化——控制流不再依赖对 Reasoning
+	// 文本做前缀判断（那种做法会被模型输出误触发）。
+	Degraded bool `json:"-"`
 }
 
 // SceneAssessment 是对当前场景的评估。

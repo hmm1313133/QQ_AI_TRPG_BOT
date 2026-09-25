@@ -14,7 +14,7 @@ import (
 // Config 是 AI Agent 的配置。
 type Config struct {
 	LLMProvider  string  // deepseek / openai / hunyuan
-	LLMModel     string  // 模型名称 (如 deepseek-v4-flash, deepseek-reasoner)
+	LLMModel     string  // 模型名称 (如 deepseek-flash, deepseek-reasoner)
 	LLMAPIKey    string  // API 密钥 (DeepSeek: sk-xxx)
 	LLMBaseURL   string  // API 地址 (DeepSeek: https://api.deepseek.com)
 	MaxTokens    int     // 最大 token 数

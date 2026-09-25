@@ -69,13 +69,85 @@ JSON 格式如下：
   "reasoning": "决策推理过程（简要）"
 }`
 
+// directorStateView 是注入 Planner 的精简世界运行态视图。
+//
+// 刻意排除随历史线性增长的字段（EventLog / Summaries / RecentTurns /
+// PendingSummaryTurns / Lore / Personas / Background）：lore 已由 scriptContext
+// 承载，其余属于"记忆层"，不应进入低频决策输入。这样 Planner 的输入只随
+// "当前世界复杂度"变化，而非随团龄增长（否则与"成本 = f(复杂度)"的宣言矛盾）。
+type directorStateView struct {
+	WorldName  string                 `json:"world_name,omitempty"`
+	Mode       string                 `json:"mode"`
+	Scene      world.SceneState       `json:"scene"`
+	Characters []directorNPCView      `json:"characters,omitempty"`
+	Quests     []world.QuestState     `json:"quests,omitempty"`
+	HiddenInfo []world.HiddenItem     `json:"hidden_info,omitempty"`
+	EventQueue []world.ScheduledEvent `json:"event_queue,omitempty"`
+	Locks      []world.StateLock      `json:"locks,omitempty"`
+	Factions   []world.Faction        `json:"factions,omitempty"`
+	Items      []world.Item           `json:"items,omitempty"`
+	Relations  []world.RelationEdge   `json:"relations,omitempty"`
+	Facts      []world.Fact           `json:"facts,omitempty"`
+	Storyline  *world.Storyline       `json:"storyline,omitempty"`
+	Metrics    world.Metrics          `json:"metrics"`
+	RoundCount int                    `json:"round_count"`
+}
+
+// directorNPCView 精简 NPC 视图（去掉 Secrets 等不宜进入决策输入的字段）。
+type directorNPCView struct {
+	Name          string `json:"name"`
+	Role          string `json:"role,omitempty"`
+	Disposition   string `json:"disposition"`
+	Alive         bool   `json:"alive"`
+	CurrentAction string `json:"current_action,omitempty"`
+}
+
+// buildDirectorStateView 组装精简运行态视图（map 按 key 排序，注入顺序稳定）。
+func buildDirectorStateView(state *world.WorldState) directorStateView {
+	v := directorStateView{
+		WorldName:  state.DisplayName(),
+		Mode:       state.Mode,
+		Scene:      state.Scene,
+		Quests:     state.Quests,
+		HiddenInfo: state.HiddenInfo,
+		EventQueue: state.EventQueue,
+		Locks:      state.Locks,
+		Relations:  state.Relations,
+		Facts:      state.Facts,
+		Storyline:  state.Storyline,
+		Metrics:    state.Metrics,
+		RoundCount: state.RoundCount,
+	}
+	for _, name := range sortedKeys(state.Characters) {
+		c := state.Characters[name]
+		if c == nil {
+			continue
+		}
+		v.Characters = append(v.Characters, directorNPCView{
+			Name: c.Name, Role: c.Role, Disposition: c.Disposition,
+			Alive: c.Alive, CurrentAction: c.CurrentAction,
+		})
+	}
+	for _, name := range sortedKeys(state.Factions) {
+		if f := state.Factions[name]; f != nil {
+			v.Factions = append(v.Factions, *f)
+		}
+	}
+	for _, name := range sortedKeys(state.Items) {
+		if it := state.Items[name]; it != nil {
+			v.Items = append(v.Items, *it)
+		}
+	}
+	return v
+}
+
 // buildDirectorUserMessage 构建 Director 的用户消息。
-// 包含 WorldState JSON、预评估指标、玩家消息、世界设定上下文。
+// 包含精简运行态 JSON、预评估指标、玩家消息、世界设定上下文。
 func buildDirectorUserMessage(state *world.WorldState, playerMessage string, scriptContext string) string {
 	var sb strings.Builder
 
 	sb.WriteString("【当前游戏运行态】\n")
-	stateJSON, err := json.MarshalIndent(state, "", "  ")
+	stateJSON, err := json.MarshalIndent(buildDirectorStateView(state), "", "  ")
 	if err != nil {
 		sb.WriteString("(序列化失败)\n")
 	} else {

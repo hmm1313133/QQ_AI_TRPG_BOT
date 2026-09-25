@@ -125,18 +125,37 @@ func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) stri
 		state.Metrics.PlayerAgency, state.Metrics.ObjectiveProgress,
 		state.RoundCount))
 
-	// 阶段性剧情摘要（滑出对话窗口的远期剧情以此为准）；背景全文已由 lore 分区取代
-	if entries := state.SummaryEntries(); len(entries) > 0 {
-		sb.WriteString("\n【剧情回顾】（按时间先后的阶段摘要；更早的剧情以这些摘要为准，不要与近期对话重复叙述）\n")
-		for _, e := range entries {
-			if e.RoundTo > 0 {
-				sb.WriteString(fmt.Sprintf("  · [第%d-%d轮] %s\n", e.RoundFrom, e.RoundTo, e.Text))
-			} else {
-				sb.WriteString(fmt.Sprintf("  · %s\n", e.Text))
-			}
+	return sb.String()
+}
+
+// storyReviewMaxEntries 剧情回顾分区最多列出的阶段摘要条数。
+// 超出部分不再逐条展开；更早剧情的"累积结论"由后续摘要自然承载。
+// 目的：把剧情回顾做成可裁剪的可选分区并限制体量，避免随团龄无限膨胀。
+const storyReviewMaxEntries = 12
+
+// buildStoryReview 构建剧情回顾块（无摘要返回空串）。
+// 作为可选分区注入（与必需分区的运行态摘要解耦），超预算时可整体让位。
+func buildStoryReview(state *world.WorldState) string {
+	entries := state.SummaryEntries()
+	if len(entries) == 0 {
+		return ""
+	}
+	from := 0
+	if len(entries) > storyReviewMaxEntries {
+		from = len(entries) - storyReviewMaxEntries
+	}
+	var sb strings.Builder
+	sb.WriteString("【剧情回顾】（按时间先后的阶段摘要；更早的剧情以这些摘要为准，不要与近期对话重复叙述）\n")
+	if from > 0 {
+		sb.WriteString(fmt.Sprintf("  · （更早 %d 段摘要已省略）\n", from))
+	}
+	for _, e := range entries[from:] {
+		if e.RoundTo > 0 {
+			sb.WriteString(fmt.Sprintf("  · [第%d-%d轮] %s\n", e.RoundFrom, e.RoundTo, e.Text))
+		} else {
+			sb.WriteString(fmt.Sprintf("  · %s\n", e.Text))
 		}
 	}
-
 	return sb.String()
 }
 

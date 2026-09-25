@@ -50,6 +50,11 @@ func NewDirector(
 
 	modelOpts := []openai.Option{
 		openai.WithVariant(openai.VariantDeepSeek),
+		// JSON 模式：要求模型输出合法 JSON（DeepSeek 支持 response_format=json_object），
+		// 降低 extractAgentJSON 兜底率与整体降级率。模型级配置，仅作用于本实例。
+		openai.WithExtraFields(map[string]any{
+			"response_format": map[string]any{"type": "json_object"},
+		}),
 	}
 	modelInstance := openai.New(cfg.LLMModel, modelOpts...)
 
@@ -174,6 +179,7 @@ func (d *Director) rawCompletion(worldID, task, prompt string) (string, error) {
 // fallbackDirective 生成降级规则化指令（LLM 失败时使用）。
 func (d *Director) fallbackDirective(state *world.WorldState, playerMessage string) *DecisionDirective {
 	directive := &DecisionDirective{
+		Degraded: true,
 		Assessment: SceneAssessment{
 			TensionSummary:   fmt.Sprintf("张力 %d/100", state.Metrics.TensionLevel),
 			ChaosSummary:     fmt.Sprintf("混乱 %d/100", state.Metrics.ChaosLevel),
@@ -202,12 +208,12 @@ func (d *Director) fallbackDirective(state *world.WorldState, playerMessage stri
 	}
 
 	// 张力过高时降低难度
-	if state.Metrics.TensionLevel > 80 {
+	if state.Metrics.TensionLevel > tensionBreathThreshold {
 		directive.NarrationGuide.Constraints += "；当前张力过高，适当给予玩家喘息空间"
 	}
 
 	// 张力过低时增加紧迫感
-	if state.Metrics.TensionLevel < 20 {
+	if state.Metrics.TensionLevel < tensionLowThreshold {
 		directive.Actions = append(directive.Actions, DirectorAction{
 			Type:        "adjust_difficulty",
 			Description: "当前张力过低，引入新的紧迫感或威胁",
@@ -217,26 +223,26 @@ func (d *Director) fallbackDirective(state *world.WorldState, playerMessage stri
 	return directive
 }
 
-// recommendTone 根据指标推荐叙事基调。
+// recommendTone 根据指标推荐叙事基调（阈值与规则指导共用，避免规则漂移）。
 func (d *Director) recommendTone(state *world.WorldState) string {
-	if state.Metrics.TensionLevel > 70 {
+	if state.Metrics.TensionLevel > tensionHighThreshold {
 		return "紧张"
 	}
-	if state.Metrics.ChaosLevel > 60 {
+	if state.Metrics.ChaosLevel > chaosHighThreshold {
 		return "混乱"
 	}
-	if state.Metrics.TensionLevel < 20 {
+	if state.Metrics.TensionLevel < tensionLowThreshold {
 		return "平静"
 	}
 	return "正常"
 }
 
-// recommendPacing 根据指标推荐节奏。
+// recommendPacing 根据指标推荐节奏（阈值与规则指导共用，避免规则漂移）。
 func (d *Director) recommendPacing(state *world.WorldState) string {
-	if state.Metrics.TensionLevel > 70 || state.Metrics.ChaosLevel > 60 {
+	if state.Metrics.TensionLevel > tensionHighThreshold || state.Metrics.ChaosLevel > chaosHighThreshold {
 		return "fast"
 	}
-	if state.Metrics.TensionLevel < 20 && state.Metrics.ObjectiveProgress < 30 {
+	if state.Metrics.TensionLevel < tensionLowThreshold && state.Metrics.ObjectiveProgress < 30 {
 		return "slow"
 	}
 	return "medium"

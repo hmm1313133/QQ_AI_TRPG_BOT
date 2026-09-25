@@ -86,14 +86,15 @@ func NewContextBuilder(budget int) *ContextBuilder {
 //	  6. 世界事件块（时钟推进/离线演化产生的本回合事件）
 //	  7. 游戏运行态摘要核心 + 锁定事实（必需；每轮都变）
 //	  8. 在场 NPC/物品详情（可选高优先级；创作字段全文注入，真超预算才整段裁剪）
-//	  9. 场景计划 ScenePlan（按计划间隔刷新）
+//	  9. 剧情回顾（可选；阶段摘要，条数受限，超预算整段裁剪）
+//	  10. 场景计划 ScenePlan（按计划间隔刷新）
 //	对话历史：近期对话窗口（固定轮数不裁剪，user/assistant 消息对——SillyTavern
 //	  式处理：历史是风格的锚点，裁历史比裁设定更伤体验）
 //	本轮玩家消息：最终 user 消息正文
 //	尾部指令区（拼接在玩家消息之后，Author's Note 位置）：
-//	  10. 回复长度要求（必需）11. 回复风格要求（必需；Style.Core，空则回退旧
-//	      ReplyStyle 字段）12. 输出格式要求（必需；Style.EnableCoT 时的思维链
-//	      指导）13. lore tail 风格指令区
+//	  11. 回复长度要求（必需）12. 回复风格要求（必需；Style.Core，空则回退旧
+//	      ReplyStyle 字段）13. 输出格式要求（必需；Style.EnableCoT 时的思维链
+//	      指导）14. lore tail 风格指令区
 //
 // 裁剪优先级与位置对齐：超预算时优先裁尾部可选分区，保住稳定前缀。
 // lore 已经 LoreResolver 按 lore_budget 裁剪，此处作为可选分区接入。
@@ -171,6 +172,17 @@ func (b *ContextBuilder) BuildNarratorInput(
 			ctxSections = append(ctxSections, contextSection{
 				priority: 2, name: "entity_details",
 				content: details,
+			})
+		}
+	}
+
+	// 可选：剧情回顾（阶段摘要；独立分区，超预算时可整体裁剪，
+	// 避免摘要随团龄增长撑爆必需的运行态摘要分区）
+	if state != nil {
+		if review := buildStoryReview(state); review != "" {
+			ctxSections = append(ctxSections, contextSection{
+				priority: 3, name: "story_review",
+				content: review,
 			})
 		}
 	}

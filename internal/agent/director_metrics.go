@@ -40,6 +40,15 @@ func (m *MetricsEvaluator) calcTension(state *world.WorldState) int {
 	threats := state.ActiveThreatCount()
 	score += threats * 20
 
+	// 已触发但未解决的事件代表"正在发生的威胁"，是叙事可反馈张力的抓手
+	ongoing := 0
+	for _, ev := range state.EventQueue {
+		if ev.Triggered && !ev.Resolved {
+			ongoing++
+		}
+	}
+	score += ongoing * 5
+
 	// 未发现的线索暗示潜在危险
 	undiscovered := state.UndiscoveredCount()
 	score += undiscovered * 3
@@ -93,9 +102,15 @@ func (m *MetricsEvaluator) calcChaos(state *world.WorldState) int {
 	}
 	score += triggeredUnresolved * 10
 
-	// Round 过多且无进展增加混乱
+	// 停滞压力：回合数过多且无进展会累积混乱感。
+	// 该分项设上限（最多 +20），否则长团中 chaos 单调贴顶 100，
+	// 会持续压低掌控权（calcAgency 有 -chaos/4），使"喘息/收束"规则长期空转。
 	if state.RoundCount > 10 {
-		score += (state.RoundCount - 10) * 2
+		stagnation := (state.RoundCount - 10) * 2
+		if stagnation > 20 {
+			stagnation = 20
+		}
+		score += stagnation
 	}
 
 	return clampInt(score, 0, 100)

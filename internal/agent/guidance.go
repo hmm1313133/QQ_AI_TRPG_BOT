@@ -13,6 +13,17 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
+// 叙事规则阈值（规则指导与 Director 降级指令共用一份，避免两处拷贝产生漂移）。
+const (
+	tensionBreathThreshold = 80 // 高于此值：给玩家喘息空间，避免继续施压
+	tensionHighThreshold   = 70 // 高于此值：基调转"紧张"、节奏转 fast
+	tensionLowThreshold    = 20 // 低于此值：引入新的紧迫感/威胁
+	chaosHighThreshold     = 60 // 高于此值：基调转"混乱"、节奏转 fast
+	chaosCollapseThreshold = 70 // 高于此值：局势接近失控，收束线索
+	agencyLowThreshold     = 30 // 低于此值：玩家掌控感不足，补选项/线索
+	stagnationRounds       = 5  // 停滞检测：同场景超过该轮数且无进展
+)
+
 // RuleGuidance 规则化叙事指导（确定性生成）。
 type RuleGuidance struct {
 	Tone        string   // 叙事基调
@@ -28,37 +39,37 @@ func BuildGuidance(state *world.WorldState) *RuleGuidance {
 
 	// 基调
 	switch {
-	case m.TensionLevel > 70:
+	case m.TensionLevel > tensionHighThreshold:
 		g.Tone = "紧张"
-	case m.ChaosLevel > 60:
+	case m.ChaosLevel > chaosHighThreshold:
 		g.Tone = "混乱"
-	case m.TensionLevel < 20:
+	case m.TensionLevel < tensionLowThreshold:
 		g.Tone = "平静"
 	}
 
 	// 节奏
 	switch {
-	case m.TensionLevel > 70 || m.ChaosLevel > 60:
+	case m.TensionLevel > tensionHighThreshold || m.ChaosLevel > chaosHighThreshold:
 		g.Pacing = "fast"
-	case m.TensionLevel < 20 && m.ObjectiveProgress < 30:
+	case m.TensionLevel < tensionLowThreshold && m.ObjectiveProgress < 30:
 		g.Pacing = "slow"
 	}
 
 	// 张力调节
-	if m.TensionLevel > 80 {
+	if m.TensionLevel > tensionBreathThreshold {
 		g.Constraints = append(g.Constraints, "当前张力过高，给予玩家喘息空间，避免继续施压")
 	}
-	if m.TensionLevel < 20 {
+	if m.TensionLevel < tensionLowThreshold {
 		g.Focus = append(g.Focus, "当前张力过低，引入新的紧迫感或威胁")
 	}
 
 	// 混乱调节
-	if m.ChaosLevel > 70 {
+	if m.ChaosLevel > chaosCollapseThreshold {
 		g.Focus = append(g.Focus, "局势接近失控，帮助玩家收束线索、明确下一步可选行动")
 	}
 
 	// 掌控权调节
-	if m.PlayerAgency < 30 {
+	if m.PlayerAgency < agencyLowThreshold {
 		g.Focus = append(g.Focus, "玩家掌控感不足，提供更多选择和可探索的线索")
 	}
 
@@ -68,7 +79,7 @@ func BuildGuidance(state *world.WorldState) *RuleGuidance {
 	}
 
 	// 停滞检测：同一场景轮次过多且目标无进展
-	if state.RoundCount-state.PlanRound > 5 && m.ObjectiveProgress < 50 && m.TensionLevel < 40 {
+	if state.RoundCount-state.PlanRound > stagnationRounds && m.ObjectiveProgress < 50 && m.TensionLevel < 40 {
 		g.Focus = append(g.Focus, "玩家可能陷入停滞，主动提供线索提示或 NPC 引导")
 	}
 
@@ -78,7 +89,7 @@ func BuildGuidance(state *world.WorldState) *RuleGuidance {
 // String 渲染为注入 Narrator 的文本块。
 func (g *RuleGuidance) String() string {
 	var sb strings.Builder
-	sb.WriteString("【叙事指导（规则生成，请遵循）】\n")
+	sb.WriteString("【叙事指导（请遵循）】\n")
 	sb.WriteString(fmt.Sprintf("基调: %s | 节奏: %s\n", g.Tone, g.Pacing))
 	for _, f := range g.Focus {
 		sb.WriteString(fmt.Sprintf("关注: %s\n", f))

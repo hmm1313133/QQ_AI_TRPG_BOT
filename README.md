@@ -157,7 +157,7 @@ go mod download
 ```bash
 # LLM 配置（默认 DeepSeek）
 export LLM_PROVIDER=deepseek
-export LLM_MODEL=deepseek-v4-flash
+export LLM_MODEL=deepseek-flash
 export LLM_API_KEY=your_api_key
 export LLM_BASE_URL=https://api.deepseek.com
 

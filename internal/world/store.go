@@ -207,3 +207,10 @@ func archiveEvents(state *WorldState, beforeRound int) bool {
 	}}, kept...)
 	return true
 }
+
+// ArchiveEvents 按轮次压缩归档内存中的 EventLog（archiveEvents 的导出版本）。
+// 供回合记账等已持有世界状态的调用方复用，避免为归档再走一次 Load/Save。
+// 返回本次是否发生了归档。
+func ArchiveEvents(state *WorldState, beforeRound int) bool {
+	return archiveEvents(state, beforeRound)
+}

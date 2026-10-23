@@ -148,9 +148,14 @@ func (t *TurnEngine) Run(
 		// 无世界状态（普通对话）-> 直接叙事（人设只有全局默认一档）
 		gameContext := t.narrator.buildGameContext(sessionID)
 		p := t.globalPersona(userID)
-		input := t.ctxBuilder.BuildNarratorInput(nil, nil, nil, gameContext, "", nil, playerMessage,
+		history := normalSessionHistory(session)
+		input := t.ctxBuilder.BuildNarratorInputWithBudget(t.ctxBuilder.Budget, nil, nil, nil, gameContext, "", history, playerMessage,
 			LengthHintFromSession(session), buildPersonaBlock(p), personaName(p))
-		return t.narrator.NarrateMessage(ctx.Ctx, ResolveMainPrompt(nil, personaName(p)), input, sessionID, userID)
+		reply, err := t.narrator.NarrateMessage(ctx.Ctx, ResolveMainPrompt(nil, personaName(p)), input, sessionID, userID)
+		if err == nil {
+			appendNormalSessionHistory(session, playerMessage, reply)
+		}
+		return reply, err
 	}
 	mode := world.GetMode(state.Mode)
 
@@ -159,16 +164,18 @@ func (t *TurnEngine) Run(
 	// 保证连续多次重试都回滚到同一基点。
 	if !IsRegenRetry(ctx) {
 		if err := t.worldEngine.SaveTurnSnapshot(sessionID, state, playerMessage); err != nil {
-			log.Printf("[TurnEngine] 回合快照写入失败: %v", err)
+			return "", fmt.Errorf("保存回合快照失败: %w", err)
 		}
 	}
 
-	// 1c. 应用运行时配置（热更新项：上下文预算与 lore 检索参数每回合读取）
+	// 1c. 应用运行时配置（热更新项：上下文预算与 lore 检索参数每回合读取）。
+	// budget 保存在本地变量，ContextBuilder 不持有共享可变回合配置。
+	contextBudget := t.ctxBuilder.Budget
 	loreBudget := world.DefaultLoreBudget
 	loreScanRounds := world.DefaultLoreScanRounds
 	loreRecursion := false
 	if t.cfgStore != nil {
-		t.ctxBuilder.Budget = t.cfgStore.GetInt(config.KeyContextBudget, t.ctxBuilder.Budget)
+		contextBudget = t.cfgStore.GetInt(config.KeyContextBudget, contextBudget)
 		loreBudget = t.cfgStore.GetInt(config.KeyLoreBudget, loreBudget)
 		loreScanRounds = t.cfgStore.GetInt(config.KeyLoreScanRounds, loreScanRounds)
 		loreRecursion = t.cfgStore.GetBool(config.KeyLoreRecursion, false)
@@ -203,10 +210,10 @@ func (t *TurnEngine) Run(
 	gameContext := t.narrator.buildGameContext(sessionID)
 	eventsBlock := worldEventsBlock
 	dialoguePlayer := state.EffectivePersona(userID, t.personaStore)
-	input := t.ctxBuilder.BuildNarratorInput(state, &lore, guidance, gameContext, eventsBlock, state.RecentTurns, playerMessage,
+	input := t.ctxBuilder.BuildNarratorInputWithBudget(contextBudget, state, &lore, guidance, gameContext, eventsBlock, state.RecentTurns, playerMessage,
 		LengthHintFromSession(session), buildPersonaBlock(dialoguePlayer), personaName(dialoguePlayer))
 	log.Printf("[TurnEngine] 上下文包: 设定 %d 字符 + 历史 %d 轮（预算 %d）",
-		len(input.ContextBlock), len(input.History), t.ctxBuilder.Budget)
+		len(input.ContextBlock), len(input.History), contextBudget)
 
 	// 6. Narrator 无状态调用（系统提示词按世界预设/自定义每轮解析）
 	mainPrompt := ResolveMainPrompt(state.Style, personaName(dialoguePlayer))
@@ -215,11 +222,13 @@ func (t *TurnEngine) Run(
 		return "", fmt.Errorf("Narrator 执行失败: %w", err)
 	}
 
-	// 7. 记账 + 持久化（重新加载最新状态，叠加本轮增量；含短期对话窗口）
-	saved := t.bookkeep(state, sessionID, playerMessage, reply)
+	// 7. 记账 + 持久化：当前 state 是本回合唯一聚合对象。
+	if err := t.bookkeep(state, sessionID, playerMessage, reply); err != nil {
+		return "", fmt.Errorf("回合状态提交失败: %w", err)
+	}
 
-	// 8. 滚动剧情摘要：窗口淘汰轮已记入 PendingSummaryTurns，攒够批次异步合并进摘要
-	if mode.EnableMemory && t.summary != nil && saved != nil {
+	// 8. 滚动剧情摘要：窗口淘汰轮已记入 PendingSummaryTurns，攒够批次异步合并进摘要。
+	if mode.EnableMemory && t.summary != nil {
 		go t.summary.MaybeSummarize(sessionID)
 	}
 
@@ -227,6 +236,27 @@ func (t *TurnEngine) Run(
 		time.Since(start).Seconds(), sessionID, state.RoundCount)
 
 	return reply, nil
+}
+
+const normalHistoryKey = "normal_dialogue_history"
+const normalHistoryCap = 10
+
+func normalSessionHistory(session *core.Session) []world.DialogueTurn {
+	value, ok := session.Get(normalHistoryKey)
+	if !ok {
+		return nil
+	}
+	turns, _ := value.([]world.DialogueTurn)
+	return append([]world.DialogueTurn(nil), turns...)
+}
+
+func appendNormalSessionHistory(session *core.Session, player, reply string) {
+	turns := normalSessionHistory(session)
+	turns = append(turns, world.DialogueTurn{Player: player, Narrator: reply})
+	if len(turns) > normalHistoryCap {
+		turns = turns[len(turns)-normalHistoryCap:]
+	}
+	session.Set(normalHistoryKey, turns)
 }
 
 // globalPersona 读取玩家全局默认人设（存储未配置或读取出错返回 nil）。
@@ -320,12 +350,12 @@ func (t *TurnEngine) RecentInjections(worldID string) []world.LoreResult {
 // 若世界状态仍在（进程重启导致内存模式回落），恢复为 freechat 并加载。
 // 无世界状态时返回 nil，由调用方走纯对话路径。
 func (t *TurnEngine) resolveState(session *core.Session, sessionID string) *world.WorldState {
-	if session.Mode != core.ModeNormal {
+	if session.ModeValue() != core.ModeNormal {
 		return t.loadOrCreateState(sessionID)
 	}
 	if t.worldEngine != nil {
 		if ws := t.worldEngine.LoadOrNil(sessionID); ws != nil {
-			session.Mode = core.ModeFreeChat
+			session.SetMode(core.ModeFreeChat)
 			log.Printf("[TurnEngine] 会话 %s 世界状态仍在，已从 normal 恢复为 freechat", sessionID)
 			return ws
 		}
@@ -545,77 +575,43 @@ func (t *TurnEngine) advanceWorldClock(state *world.WorldState, mode world.GameM
 	return sb
 }
 
-// bookkeep 回合记账：重新加载最新状态（Narrator 工具可能已修改），
-// 叠加本轮指标/计划/轮次增量与短期对话窗口后持久化。返回保存后的状态快照。
-func (t *TurnEngine) bookkeep(state *world.WorldState, sessionID, playerMessage, reply string) *world.WorldState {
+// bookkeep 回合记账：直接提交本回合唯一的 state，保留所有 ApplyEvent/Planner/时钟变更。
+func (t *TurnEngine) bookkeep(state *world.WorldState, sessionID, playerMessage, reply string) error {
 	if t.worldEngine == nil || state == nil {
-		return nil
+		return fmt.Errorf("世界引擎或状态为空")
 	}
 
-	latest := t.worldEngine.LoadOrNil(sessionID)
-	if latest == nil {
-		latest = state
-	}
+	// 短期窗口淘汰轮进入待总结队列（攒够批次后由 SummaryService 并入剧情摘要）。
+	evicted := state.AppendTurn(playerMessage, reply)
+	state.PendingSummaryTurns = append(state.PendingSummaryTurns, evicted...)
+	state.RoundCount++
 
-	latest.Metrics = state.Metrics
-	if state.ScenePlan != "" {
-		latest.ScenePlan = state.ScenePlan
-		latest.PlanNodeID = state.PlanNodeID
-		latest.PlanRound = state.PlanRound
-	}
-	// 短期窗口淘汰轮进入待总结队列（攒够批次后由 SummaryService 并入剧情摘要）
-	evicted := latest.AppendTurn(playerMessage, reply)
-	latest.PendingSummaryTurns = append(latest.PendingSummaryTurns, evicted...)
-	latest.RoundCount++
-
-	// 合并世界时钟（本回合已推进）与事件触发标记（按 ID 合并，
-	// 避免覆盖本回合工具调用刷新的事件队列）
-	latest.Clock = state.Clock
-	triggered := make(map[string]bool)
-	for _, ev := range state.EventQueue {
-		if ev.Triggered {
-			triggered[ev.ID] = true
-		}
-	}
-	for i := range latest.EventQueue {
-		if triggered[latest.EventQueue[i].ID] {
-			latest.EventQueue[i].Triggered = true
-		}
-	}
-
-	// 情绪随世界时间衰减（P4）
-	mode := world.GetMode(latest.Mode)
+	// 本轮状态更新已经全部发生在 state 上；仅在提交前计算最终指标和情绪衰减。
+	mode := world.GetMode(state.Mode)
 	if mode.EnableMood {
-		world.DecayMoods(latest)
+		world.DecayMoods(state)
 	}
-
-	// 玩家决策事件入库：供 lore 关键词召回（RecentDecisions）与审计用。
-	// 此前 RecordDecision 从无调用方，导致 EventLog 里永远没有 decision 事件。
+	if t.metrics != nil {
+		state.Metrics = t.metrics.Evaluate(state)
+	}
 	if strings.TrimSpace(playerMessage) != "" {
-		if _, err := t.worldEngine.ApplyEvent(latest, world.WorldEvent{
-			Type: "decision", Actor: "player",
-			Target: latest.Scene.NodeID, Value: truncate(playerMessage, 120),
+		if _, err := t.worldEngine.ApplyEvent(state, world.WorldEvent{
+			Type: "decision", Actor: "player", Target: state.Scene.NodeID,
+			Value: truncate(playerMessage, 120),
 		}); err != nil {
-			log.Printf("[TurnEngine] 记录玩家决策失败: %v", err)
+			return fmt.Errorf("记录玩家决策失败: %w", err)
 		}
 	}
-
-	// EventLog 自动归档：把早于保留窗口的事件压缩为一条计数摘要，防无界增长。
-	if before := latest.RoundCount - world.EventLogKeepRounds; before > 0 {
-		if world.ArchiveEvents(latest, before) {
-			log.Printf("[TurnEngine] EventLog 已归档 (round < %d): session=%s", before, sessionID)
-		}
+	if before := state.RoundCount - world.EventLogKeepRounds; before > 0 {
+		world.ArchiveEvents(state, before)
 	}
-
-	// 待总结队列硬上限：摘要服务长期失败时防止无界累积。
-	if len(latest.PendingSummaryTurns) > world.MaxPendingSummaryTurns {
-		drop := len(latest.PendingSummaryTurns) - world.MaxPendingSummaryTurns
-		latest.PendingSummaryTurns = latest.PendingSummaryTurns[drop:]
-		log.Printf("[TurnEngine] 待总结队列超上限，丢弃最早 %d 轮: session=%s", drop, sessionID)
+	if len(state.PendingSummaryTurns) > world.MaxPendingSummaryTurns {
+		drop := len(state.PendingSummaryTurns) - world.MaxPendingSummaryTurns
+		state.PendingSummaryTurns = state.PendingSummaryTurns[drop:]
+		log.Printf("[TurnEngine] 待总结队列超上限，保留最近 %d 轮: session=%s", world.MaxPendingSummaryTurns, sessionID)
 	}
-
-	if err := t.worldEngine.Save(latest); err != nil {
-		log.Printf("[TurnEngine] 持久化 WorldState 失败: %v", err)
+	if err := t.worldEngine.Save(state); err != nil {
+		return err
 	}
-	return latest
+	return nil
 }

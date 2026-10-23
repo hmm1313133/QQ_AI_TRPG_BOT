@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,23 @@ var (
 )
 
 // logLLMInteraction 追加一条 LLM 交互记录（失败仅告警，不影响主流程）。
+func cleanupLLMLogs(dir string, now time.Time, keepDays int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := now.AddDate(0, 0, -keepDays)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
+}
+
 func logLLMInteraction(rec llmLogRecord) {
 	if llmLogOff {
 		return
@@ -82,7 +100,13 @@ func logLLMInteraction(rec llmLogRecord) {
 		log.Printf("[LLMLog] 创建目录失败: %v", err)
 		return
 	}
-	path := filepath.Join(dir, time.Now().Format("2006-01-02")+".jsonl")
+	now := time.Now()
+	cleanupLLMLogs(dir, now, 14)
+	base := now.Format("2006-01-02")
+	path := filepath.Join(dir, base+".jsonl")
+	if info, statErr := os.Stat(path); statErr == nil && info.Size() >= 20*1024*1024 {
+		path = filepath.Join(dir, base+"."+strconv.FormatInt(now.UnixNano(), 10)+".jsonl")
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		log.Printf("[LLMLog] 打开日志失败: %v", err)

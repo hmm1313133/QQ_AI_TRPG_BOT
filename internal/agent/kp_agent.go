@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
@@ -112,23 +113,18 @@ func (a *KPAgent) AgentID() string {
 }
 
 // Chat implements core.AgentHandler.
-// 优先委托给 TurnEngine（规则指导 + 低频 Planner + Narrator），
-// turnEngine 不可用时回退到单 agent 模式。
+// TurnEngine 是唯一正式回合入口；失败时必须向上返回，不能用无状态路径伪造成功。
 func (a *KPAgent) Chat(ctx *core.MessageContext, session *core.Session) (string, error) {
-	// 回合引擎模式
-	if a.turnEngine != nil {
-		reply, err := a.turnEngine.Run(ctx, session)
-		if err != nil {
-			log.Printf("[KPAgent] TurnEngine 执行失败，回退到单 agent 模式: %v", err)
-		} else {
-			log.Printf("[KPAgent] 会话 %s, 用户 %s: %s -> %s",
-				ctx.SessionID, ctx.UserID, truncate(ctx.Content, 50), truncate(reply, 100))
-			return reply, nil
-		}
+	if a.turnEngine == nil {
+		return a.chatSingleAgent(ctx)
 	}
-
-	// 单 agent 回退模式（原有逻辑）
-	return a.chatSingleAgent(ctx)
+	reply, err := a.turnEngine.Run(ctx, session)
+	if err != nil {
+		return "", fmt.Errorf("回合引擎失败: %w", err)
+	}
+	log.Printf("[KPAgent] 会话 %s, 用户 %s: %s -> %s",
+		ctx.SessionID, ctx.UserID, truncate(ctx.Content, 50), truncate(reply, 100))
+	return reply, nil
 }
 
 // chatSingleAgent 是原有的单 agent 模式，作为 pipeline 的回退。
@@ -202,7 +198,9 @@ func (a *KPAgent) buildGameContext(sessionID string) string {
 	}
 	session := a.sessionMgr.GetSession(sessionID)
 	lastRoll, ok := session.Get("last_dice_result")
-	if !ok {
+	at, atOK := session.Get("last_dice_at")
+	stamp, stampOK := at.(int64)
+	if !ok || !atOK || !stampOK || time.Since(time.Unix(stamp, 0)) > 2*time.Minute {
 		return ""
 	}
 	return fmt.Sprintf("【游戏上下文】\n最近骰点: %v\n", lastRoll)

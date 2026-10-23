@@ -9,6 +9,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -20,7 +21,11 @@ import (
 )
 
 // DefaultSummaryChunk 默认待总结批次（轮数）：攒够这么多淘汰轮才触发一次摘要。
-const DefaultSummaryChunk = 6
+const (
+	DefaultSummaryChunk = 6
+	SummaryMaxEntries = 64
+	SummaryTimeout = 45 * time.Second
+)
 
 // SummaryService 阶段性剧情摘要服务。
 type SummaryService struct {
@@ -77,36 +82,77 @@ func (s *SummaryService) MaybeSummarize(worldID string) {
 		s.mu.Unlock()
 	}()
 
-	s.worldEngine.Lock(worldID)
-	defer s.worldEngine.Unlock(worldID)
-
-	ws := s.worldEngine.LoadOrNil(worldID)
-	if ws == nil || len(ws.PendingSummaryTurns) < s.chunkSize() {
-		return
+	chunk := s.chunkSize()
+	if chunk < 1 {
+		chunk = DefaultSummaryChunk
+	}
+	if chunk > world.MaxPendingSummaryTurns {
+		chunk = world.MaxPendingSummaryTurns
 	}
 
-	// 取最早的一个批次总结为一个阶段条目，其余留待后续回合
-	batch := ws.PendingSummaryTurns[:s.chunkSize()]
-	newSummary, err := s.complete(worldID, "summarizer", buildSummaryPrompt(ws, batch))
+	// 锁内只读取不可变快照，外部 LLM 调用不阻塞世界回合。
+	s.worldEngine.Lock(worldID)
+	ws := s.worldEngine.LoadOrNil(worldID)
+	if ws == nil || len(ws.PendingSummaryTurns) < chunk {
+		s.worldEngine.Unlock(worldID)
+		return
+	}
+	baseRevision := ws.Revision
+	batch := append([]world.DialogueTurn(nil), ws.PendingSummaryTurns[:chunk]...)
+	prompt := buildSummaryPrompt(ws, batch)
+	s.worldEngine.Unlock(worldID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), SummaryTimeout)
+	newSummary, err := completeWithContext(ctx, s.complete, worldID, "summarizer", prompt)
+	cancel()
 	if err != nil {
 		log.Printf("[Summary] 摘要生成失败（待总结队列保留，下轮重试）: world=%s: %v", worldID, err)
 		return
 	}
 	newSummary = strings.TrimSpace(newSummary)
 	if newSummary == "" {
-		log.Printf("[Summary] 摘要为空（待总结队列保留）: world=%s", worldID)
 		return
 	}
 
-	id := ws.AppendSummary(newSummary, batch[0].Round, batch[len(batch)-1].Round,
+	s.worldEngine.Lock(worldID)
+	defer s.worldEngine.Unlock(worldID)
+	latest := s.worldEngine.LoadOrNil(worldID)
+	if latest == nil || latest.Revision != baseRevision || len(latest.PendingSummaryTurns) < chunk {
+		log.Printf("[Summary] 世界已变化，丢弃过期摘要结果: world=%s", worldID)
+		return
+	}
+	id := latest.AppendSummary(newSummary, batch[0].Round, batch[len(batch)-1].Round,
 		time.Now().Format("2006-01-02 15:04:05"))
-	ws.PendingSummaryTurns = ws.PendingSummaryTurns[len(batch):]
-	if err := s.worldEngine.Save(ws); err != nil {
-		log.Printf("[Summary] 摘要落库失败: world=%s: %v", worldID, err)
+	latest.PendingSummaryTurns = latest.PendingSummaryTurns[chunk:]
+	if len(latest.Summaries) > SummaryMaxEntries {
+		latest.Summaries = latest.Summaries[len(latest.Summaries)-SummaryMaxEntries:]
+	}
+	if err := s.worldEngine.SaveIfRevision(latest, baseRevision); err != nil {
+		log.Printf("[Summary] 摘要落库失败（待总结队列保留）: world=%s: %v", worldID, err)
 		return
 	}
 	log.Printf("[Summary] 阶段摘要已追加: world=%s, id=%d, 覆盖第%d-%d轮, %d 字",
 		worldID, id, batch[0].Round, batch[len(batch)-1].Round, len([]rune(newSummary)))
+}
+
+func completeWithContext(ctx context.Context, complete func(string, string, string) (string, error), worldID, task, prompt string) (string, error) {
+	result := make(chan struct {
+		text string
+		err error
+	}, 1)
+	go func() {
+		text, err := complete(worldID, task, prompt)
+		result <- struct {
+			text string
+			err error
+		}{text, err}
+	}()
+	select {
+	case out := <-result:
+		return out.text, out.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 // buildSummaryPrompt 组装阶段摘要 prompt：上一条摘要（仅供衔接，不复述）+ 本阶段对话 → 一段新摘要。

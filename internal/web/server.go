@@ -50,6 +50,10 @@ type Server struct {
 
 	mu    sync.Mutex
 	conns map[string]*wsConn // sessionToken -> 连接
+
+	// turnLocks 串行化同一 Web 会话的 chat、regen 和恢复操作。
+	turnLocksMu sync.Mutex
+	turnLocks   map[string]*sync.Mutex
 }
 
 // wsConn 一个 WebSocket 连接（写操作需持锁）。
@@ -76,15 +80,28 @@ type wsMessage struct {
 // NewServer 创建 Web 渠道服务器。
 func NewServer(cfg Config, router *core.Router, sessions *core.SessionManager) *Server {
 	return &Server{
-		cfg:    cfg,
-		router: router,
-		sess:   sessions,
-		conns:  make(map[string]*wsConn),
+		cfg:        cfg,
+		router:     router,
+		sess:       sessions,
+		conns:      make(map[string]*wsConn),
+		turnLocks:  make(map[string]*sync.Mutex),
 	}
 }
 
 // ID 实现 core.Channel。
 func (s *Server) ID() string { return "web" }
+
+func (s *Server) lockTurn(sessionID string) func() {
+	s.turnLocksMu.Lock()
+	lock := s.turnLocks[sessionID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.turnLocks[sessionID] = lock
+	}
+	s.turnLocksMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
 
 // SetAdmin 配置管理后台（Start 前调用）。
 func (s *Server) SetAdmin(deps AdminDeps, adminToken string) {
@@ -206,13 +223,15 @@ func (s *Server) handleChatWS(w http.ResponseWriter, r *http.Request) {
 			return // 连接关闭
 		}
 		if msg.Type == "regen" {
-			s.handleRegen(wc, sessionID, token, msg.RefID)
+			go s.handleRegen(wc, sessionID, token, msg.RefID)
 			continue
 		}
 		if msg.Type != "chat" || strings.TrimSpace(msg.Text) == "" {
 			continue
 		}
 
+		// 同一会话的回合请求串行化，避免 chat 与 regen 交错提交世界状态。
+		unlockTurn := s.lockTurn(sessionID)
 		// 记录玩家消息（历史恢复用），并回执行 id 让前端气泡可编辑/删除
 		userMsgID := s.recordChat(sessionID, "user", strings.TrimSpace(msg.Text))
 		s.send(wc, wsMessage{Type: "ack", ID: userMsgID, Text: strings.TrimSpace(msg.Text)})
@@ -233,7 +252,10 @@ func (s *Server) handleChatWS(w http.ResponseWriter, r *http.Request) {
 		// 先反馈"思考中"
 		s.send(wc, wsMessage{Type: "status", State: "thinking"})
 
-		go s.router.Route(mc, s.makeReplyFunc(wc, sessionID))
+		go func() {
+			defer unlockTurn()
+			s.router.Route(mc, s.makeReplyFunc(wc, sessionID))
+		}()
 	}
 }
 
@@ -242,6 +264,8 @@ func (s *Server) handleChatWS(w http.ResponseWriter, r *http.Request) {
 // 自己的发言，编辑后重试应按新文本生成）；历史缺失（如发言已删）才退回快照原文。
 // 校验失败回 error 帧；重试回复不新增 chat_messages 行，而是作为 ref_id 消息的新版本。
 func (s *Server) handleRegen(wc *wsConn, sessionID, token string, refID int64) {
+	unlockTurn := s.lockTurn(sessionID)
+	defer unlockTurn()
 	fail := func(text string) {
 		s.send(wc, wsMessage{Type: "error", Text: text})
 	}
@@ -309,7 +333,8 @@ func (s *Server) handleRegen(wc *wsConn, sessionID, token string, refID int64) {
 	}
 
 	s.send(wc, wsMessage{Type: "status", State: "thinking"})
-	go s.router.Route(mc, s.makeRegenReplyFunc(wc, refID))
+	// handleRegen 本身运行在独立 goroutine，保持会话锁直到路由和状态提交完成。
+	s.router.Route(mc, s.makeRegenReplyFunc(wc, refID))
 }
 
 // makeReplyFunc 创建 Web 渠道的回复函数（WS 推送 + 历史记录）。

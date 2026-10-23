@@ -7,6 +7,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/dice"
@@ -41,6 +42,7 @@ func NewRollDiceTool(sessionMgr *core.SessionManager) tool.Tool {
 				session := sessionMgr.GetSession(sessionID)
 				session.Set("last_dice_result", result.String())
 				session.Set("last_dice_total", result.Total)
+				session.Set("last_dice_at", time.Now().Unix())
 			}
 		}
 

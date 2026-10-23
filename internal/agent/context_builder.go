@@ -110,6 +110,26 @@ func (b *ContextBuilder) BuildNarratorInput(
 	personaBlock string,
 	playerName string,
 ) *NarratorInput {
+	return b.BuildNarratorInputWithBudget(b.Budget, state, lore, guidance, gameContext, eventsBlock, recentTurns, playerMessage, lengthHint, personaBlock, playerName)
+}
+
+// BuildNarratorInputWithBudget 使用本次调用的局部预算，避免共享 Builder 状态产生竞态。
+func (b *ContextBuilder) BuildNarratorInputWithBudget(
+	budget int,
+	state *world.WorldState,
+	lore *world.LoreResult,
+	guidance *RuleGuidance,
+	gameContext string,
+	eventsBlock string,
+	recentTurns []world.DialogueTurn,
+	playerMessage string,
+	lengthHint string,
+	personaBlock string,
+	playerName string,
+) *NarratorInput {
+	if budget <= 0 {
+		budget = DefaultContextBudget
+	}
 	var ctxSections, tailSections []contextSection
 
 	// 必需：规则指导（整局稳定，放最前）
@@ -229,13 +249,87 @@ func (b *ContextBuilder) BuildNarratorInput(
 		})
 	}
 
+	contextBlock := assembleWithBudget(ctxSections, budget)
+	used := runeCost(contextBlock) + runeCost(playerMessage) + runeCost(playerName)
+	for _, turn := range recentTurns {
+		used += runeCost(turn.Player) + runeCost(turn.Narrator) + 8
+	}
+	tailBudget := budget - used
+	if tailBudget < 0 {
+		tailBudget = 0
+	}
 	return &NarratorInput{
-		ContextBlock:  b.assemble(ctxSections),
+		ContextBlock:  contextBlock,
 		History:       recentTurns,
 		PlayerName:    playerName,
 		PlayerMessage: playerMessage,
-		Tail:          b.assemble(tailSections),
+		Tail:          assembleWithBudget(tailSections, tailBudget),
 	}
+}
+
+func runeCost(s string) int { return len([]rune(s)) }
+
+func assembleWithBudget(sections []contextSection, budget int) string {
+	used := 0
+	included := make(map[int]bool, len(sections))
+	for i, s := range sections {
+		if s.required {
+			included[i] = true
+			used += runeCost(s.content)
+		}
+	}
+	order := make([]int, 0, len(sections))
+	for i, s := range sections {
+		if !s.required {
+			order = append(order, i)
+		}
+	}
+	for i := 0; i < len(order); i++ {
+		for j := i + 1; j < len(order); j++ {
+			if sections[order[j]].priority < sections[order[i]].priority {
+				order[i], order[j] = order[j], order[i]
+			}
+		}
+	}
+	for _, i := range order {
+		if sections[i].required || budget < 0 || (budget > 0 && used+runeCost(sections[i].content) <= budget) {
+			included[i] = true
+			used += runeCost(sections[i].content)
+		}
+	}
+	var sb strings.Builder
+	for i, s := range sections {
+		if included[i] {
+			sb.WriteString(s.content)
+			if !strings.HasSuffix(s.content, "\n") {
+				sb.WriteString("\n")
+			}
+		}
+	}
+	return sb.String()
+}
+
+func trimDialogueToBudget(turns []world.DialogueTurn, playerMessage string, budget int, playerName string) []world.DialogueTurn {
+	if len(turns) == 0 {
+		return nil
+	}
+	if budget <= 0 {
+		return turns
+	}
+	used := runeCost(playerMessage) + runeCost(playerName) + 16
+	out := make([]world.DialogueTurn, 0, len(turns))
+	for i := len(turns) - 1; i >= 0; i-- {
+		cost := runeCost(turns[i].Player) + runeCost(turns[i].Narrator) + 8
+		if used+cost > budget {
+			break
+		}
+		out = append(out, turns[i])
+		used += cost
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
 }
 
 // formatLoreHits 把 lore 命中格式化为注入文本块（无命中返回空串）。

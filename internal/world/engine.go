@@ -85,6 +85,11 @@ func (e *Engine) Save(state *WorldState) error {
 	return e.repo.Save(state)
 }
 
+// SaveIfRevision 仅在 expectedRevision 仍是持久化版本时提交。
+func (e *Engine) SaveIfRevision(state *WorldState, expectedRevision uint64) error {
+	return e.repo.SaveIfRevision(state, expectedRevision)
+}
+
 // Delete 删除世界状态。
 func (e *Engine) Delete(worldID string) error {
 	return e.repo.Delete(worldID)

@@ -58,13 +58,18 @@ func TestMigrateLegacyBackground(t *testing.T) {
 		t.Fatalf("迁移不幂等: %d 条", len(ws.Lore))
 	}
 
-	// 已有 Lore -> 不迁移
+	// 已有 Lore 时仍应补充唯一背景条目，避免背景与 Lore 共存时断链。
 	ws2 := NewWorldState("w2", ModeSimRPG)
 	ws2.Background = "背景"
 	ws2.Lore = []LoreEntry{loreEntry("lor_a", "甲", nil, false, "front", 50, "内容")}
 	MigrateLegacyBackground(ws2)
-	if len(ws2.Lore) != 1 || ws2.Lore[0].ID != "lor_a" {
-		t.Fatalf("已有 Lore 时不应迁移: %+v", ws2.Lore)
+	if len(ws2.Lore) != 2 || ws2.Lore[1].ID != LegacyBackgroundEntryID {
+		t.Fatalf("已有 Lore 时应补充背景迁移条目: %+v", ws2.Lore)
+	}
+	ws2.Background = "更新后的背景"
+	MigrateLegacyBackground(ws2)
+	if ws2.Lore[1].Content != ws2.Background {
+		t.Fatalf("背景条目应随 Background 同步: %+v", ws2.Lore[1])
 	}
 
 	// Background 为空 -> 不迁移

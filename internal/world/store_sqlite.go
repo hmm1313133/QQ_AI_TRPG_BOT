@@ -159,9 +159,39 @@ func (ws *WorldState) ensureMaps() {
 func (r *SQLiteRepository) Save(state *WorldState) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if state.WorldID == "" {
+	if state == nil || state.WorldID == "" {
 		return fmt.Errorf("WorldState WorldID 不能为空")
 	}
+	state.Revision++
+	return r.saveLocked(state)
+}
+
+// SaveIfRevision 使用数据库条件更新保证异步摘要不会覆盖新回合。
+func (r *SQLiteRepository) SaveIfRevision(state *WorldState, expectedRevision uint64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if state == nil || state.WorldID == "" {
+		return fmt.Errorf("WorldState WorldID 不能为空")
+	}
+	var raw string
+	if err := r.db.QueryRow(`SELECT state_json FROM worlds WHERE id = ?`, state.WorldID).Scan(&raw); err != nil {
+		if err != sql.ErrNoRows || expectedRevision != 0 {
+			return fmt.Errorf("%w: 读取当前 WorldState 失败: %v", ErrRevisionConflict, err)
+		}
+	} else {
+		current, err := decodeWorldState([]byte(raw))
+		if err != nil {
+			return err
+		}
+		if current.Revision != expectedRevision {
+			return fmt.Errorf("%w: expected=%d actual=%d", ErrRevisionConflict, expectedRevision, current.Revision)
+		}
+	}
+	state.Revision = expectedRevision + 1
+	return r.saveLocked(state)
+}
+
+func (r *SQLiteRepository) saveLocked(state *WorldState) error {
 	state.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {

@@ -282,7 +282,12 @@ func (n *Narrator) buildGameContext(sessionID string) string {
 	}
 	session := n.sessionMgr.GetSession(sessionID)
 	lastRoll, ok := session.Get("last_dice_result")
-	if !ok {
+	at, atOK := session.Get("last_dice_at")
+	if !ok || !atOK {
+		return ""
+	}
+	stamp, ok := at.(int64)
+	if !ok || time.Since(time.Unix(stamp, 0)) > 2*time.Minute {
 		return ""
 	}
 	return fmt.Sprintf("【游戏上下文】\n最近骰点: %v\n", lastRoll)

@@ -6,6 +6,7 @@ package world
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -15,10 +16,15 @@ import (
 	"time"
 )
 
+// ErrRevisionConflict 表示提交基于过期的 WorldState 版本。
+var ErrRevisionConflict = errors.New("WorldState revision conflict")
+
 // StateRepository 世界状态存储接口。
 type StateRepository interface {
 	Load(worldID string) (*WorldState, error)
 	Save(state *WorldState) error
+	// SaveIfRevision 仅在持久化版本仍为 expectedRevision 时保存，避免异步结果覆盖新回合。
+	SaveIfRevision(state *WorldState, expectedRevision uint64) error
 	Delete(worldID string) error
 	List() ([]string, error)
 	// Archive 将 beforeRound 之前的事件日志压缩归档（P5 实现，当前保留接口）。
@@ -78,14 +84,46 @@ func (r *JSONRepository) Load(worldID string) (*WorldState, error) {
 }
 
 // Save 原子写入（tmp + rename，失败时保留 .bak 兜底）。
+// Revision 在成功写入前递增；调用方持有的 state 会同步得到新版本。
 func (r *JSONRepository) Save(state *WorldState) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	if state.WorldID == "" {
+	if state == nil || state.WorldID == "" {
 		return fmt.Errorf("WorldState WorldID 不能为空")
 	}
+	state.Revision++
+	return r.saveLocked(state)
+}
 
+// SaveIfRevision 只接受基于 expectedRevision 的提交，避免异步结果覆盖较新的世界状态。
+func (r *JSONRepository) SaveIfRevision(state *WorldState, expectedRevision uint64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if state == nil || state.WorldID == "" {
+		return fmt.Errorf("WorldState WorldID 不能为空")
+	}
+	path := r.path(state.WorldID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) && expectedRevision == 0 {
+			// 新世界允许以版本 0 为基点首次提交。
+		} else {
+			return fmt.Errorf("%w: 读取当前 WorldState 失败: %v", ErrRevisionConflict, err)
+		}
+	} else {
+		var current WorldState
+		if err := json.Unmarshal(data, &current); err != nil {
+			return fmt.Errorf("读取当前 WorldState 版本失败: %w", err)
+		}
+		if current.Revision != expectedRevision {
+			return fmt.Errorf("%w: expected=%d actual=%d", ErrRevisionConflict, expectedRevision, current.Revision)
+		}
+	}
+	state.Revision = expectedRevision + 1
+	return r.saveLocked(state)
+}
+
+func (r *JSONRepository) saveLocked(state *WorldState) error {
 	state.LastUpdate = time.Now().Format("2006-01-02 15:04:05")
 	path := r.path(state.WorldID)
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -93,18 +131,19 @@ func (r *JSONRepository) Save(state *WorldState) error {
 		return fmt.Errorf("序列化 WorldState 失败: %w", err)
 	}
 
-	// 先备份旧文件，再原子替换，避免 remove+rename 窗口丢数据
+	// 先备份旧文件，再原子替换，避免 remove+rename 窗口丢数据。
 	if _, err := os.Stat(path); err == nil {
 		_ = os.Rename(path, path+".bak")
 	}
 	tmpPath := path + ".tmp"
 	if err := writeFileWithRetry(tmpPath, data, 0644); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("写入 WorldState 文件失败: %w", err)
 	}
 	if err := renameWithRetry(tmpPath, path); err != nil {
-		// Windows 上目标已存在时 rename 失败，回退为 remove+rename
 		_ = os.Remove(path)
 		if err2 := renameWithRetry(tmpPath, path); err2 != nil {
+			_ = os.Remove(tmpPath)
 			return fmt.Errorf("重命名 WorldState 文件失败: %w", err2)
 		}
 	}

@@ -172,12 +172,36 @@ func (sm *SessionManager) GetSession(id string) *Session {
 
 // SetMode 设置会话模式。
 func (sm *SessionManager) SetMode(id string, mode SessionMode) {
-	sm.GetSession(id).Mode = mode
+	sm.GetSession(id).SetMode(mode)
 }
 
 // GetMode 获取会话模式。
 func (sm *SessionManager) GetMode(id string) SessionMode {
-	return sm.GetSession(id).Mode
+	s := sm.GetSession(id)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Mode
+}
+
+// SetMode 设置会话当前模式。
+func (s *Session) SetMode(mode SessionMode) {
+	s.mu.Lock()
+	s.Mode = mode
+	s.mu.Unlock()
+}
+
+// Mode 返回会话当前模式，避免调用方直接读取共享字段。
+func (s *Session) ModeValue() SessionMode {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Mode
+}
+
+// AgentValue 返回会话当前 Agent ID。
+func (s *Session) AgentValue() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.AgentID
 }
 
 // List 返回所有会话（管理后台用）。

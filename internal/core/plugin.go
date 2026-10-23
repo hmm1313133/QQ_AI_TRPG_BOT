@@ -101,7 +101,7 @@ func (pm *PluginManager) ChatAgent(ctx *MessageContext, session *Session, reply 
 	pm.runBeforeHooks(ctx)
 
 	// 获取会话指定的 Agent，默认 "kp"
-	agentID := session.AgentID
+	agentID := session.AgentValue()
 	if agentID == "" {
 		agentID = "kp"
 	}

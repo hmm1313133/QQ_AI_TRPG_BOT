@@ -94,10 +94,30 @@ func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) stri
 		}
 	}
 
-	// 未发现的隐藏信息（只显示数量，不泄露内容）
+	// 未发现内容只显示数量，避免把秘密直接泄露给 Narrator。
 	undiscovered := state.UndiscoveredCount()
 	if undiscovered > 0 {
 		sb.WriteString(fmt.Sprintf("\n未发现的线索: %d 条\n", undiscovered))
+	}
+	if discovered := discoveredHiddenItems(state); len(discovered) > 0 {
+		sb.WriteString("已发现线索:\n")
+		for _, item := range discovered {
+			sb.WriteString("  - " + item + "\n")
+		}
+	}
+	if len(state.Facts) > 0 {
+		sb.WriteString("有效事实:\n")
+		for _, fact := range state.Facts {
+			if fact.InvalidAt == 0 {
+				sb.WriteString(fmt.Sprintf("  - %s %s %s\n", fact.Subject, fact.Predicate, fact.Object))
+			}
+		}
+	}
+	if len(state.Relations) > 0 {
+		sb.WriteString("关系变化:\n")
+		for _, rel := range state.Relations {
+			sb.WriteString(fmt.Sprintf("  - %s -> %s 信任%d 恐惧%d 债务%d\n", rel.From, rel.To, rel.Trust, rel.Fear, rel.Debt))
+		}
 	}
 
 	// 状态锁定（不可违背的硬事实，优先告知）
@@ -126,6 +146,17 @@ func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) stri
 		state.RoundCount))
 
 	return sb.String()
+}
+
+func discoveredHiddenItems(state *world.WorldState) []string {
+	items := make([]string, 0)
+	for _, item := range state.HiddenInfo {
+		if item.Discovered && strings.TrimSpace(item.Description) != "" {
+			items = append(items, item.Description)
+		}
+	}
+	sort.Strings(items)
+	return items
 }
 
 // storyReviewMaxEntries 剧情回顾分区最多列出的阶段摘要条数。

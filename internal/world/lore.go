@@ -5,7 +5,10 @@
 // 替代旧版 Background 全量注入（预算缺陷）。
 package world
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // 条目分类（设计文档 §3.1 八种）。
 const (
@@ -58,24 +61,23 @@ type LoreEntry struct {
 	Source        string   `json:"source"`                  // manual / script / system
 }
 
-// MigrateLegacyBackground 旧世界兼容迁移（设计文档 §4.1）：
-// Background 非空且 Lore 为空时，把整段 Background 转为一条恒定条目，
-// 行为与旧的"背景全量注入"完全等价。
-// 不修改 Background 字段（其他地方可能还在读），内存中转换，下次 Save 自然落盘。
+// MigrateLegacyBackground 兼容旧 Background，并保持其与 Lore 的唯一系统条目同步。
 func MigrateLegacyBackground(ws *WorldState) {
-	if ws == nil || len(ws.Lore) > 0 || strings.TrimSpace(ws.Background) == "" {
+	if ws == nil || strings.TrimSpace(ws.Background) == "" {
 		return
 	}
+	for i := range ws.Lore {
+		if ws.Lore[i].ID == LegacyBackgroundEntryID {
+			ws.Lore[i].Content = ws.Background
+			ws.Lore[i].Enabled = true
+			return
+		}
+	}
 	ws.Lore = append(ws.Lore, LoreEntry{
-		ID:       LegacyBackgroundEntryID,
-		Title:    "世界背景（迁移）",
-		Category: LoreCategoryBackground,
-		Constant: true,
-		Position: LorePositionFront,
-		Priority: 100,
-		Enabled:  true,
-		Content:  ws.Background,
-		Source:   LoreSourceSystem,
+		ID: LegacyBackgroundEntryID, Title: "世界背景（迁移）",
+		Category: LoreCategoryBackground, Constant: true,
+		Position: LorePositionFront, Priority: 100, Enabled: true,
+		Content: ws.Background, Source: LoreSourceSystem,
 	})
 }
 
@@ -100,11 +102,12 @@ func PresentNPCNames(ws *WorldState) []string {
 		for name := range ws.Characters {
 			names = append(names, name)
 		}
+		sort.Strings(names)
 		return names
 	}
 	scene := strings.ToLower(strings.TrimSpace(ws.Scene.NodeName))
 	for name, c := range ws.Characters {
-		if !c.Alive || c.Location == "" {
+		if c == nil || !c.Alive || c.Location == "" {
 			continue
 		}
 		loc := strings.ToLower(strings.TrimSpace(c.Location))
@@ -112,6 +115,7 @@ func PresentNPCNames(ws *WorldState) []string {
 			names = append(names, name)
 		}
 	}
+	sort.Strings(names)
 	return names
 }
 

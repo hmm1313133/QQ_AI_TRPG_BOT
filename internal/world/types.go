@@ -24,6 +24,8 @@ const (
 // 合并自旧 GameState（internal/agent/gamestate.go）与 Progress（internal/script/types.go）。
 type WorldState struct {
 	WorldID string `json:"world_id"`
+	// Revision 每次成功保存递增，用于检测异步摘要、重试和外部编辑的过期提交。
+	Revision uint64 `json:"revision,omitempty"`
 	Mode    string `json:"mode"`
 	// Deprecated: 剧本系统已移除，字段仅为兼容既有存储中的 JSON 而保留，不再写入。
 	ScriptID string `json:"script_id,omitempty"`

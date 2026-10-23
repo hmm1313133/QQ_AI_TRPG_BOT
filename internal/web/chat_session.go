@@ -82,8 +82,9 @@ type chatStateResp struct {
 // buildChatState 组装会话当前状态。
 func (s *Server) buildChatState(sessionID string) chatStateResp {
 	session := s.sess.GetSession(sessionID)
+	mode := session.ModeValue()
 	resp := chatStateResp{
-		Mode:        session.Mode.String(),
+		Mode:        mode.String(),
 		ReplyLength: agent.SessionReplyLength(session),
 	}
 	if resp.ReplyLength == "" {
@@ -98,7 +99,7 @@ func (s *Server) buildChatState(sessionID string) chatStateResp {
 		// 世界状态存在即世界内扮演（与 TurnEngine 同口径）：会话模式只存内存，
 		// 进程重启后回落 normal，这里按世界状态纠正显示，避免聊天页显示
 		// "已进入世界"但模式却是 normal 的不一致。
-		if session.Mode == core.ModeNormal {
+		if mode == core.ModeNormal {
 			resp.Mode = core.ModeFreeChat.String()
 		}
 		// 优先回报源世界 ID（进入时记账），否则回退会话世界自身 ID

@@ -216,10 +216,14 @@ func (s *Store) GetBool(key string, def bool) bool {
 
 // Set 写入配置（upsert + 更新缓存）。
 func (s *Store) Set(key, value string) error {
+	value, err := normalizeValue(key, value)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, err := s.db.Exec(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?)
+	_, err = s.db.Exec(`INSERT INTO config (key, value, updated_at) VALUES (?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
 		key, value, time.Now().Format("2006-01-02 15:04:05"))
 	if err != nil {
@@ -227,6 +231,37 @@ func (s *Store) Set(key, value string) error {
 	}
 	s.cache[key] = value
 	return nil
+}
+
+func normalizeValue(key, value string) (string, error) {
+	meta, ok := Meta(key)
+	if !ok {
+		return value, nil
+	}
+	if meta.Type != "number" {
+		return value, nil
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return "", fmt.Errorf("配置 %s 必须是整数", key)
+	}
+	min, max := 1, 1000000
+	switch key {
+	case KeyContextBudget:
+		min, max = 1000, 200000
+	case KeyLoreBudget:
+		min, max = 100, 50000
+	case KeyLoreScanRounds:
+		min, max = 1, 50
+	case KeySummaryChunk:
+		min, max = 1, 48
+	case KeyPlanInterval:
+		min, max = 1, 1000
+	}
+	if n < min || n > max {
+		return "", fmt.Errorf("配置 %s 超出范围 [%d,%d]", key, min, max)
+	}
+	return strconv.Itoa(n), nil
 }
 
 // All 返回全部配置（管理后台用）。

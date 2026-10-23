@@ -125,14 +125,25 @@ func Resolve(ws *WorldState, scanText string, budget int, recursion bool) LoreRe
 		}
 	}
 
-	// 预算装配：Priority 降序贪心（相同优先级保持召回顺序，稳定排序）
-	hits := make([]LoreHit, 0, len(matched))
-	for _, h := range matched {
-		hits = append(hits, h)
+	// 预算装配：Priority 降序；同优先级按原 Lore 下标排序，保证跨轮顺序稳定。
+	type indexedHit struct {
+		index int
+		hit   LoreHit
 	}
-	sort.SliceStable(hits, func(i, j int) bool {
-		return hits[i].Entry.Priority > hits[j].Entry.Priority
+	indexed := make([]indexedHit, 0, len(matched))
+	for index, hit := range matched {
+		indexed = append(indexed, indexedHit{index: index, hit: hit})
+	}
+	sort.SliceStable(indexed, func(i, j int) bool {
+		if indexed[i].hit.Entry.Priority != indexed[j].hit.Entry.Priority {
+			return indexed[i].hit.Entry.Priority > indexed[j].hit.Entry.Priority
+		}
+		return indexed[i].index < indexed[j].index
 	})
+	hits := make([]LoreHit, 0, len(indexed))
+	for _, item := range indexed {
+		hits = append(hits, item.hit)
+	}
 
 	used := 0
 	for _, h := range hits {

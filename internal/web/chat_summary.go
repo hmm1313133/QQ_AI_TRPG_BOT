@@ -1,8 +1,9 @@
 // Package web - 玩家侧剧情摘要 API（Web 聊天页）。
 //
-// 剧情摘要（WorldState.Summaries）是阶段性多条摘要：对话滑出 RecentTurns 窗口后
-// 由 SummaryService 攒批总结，一个阶段追加一条；多条摘要按时间顺序注入上下文，
-// 替代远期对话窗口。玩家可查看、修改、删除已有条目，也可手动补录新条目。
+// 剧情摘要已直接迁移到长期记忆（world_memory 的 episode 块）：
+// 对话滑出 RecentTurns 窗口后由 SummaryService 攒批总结写入记忆表，
+// 注入上下文时按时间顺序列出，替代远期对话窗口。
+// 玩家可查看、修改、删除记忆条目，也可手动补录。
 //
 //   - GET    /api/chat/summary                摘要条目列表 + 待总结轮数
 //   - POST   /api/chat/summary/entries        手动补录一条（{text}）
@@ -13,9 +14,13 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/agent"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/memory"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
@@ -29,13 +34,48 @@ func (s *Server) registerChatSummaryRoutes(mux *http.ServeMux) {
 
 // handleChatSummaryGet 返回当前会话世界的摘要条目列表与待总结轮数。
 func (s *Server) handleChatSummaryGet(w http.ResponseWriter, r *http.Request) {
-	_, ws, ok := s.chatWorldContext(w, r)
+	sessionID, ws, ok := s.chatSummaryWorld(w, r)
 	if !ok {
 		return
 	}
-	entries := ws.SummaryEntries()
-	if entries == nil {
-		entries = []world.SummaryEntry{}
+	defer s.adminDeps.WorldEngine.Unlock(sessionID)
+
+	entries := make([]memory.Chunk, 0, 8)
+	if store := s.adminDeps.Memory; store != nil {
+		// 时间线 = 篇章摘要（level=2）+ 未归档阶段摘要，已归档的不再单列。
+		list, err := store.Timeline(sessionID, 0, 0)
+		if err != nil {
+			writeChatError(w, "读取剧情摘要失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		entries = append(entries, list...)
+		// 旧世界首次打开摘要面板时顺手完成迁移（与回合内迁移共用去重键）。
+		if len(entries) == 0 {
+			if chunks := agent.LegacySummaryChunks(ws); len(chunks) > 0 {
+				if _, err := store.AppendBatch(chunks); err != nil {
+					log.Printf("[Web] 旧摘要迁移失败: world=%s: %v", sessionID, err)
+				}
+				if list, err := store.Episodes(sessionID, 0); err == nil {
+					entries = append(entries, list...)
+				}
+				if len(entries) > 0 {
+					ws.Summaries = nil
+					ws.CampaignSummary = ""
+					if err := s.adminDeps.WorldEngine.Save(ws); err != nil {
+						log.Printf("[Web] 旧摘要迁移后清理失败: world=%s: %v", sessionID, err)
+					}
+				}
+			}
+		}
+	}
+	// 无记忆存储（旧部署/测试）时回退只读视图。
+	if len(entries) == 0 {
+		for _, e := range ws.SummaryEntries() {
+			entries = append(entries, memory.Chunk{
+				ID: int64(e.ID), RoundFrom: e.RoundFrom, RoundTo: e.RoundTo,
+				Text: e.Text, CreatedAt: e.CreatedAt,
+			})
+		}
 	}
 	writeJSON(w, map[string]any{
 		"entries":       entries,
@@ -87,7 +127,21 @@ func (s *Server) handleChatSummaryAdd(w http.ResponseWriter, r *http.Request) {
 		writeChatError(w, "text 不能为空", http.StatusBadRequest)
 		return
 	}
-	id := ws.AppendSummary(text, 0, 0, "")
+
+	var id int64
+	if store := s.adminDeps.Memory; store != nil {
+		newID, err := store.Append(memory.Chunk{
+			WorldID: sessionID, Kind: memory.KindEpisode, Level: memory.LevelChunk,
+			Text: text, Importance: 7, CreatedAt: time.Now().Format("2006-01-02 15:04:05"),
+		})
+		if err != nil {
+			writeChatError(w, "保存失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		id = newID
+	} else {
+		id = int64(ws.AppendSummary(text, 0, 0, ""))
+	}
 	if err := saveWorldWithAuditNote(s.adminDeps.WorldEngine, ws, "player",
 		"section:summary", fmt.Sprintf("玩家补录剧情摘要 #%d", id)); err != nil {
 		writeChatError(w, "保存失败: "+err.Error(), http.StatusInternalServerError)
@@ -97,8 +151,8 @@ func (s *Server) handleChatSummaryAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatSummaryEntryID 解析路径中的条目 id。
-func chatSummaryEntryID(w http.ResponseWriter, r *http.Request) (int, bool) {
-	var id int
+func chatSummaryEntryID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	var id int64
 	if _, err := fmt.Sscanf(r.PathValue("id"), "%d", &id); err != nil || id <= 0 {
 		writeChatError(w, "条目 ID 无效", http.StatusBadRequest)
 		return 0, false
@@ -128,7 +182,18 @@ func (s *Server) handleChatSummaryEdit(w http.ResponseWriter, r *http.Request) {
 		writeChatError(w, "text 不能为空", http.StatusBadRequest)
 		return
 	}
-	if !ws.EditSummary(id, text) {
+
+	if store := s.adminDeps.Memory; store != nil {
+		found, err := store.UpdateText(sessionID, id, text)
+		if err != nil {
+			writeChatError(w, "保存失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !found {
+			writeChatError(w, "摘要条目不存在", http.StatusNotFound)
+			return
+		}
+	} else if !ws.EditSummary(int(id), text) {
 		writeChatError(w, "摘要条目不存在", http.StatusNotFound)
 		return
 	}
@@ -152,7 +217,17 @@ func (s *Server) handleChatSummaryDelete(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if !ws.DeleteSummary(id) {
+	if store := s.adminDeps.Memory; store != nil {
+		found, err := store.Delete(sessionID, id)
+		if err != nil {
+			writeChatError(w, "删除失败: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !found {
+			writeChatError(w, "摘要条目不存在", http.StatusNotFound)
+			return
+		}
+	} else if !ws.DeleteSummary(int(id)) {
 		writeChatError(w, "摘要条目不存在", http.StatusNotFound)
 		return
 	}

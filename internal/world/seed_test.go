@@ -51,20 +51,31 @@ func TestSeedWorld_SimRPG(t *testing.T) {
 	}
 }
 
-func TestSeedWorld_RoleplayRequiresNPC(t *testing.T) {
+// 模式统一后：mode 仅为展示标签，不再有 NPC 数量/模式白名单约束。
+func TestSeedWorld_ModeIsLabelOnly(t *testing.T) {
 	e := newTestEngine(t)
-	if _, err := e.SeedWorld("w-rp", SeedSpec{Mode: ModeRoleplay, Background: "x"}); err == nil {
-		t.Fatal("roleplay 无 NPC 应报错")
+
+	// 无 NPC 的 roleplay 标签世界也应可创建
+	if _, err := e.SeedWorld("w-rp-empty", SeedSpec{Mode: ModeRoleplay, Background: "x"}); err != nil {
+		t.Fatalf("mode 不应再影响播种校验: %v", err)
 	}
-	state, err := e.SeedWorld("w-rp", SeedSpec{
-		Mode: ModeRoleplay,
-		NPCs: []NPCSeed{{Name: "搭档", Kind: "npc", Disposition: "friendly"}},
-	})
+
+	// 未知模式按标签原样保存
+	state, err := e.SeedWorld("w-custom", SeedSpec{Mode: "cyberpunk", Background: "赛博都市"})
 	if err != nil {
-		t.Fatalf("roleplay 播种失败: %v", err)
+		t.Fatalf("未知模式应视为标签: %v", err)
 	}
-	if state.Characters["搭档"].Disposition != "friendly" {
-		t.Fatalf("Disposition 应保留传入值: %+v", state.Characters["搭档"])
+	if state.Mode != "cyberpunk" {
+		t.Fatalf("标签应原样保留: %q", state.Mode)
+	}
+
+	// 缺省模式归一为 unified
+	def, err := e.SeedWorld("w-default", SeedSpec{Background: "默认世界"})
+	if err != nil {
+		t.Fatalf("缺省模式应可创建: %v", err)
+	}
+	if def.Mode != ModeUnified {
+		t.Fatalf("缺省模式应为 unified: %q", def.Mode)
 	}
 }
 
@@ -72,9 +83,6 @@ func TestSeedWorld_Validation(t *testing.T) {
 	e := newTestEngine(t)
 	if _, err := e.SeedWorld("", SeedSpec{Mode: ModeSimRPG}); err == nil {
 		t.Fatal("空世界 ID 应报错")
-	}
-	if _, err := e.SeedWorld("w-bad", SeedSpec{Mode: "unknown"}); err == nil {
-		t.Fatal("未知模式应报错")
 	}
 	if _, err := e.SeedWorld("w-npc", SeedSpec{Mode: ModeSimRPG, NPCs: []NPCSeed{{Name: ""}}}); err == nil {
 		t.Fatal("空 NPC 名称应报错")

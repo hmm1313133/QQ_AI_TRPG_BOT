@@ -7,7 +7,7 @@
           <span class="mono">{{ detail?.name || (player ? (detail?.world_id || '') : worldId) }}</span>
         </div>
         <div class="page-desc">
-          {{ detail ? `模式 ${detail.mode}` : (player && noWorld ? '当前会话还没有进行中的世界' : '加载中…') }}
+          {{ detail ? '世界详情与分区编辑' : (player && noWorld ? '当前会话还没有进行中的世界' : '加载中…') }}
         </div>
       </div>
       <el-button size="small" @click="goBack">{{ player ? '← 返回聊天' : '← 返回世界列表' }}</el-button>
@@ -39,7 +39,6 @@
                 </p>
               </div>
               <div><div class="muted">世界 ID</div><p class="mono">{{ detail.world_id }}</p></div>
-              <div><div class="muted">模式</div><p>{{ detail.mode }}</p></div>
               <div><div class="muted">回合数</div><p>{{ detail.round_count }}</p></div>
               <div><div class="muted">当前场景</div><p>{{ detail.scene?.node_name || '-' }}</p></div>
               <div><div class="muted">最近更新</div><p>{{ detail.last_update || '-' }}</p></div>

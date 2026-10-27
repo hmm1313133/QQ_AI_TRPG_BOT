@@ -294,16 +294,26 @@ func TestAdmin_AssetCompleteNoLLM(t *testing.T) {
 	}
 }
 
-// roleplay 无角色草稿 → 校验失败返回 400。
-func TestAdmin_WorldFromDraftsNoCharacter(t *testing.T) {
-	ts, _ := newAssetTestServer(t)
+// 模式统一后：没有角色草稿也能建世界（内容完全由素材决定）。
+func TestAdmin_WorldFromDraftsWithoutCharacter(t *testing.T) {
+	ts, deps := newAssetTestServer(t)
 	defer ts.Close()
 
 	resp := adminReq(t, "POST", ts.URL+"/api/admin/worlds/from-drafts",
 		`{"drafts":[{"kind":"item","name":"银钥匙","payload":{"name":"银钥匙"}}]}`)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("roleplay 无角色应 400: %d", resp.StatusCode)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("无角色草稿也应可建世界: %d", resp.StatusCode)
+	}
+	var created struct {
+		WorldID string `json:"world_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("响应解析失败: %v", err)
+	}
+	ws := deps.WorldEngine.LoadOrNil(created.WorldID)
+	if ws == nil || ws.Items["银钥匙"] == nil {
+		t.Fatalf("物品草稿应落到世界: %+v", ws)
 	}
 }
 

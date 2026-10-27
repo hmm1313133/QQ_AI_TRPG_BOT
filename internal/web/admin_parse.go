@@ -216,8 +216,8 @@ func (a *adminAPI) handleAssetBatchCreate(w http.ResponseWriter, r *http.Request
 
 // worldFromDraftsReq 从解析草稿生成世界的请求。
 type worldFromDraftsReq struct {
-	Name   string             `json:"name"`  // 世界名称（写入 ScriptName 便于列表展示，可选）
-	Mode   string             `json:"mode"`  // simrpg / roleplay，缺省 roleplay
+	Name   string             `json:"name"` // 世界名称（写入 ScriptName 便于列表展示，可选）
+	Mode   string             `json:"mode"` // simrpg / roleplay，缺省 roleplay
 	Drafts []assetparse.Draft `json:"drafts"`
 }
 

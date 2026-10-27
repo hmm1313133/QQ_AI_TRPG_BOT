@@ -101,18 +101,3 @@ func TestDecayMoods(t *testing.T) {
 		t.Fatal("平复后情绪标签应被清除")
 	}
 }
-
-func TestGetMode(t *testing.T) {
-	m := GetMode(ModeSimRPG)
-	if !m.EnableOffline {
-		t.Fatal("simrpg 应启用离线演化")
-	}
-	m = GetMode(ModeRoleplay)
-	if m.EnableRules || m.EnableScript {
-		t.Fatal("roleplay 应关闭规则层与剧本")
-	}
-	m = GetMode("unknown")
-	if m.Name != ModeSimRPG {
-		t.Fatal("未知模式应回退为 simrpg")
-	}
-}

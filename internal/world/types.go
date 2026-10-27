@@ -14,10 +14,11 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
 )
 
-// 游戏模式（见设计文档第九章）。
+// 世界类型标签。历史值保留用于展示与旧数据兼容；自 2026-10 起所有世界
+// 行为统一（见 ModeUnified），标签不再影响任何子系统开关。
 const (
-	ModeSimRPG   = "simrpg"   // 文字 RPG 模拟（开放世界）
-	ModeRoleplay = "roleplay" // AI 角色扮演（单 NPC 深度对话）
+	ModeSimRPG   = "simrpg"
+	ModeRoleplay = "roleplay"
 )
 
 // WorldState 是一个世界实例（= 一场游戏）的全部硬状态。
@@ -26,7 +27,9 @@ type WorldState struct {
 	WorldID string `json:"world_id"`
 	// Revision 每次成功保存递增，用于检测异步摘要、重试和外部编辑的过期提交。
 	Revision uint64 `json:"revision,omitempty"`
-	Mode    string `json:"mode"`
+	// Mode 世界类型标签（simrpg/roleplay/unified），仅展示与兼容用，
+	// 不参与行为分支（所有世界统一流程）。
+	Mode string `json:"mode"`
 	// Deprecated: 剧本系统已移除，字段仅为兼容既有存储中的 JSON 而保留，不再写入。
 	ScriptID string `json:"script_id,omitempty"`
 	// Deprecated: 剧本系统已移除，字段仅为兼容既有存储中的 JSON 而保留，不再写入。
@@ -37,13 +40,13 @@ type WorldState struct {
 
 	// Background 是不可变的剧本/世界设定（旧 StoryContext 拆分而来）。
 	Background string `json:"background"`
-	// Deprecated: 滚动单条摘要已被 Summaries（阶段性多条摘要）取代。
-	// 仅为兼容既有存储中的 JSON 保留；读取经 SummaryEntries() 懒迁移视图，
-	// 首次 AppendSummary 时迁移为 Summaries 首条并清空本字段。
+	// Deprecated: 剧情摘要已迁移到长期记忆（internal/memory 的 world_memory 表）。
+	// 仅保留以兼容既有 JSON 数据；读取经 SummaryEntries() 懒迁移视图，
+	// 首次回合/摘要面板访问时迁移为 world_memory 的 episode 块并清空。
 	CampaignSummary string `json:"campaign_summary,omitempty"`
-	// Summaries 阶段性剧情摘要：对话轮滑出 RecentTurns 窗口后攒批总结，
-	// 一个批次追加一条（不再滚动合并成单条）。注入上下文时按顺序全量列出，
-	// 与 RecentTurns 窗口一起构成跨轮叙事连续性（远期剧情由本列表承载）。
+	// Deprecated: 同上，仅为兼容既有存储与无记忆后端的回退路径保留。
+	// 新数据写入 world_memory（含轮次范围/实体/重要性），注入上下文时按时间
+	// 顺序列出最近若干条，与 RecentTurns 窗口一起构成跨轮叙事连续性。
 	Summaries []SummaryEntry `json:"summaries,omitempty"`
 	// ReplyStyle 是本世界的回复风格指令（自由文本，如"冷峻克苏鲁风，重对话少环境铺陈"），
 	// 非空时每轮经 ContextBuilder 注入 Narrator（Author's Note 位置）。
@@ -58,37 +61,37 @@ type WorldState struct {
 	// 内嵌进 WorldState：条目与世界强绑定，沿用每世界单 JSON 文件存储。
 	Lore []LoreEntry `json:"lore,omitempty"`
 
-	Clock      WorldClock                 `json:"clock"`
-	Scene      SceneState                 `json:"scene"`
-	ScenePlan  string                     `json:"scene_plan,omitempty"` // Planner 的场景级计划（替代旧 LastDirective）
+	Clock     WorldClock `json:"clock"`
+	Scene     SceneState `json:"scene"`
+	ScenePlan string     `json:"scene_plan,omitempty"` // Planner 的场景级计划（替代旧 LastDirective）
 	// PlanNodeID / PlanRound 记录 ScenePlan 生成时的场景与轮次，用于低频刷新判断。
 	PlanNodeID string                     `json:"plan_node_id,omitempty"`
 	PlanRound  int                        `json:"plan_round,omitempty"`
-	Characters map[string]*CharacterState `json:"characters"`           // name -> NPC（PC 经 CardRef 关联角色卡）
+	Characters map[string]*CharacterState `json:"characters"` // name -> NPC（PC 经 CardRef 关联角色卡）
 	Locations  map[string]*Location       `json:"locations,omitempty"`
 	Factions   map[string]*Faction        `json:"factions,omitempty"`
-	Items      map[string]*Item           `json:"items,omitempty"`    // 物品/道具（设计 §3.2）
+	Items      map[string]*Item           `json:"items,omitempty"`     // 物品/道具（设计 §3.2）
 	Storyline  *Storyline                 `json:"storyline,omitempty"` // 导演主线（设计 §3.4）
-	Quests     []QuestState               `json:"quests"`     // 旧 Objectives 演化
+	Quests     []QuestState               `json:"quests"`              // 旧 Objectives 演化
 	HiddenInfo []HiddenItem               `json:"hidden_info"`
 	EventQueue []ScheduledEvent           `json:"event_queue"` // 旧 PendingEvents 演化
 	// CompletedNodes 已完成的时间轴节点 ID（旧 Progress.CompletedNodes）。
-	CompletedNodes []string               `json:"completed_nodes,omitempty"`
-	Relations  []RelationEdge             `json:"relations,omitempty"`
-	Locks      []StateLock                `json:"locks,omitempty"`
-	Facts      []Fact                     `json:"facts,omitempty"`
-	EventLog   []WorldEvent               `json:"event_log,omitempty"`
+	CompletedNodes []string       `json:"completed_nodes,omitempty"`
+	Relations      []RelationEdge `json:"relations,omitempty"`
+	Locks          []StateLock    `json:"locks,omitempty"`
+	Facts          []Fact         `json:"facts,omitempty"`
+	EventLog       []WorldEvent   `json:"event_log,omitempty"`
 	// SkillUses 待结算的技能成功使用记录（成长闭环，幕间统一结算）。
-	SkillUses  []SkillUseRecord           `json:"skill_uses,omitempty"`
+	SkillUses []SkillUseRecord `json:"skill_uses,omitempty"`
 	// RecentTurns 最近对话回合（短期记忆窗口，环形保留最近 RecentTurnsCap 轮）。
 	// Narrator 是无状态调用，跨轮叙事连续性由本窗口 + Summaries（阶段摘要）承载。
-	RecentTurns []DialogueTurn            `json:"recent_turns,omitempty"`
+	RecentTurns []DialogueTurn `json:"recent_turns,omitempty"`
 	// PendingSummaryTurns 从 RecentTurns 窗口淘汰、等待总结的对话轮。
 	// 攒够 summary_chunk_size 轮后由 SummaryService 异步总结为一条阶段摘要（Summaries）。
-	PendingSummaryTurns []DialogueTurn    `json:"pending_summary_turns,omitempty"`
-	Metrics    Metrics                    `json:"metrics"`
-	RoundCount int                        `json:"round_count"`
-	LastUpdate string                     `json:"last_update"`
+	PendingSummaryTurns []DialogueTurn `json:"pending_summary_turns,omitempty"`
+	Metrics             Metrics        `json:"metrics"`
+	RoundCount          int            `json:"round_count"`
+	LastUpdate          string         `json:"last_update"`
 }
 
 // StyleConfig 每世界输出风格配置（管理后台编辑；空值不注入）。
@@ -265,13 +268,13 @@ type CharacterState struct {
 	KeyDialogue   []string `json:"key_dialogue,omitempty"`
 	Traits        []string `json:"traits,omitempty"` // 性格特质标签（记仇/胆小/贪婪…）
 	// 玩家创作字段（《世界编辑器与素材联动设计.md》§3.1）：叙事软信息，不影响规则判定。
-	Appearance  string   `json:"appearance,omitempty"`  // 外貌描写
-	Personality string   `json:"personality,omitempty"` // 性格描述（长文；Traits 是短标签）
-	Backstory   string   `json:"backstory,omitempty"`   // 背景故事
-	Skills      []string `json:"skills,omitempty"`      // 能力/特长描述，如 "剑术(娴熟)"
-	Goals       []Goal   `json:"goals,omitempty"`       // NPC 目标（模拟层驱动）
-	Mood          MoodState `json:"mood,omitempty"`
-	Notes         string   `json:"notes,omitempty"`
+	Appearance  string    `json:"appearance,omitempty"`  // 外貌描写
+	Personality string    `json:"personality,omitempty"` // 性格描述（长文；Traits 是短标签）
+	Backstory   string    `json:"backstory,omitempty"`   // 背景故事
+	Skills      []string  `json:"skills,omitempty"`      // 能力/特长描述，如 "剑术(娴熟)"
+	Goals       []Goal    `json:"goals,omitempty"`       // NPC 目标（模拟层驱动）
+	Mood        MoodState `json:"mood,omitempty"`
+	Notes       string    `json:"notes,omitempty"`
 }
 
 // MoodState 情绪状态（设计文档 6.2）。
@@ -311,7 +314,7 @@ type Location struct {
 type Faction struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
-	Reputation  int      `json:"reputation"` // 玩家在该势力中的声誉 -100..100
+	Reputation  int      `json:"reputation"`            // 玩家在该势力中的声誉 -100..100
 	Description string   `json:"description,omitempty"` // 设计 §3.3
 	Goals       []string `json:"goals,omitempty"`       // 势力目标
 	Leader      string   `json:"leader,omitempty"`      // 领袖（可对应角色名）
@@ -361,11 +364,11 @@ type HiddenItem struct {
 type ScheduledEvent struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
-	Trigger     string `json:"trigger,omitempty"`     // 触发条件描述（自然语言）
-	TriggerAt   int64  `json:"trigger_at,omitempty"`  // 世界时间触发点（0 = 条件触发）
-	Type        string `json:"type"`                  // trigger / encounter / world
+	Trigger     string `json:"trigger,omitempty"`    // 触发条件描述（自然语言）
+	TriggerAt   int64  `json:"trigger_at,omitempty"` // 世界时间触发点（0 = 条件触发）
+	Type        string `json:"type"`                 // trigger / encounter / world
 	Triggered   bool   `json:"triggered"`
-	Resolved    bool   `json:"resolved,omitempty"`    // 已解决（修复旧版混乱度单调累积）
+	Resolved    bool   `json:"resolved,omitempty"` // 已解决（修复旧版混乱度单调累积）
 }
 
 // RelationEdge 关系图谱边（设计文档 4.3）。
@@ -380,7 +383,7 @@ type RelationEdge struct {
 
 // StateLock 状态锁定：关键事实一旦确立不可被 LLM 覆盖。
 type StateLock struct {
-	Key    string `json:"key"`    // 如 "npc:老陈:dead"
+	Key    string `json:"key"` // 如 "npc:老陈:dead"
 	Reason string `json:"reason"`
 	Round  int    `json:"round"`
 }
@@ -397,14 +400,15 @@ type Fact struct {
 
 // WorldEvent 事件溯源条目，也是 ApplyEvent 的变更请求。
 // Type 取值：
-//   npc_disposition / hidden_discovered / event_triggered / objective_completed /
-//   mood_change / relation_change / quest_advance / lock / unlock /
-//   fact_add / fact_invalidate / decision / note / rename
+//
+//	npc_disposition / hidden_discovered / event_triggered / objective_completed /
+//	mood_change / relation_change / quest_advance / lock / unlock /
+//	fact_add / fact_invalidate / decision / note / rename
 type WorldEvent struct {
 	Type     string `json:"type"`
-	Actor    string `json:"actor,omitempty"`    // 行为发起者（玩家/NPC/引擎）
-	Target   string `json:"target"`             // 目标：NPC名称/线索ID或描述/事件ID或描述/目标描述/Fact subject
-	Value    string `json:"value,omitempty"`    // 新值
+	Actor    string `json:"actor,omitempty"`     // 行为发起者（玩家/NPC/引擎）
+	Target   string `json:"target"`              // 目标：NPC名称/线索ID或描述/事件ID或描述/目标描述/Fact subject
+	Value    string `json:"value,omitempty"`     // 新值
 	CausedBy string `json:"caused_by,omitempty"` // 因果链：上游事件描述
 	Round    int    `json:"round"`
 	Time     int64  `json:"time"` // 世界时间

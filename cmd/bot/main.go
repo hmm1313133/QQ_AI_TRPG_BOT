@@ -20,6 +20,7 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/assetparse"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/memory"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/web"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
@@ -60,6 +61,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("初始化玩家人设存储失败: %v", err)
 	}
+	// 长期记忆存储（world_memory + FTS5，与世界状态/配置共用 app.db）
+	memStore, err := memory.NewStore(dataDB)
+	if err != nil {
+		log.Fatalf("初始化长期记忆存储失败: %v", err)
+	}
 	worldEngine := world.NewEngine(worldRepo)
 
 	// 5. Initialize asset parser（素材 LLM 解析器；设计 §11.4）
@@ -83,7 +89,7 @@ func main() {
 	cfgStore.Seed(config.KeyLLMModel, getEnv("LLM_MODEL", "deepseek-flash"))
 	cfgStore.Seed(config.KeyNarratorTemp, "0.7")
 	cfgStore.Seed(config.KeyDirectorTemp, "0.2")
-	cfgStore.Seed(config.KeyContextBudget, "45000")
+	cfgStore.Seed(config.KeyContextBudget, "60000")
 	cfgStore.Seed(config.KeyLoreBudget, "4000")
 	cfgStore.Seed(config.KeyLoreScanRounds, "4")
 	cfgStore.Seed(config.KeyLoreRecursion, "false")
@@ -149,6 +155,8 @@ func main() {
 	kpAgent.SetTurnEngine(turnEngine)
 	turnEngine.SetGuider(guider)
 	turnEngine.SetPersonaStore(personaStore)
+	turnEngine.SetMemory(memStore)
+	guider.SetMemory(memStore)
 	kpAgent.SetPersonaStore(personaStore)
 
 	// 7. Register AI Agent
@@ -158,8 +166,11 @@ func main() {
 
 	// 8. 接入运行时配置与滚动剧情摘要服务
 	turnEngine.SetConfigStore(cfgStore)
-	// 滚动剧情摘要服务（RecentTurns 窗口淘汰轮攒批后由 SummaryService 归纳为阶段摘要）
-	turnEngine.SetSummary(agent.NewSummaryService(worldEngine, director, cfgStore))
+	// 滚动剧情摘要服务（RecentTurns 窗口淘汰轮攒批后由 SummaryService 归纳为阶段摘要，
+	// 写入长期记忆 world_memory）
+	summarySvc := agent.NewSummaryService(worldEngine, director, cfgStore)
+	summarySvc.SetMemory(memStore)
+	turnEngine.SetSummary(summarySvc)
 
 	// 9. Initialize router（所有消息经 core.Router 转给 Agent）
 	router := core.NewRouter(plugins, sessions)
@@ -179,6 +190,7 @@ func main() {
 			PersonaStore: personaStore,
 			ConfigStore:  cfgStore,
 			TurnEngine:   turnEngine,
+			Memory:       memStore,
 			StartTime:    time.Now(),
 		}, os.Getenv("ADMIN_TOKEN"))
 		if err := webServer.StartTrpc(getEnv("TRPC_CONF", "./conf/trpc_go.yaml")); err != nil {

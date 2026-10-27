@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/memory"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -67,7 +68,12 @@ type GuidanceOutcome struct {
 type AIGuidance struct {
 	agent  *llmagent.LLMAgent
 	runner runner.Runner
+	// memory 长期记忆（可为 nil）：用于注入最近阶段摘要，避免指导"近视"。
+	memory *memory.Store
 }
+
+// SetMemory 注入长期记忆存储（由 main.go 在装配阶段调用）。
+func (g *AIGuidance) SetMemory(store *memory.Store) { g.memory = store }
 
 // NewAIGuidance 创建 AI 叙事指导器（复用主 LLM 配置，低温度小输出）。
 func NewAIGuidance(cfg *Config) (*AIGuidance, error) {
@@ -111,7 +117,15 @@ func (g *AIGuidance) Guide(
 	start := time.Now()
 	out := &GuidanceOutcome{Source: "ai"}
 
-	userMsg := buildGuidanceUserMessage(state, playerMessage)
+	var prev []string
+	if g.memory != nil {
+		if eps, err := g.memory.Episodes(sessionID, guidanceSummaryEntries); err == nil {
+			for _, e := range eps {
+				prev = append(prev, e.Text)
+			}
+		}
+	}
+	userMsg := buildGuidanceUserMessageWithSummaries(state, playerMessage, prev)
 
 	callCtx, cancel := context.WithTimeout(ctx, guidanceTimeout)
 	defer cancel()
@@ -234,9 +248,15 @@ func cleanStrings(ss []string) []string {
 	return out
 }
 
-// buildGuidanceUserMessage 组装指导器的用户消息：让世界状态与近期叙事
-// 同时可见，使指导能针对玩家最新行动做出反应（规则版做不到的叙事感知）。
+// buildGuidanceUserMessage 组装指导器的用户消息（测试/无记忆场景用）。
 func buildGuidanceUserMessage(state *world.WorldState, playerMessage string) string {
+	return buildGuidanceUserMessageWithSummaries(state, playerMessage, nil)
+}
+
+// buildGuidanceUserMessageWithSummaries 组装指导器的用户消息：让世界状态与近期叙事
+// 同时可见，使指导能针对玩家最新行动做出反应（规则版做不到的叙事感知）。
+// prev 非空时优先使用（长期记忆里的阶段摘要），否则回退 WorldState.Summaries。
+func buildGuidanceUserMessageWithSummaries(state *world.WorldState, playerMessage string, prev []string) string {
 	var sb strings.Builder
 
 	sb.WriteString("【场景】\n")
@@ -303,14 +323,22 @@ func buildGuidanceUserMessage(state *world.WorldState, playerMessage string) str
 	}
 
 	// 剧情前情：注入最近阶段摘要，使指导具备长期记忆（避免只盯最近几轮）。
-	if entries := state.SummaryEntries(); len(entries) > 0 {
-		from := len(entries) - guidanceSummaryEntries
-		if from < 0 {
-			from = 0
+	// prev 来自长期记忆；为空时回退旧字段（未迁移的世界）。
+	if len(prev) == 0 {
+		if entries := state.SummaryEntries(); len(entries) > 0 {
+			from := len(entries) - guidanceSummaryEntries
+			if from < 0 {
+				from = 0
+			}
+			for _, e := range entries[from:] {
+				prev = append(prev, e.Text)
+			}
 		}
+	}
+	if len(prev) > 0 {
 		sb.WriteString("\n【剧情前情】\n")
-		for _, e := range entries[from:] {
-			sb.WriteString("- " + truncate(e.Text, guidanceSummaryChars) + "\n")
+		for _, text := range prev {
+			sb.WriteString("- " + truncate(text, guidanceSummaryChars) + "\n")
 		}
 	}
 

@@ -52,7 +52,7 @@ type llmLogRecord struct {
 	Kind         string          `json:"kind"` // narrator / planner / 低频任务名（如 summary）
 	Session      string          `json:"session,omitempty"`
 	SystemPrompt string          `json:"system_prompt,omitempty"`
-	Messages     []llmLogMessage `json:"messages,omitempty"`   // narrator：完整消息列表（含历史与工具往返）
+	Messages     []llmLogMessage `json:"messages,omitempty"`     // narrator：完整消息列表（含历史与工具往返）
 	UserMessage  string          `json:"user_message,omitempty"` // planner/低频任务：单条用户消息
 	Reply        string          `json:"reply"`
 	RawReply     string          `json:"raw_reply,omitempty"` // 剥离 CoT 思考段之前的原始输出

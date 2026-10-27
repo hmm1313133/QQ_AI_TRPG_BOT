@@ -6,8 +6,9 @@
 //  3. 场景关联层：当前场景名/在场 NPC 名与条目 Title/Keys 匹配
 //  4. 递归层（可选）：已命中条目的 Content 再跑关键词层，最多 2 步，防链式爆炸
 //
-// 预算装配：命中条目按 Priority 降序贪心装入 budget（按字符数）；
-// 恒定条目豁免裁剪；Position=front/tail 分流。
+// 预算装配：命中条目按 Priority 降序贪心装入 budget（按 rune 计“字符数”，
+// 与 config 的 lore_budget 语义一致）；恒定条目豁免裁剪且不占用预算（在
+// 关键词命中装配完成后追加）；Position=front/tail 分流。
 package world
 
 import (
@@ -27,7 +28,7 @@ const (
 type LoreHit struct {
 	Entry  LoreEntry `json:"entry"`
 	Reason string    `json:"reason"` // 命中原因：恒定 / 关键词"寒鸦堡" / 场景关联: NPC 老王 / 递归自"北境"
-	Chars  int       `json:"chars"`  // Content 字符数（预算记账）
+	Chars  int       `json:"chars"`  // Content 字符数（rune，预算记账；非字节）
 }
 
 // LoreResult 一次检索的装配结果。
@@ -53,7 +54,7 @@ func Resolve(ws *WorldState, scanText string, budget int, recursion bool) LoreRe
 			return // 先到的层决定 Reason（恒定 > 关键词 > 场景 > 递归）
 		}
 		e := ws.Lore[idx]
-		matched[idx] = LoreHit{Entry: e, Reason: reason, Chars: len(e.Content)}
+		matched[idx] = LoreHit{Entry: e, Reason: reason, Chars: len([]rune(e.Content))}
 	}
 
 	// 1. 恒定层
@@ -145,18 +146,32 @@ func Resolve(ws *WorldState, scanText string, budget int, recursion bool) LoreRe
 		hits = append(hits, item.hit)
 	}
 
+	// 两趟装配：先按预算装关键词/场景/递归命中（保证按需召回不被挤掉），
+	// 再追加恒定条目（豁免裁剪、不占预算，对应 ST 的 ignore budget）。
+	// 若把恒定条目与普通条目混在一趟里记账，一条较长的世界背景就会把
+	// 全部关键词命中挤成 Dropped。
+	appendHit := func(h LoreHit) {
+		if h.Entry.Position == LorePositionTail {
+			result.Tail = append(result.Tail, h)
+			return
+		}
+		result.Front = append(result.Front, h)
+	}
 	used := 0
 	for _, h := range hits {
-		// 恒定条目豁免裁剪，也不占用预算（对应 ST 的 ignore budget）
-		if h.Entry.Constant || budget <= 0 || used+h.Chars <= budget {
+		if h.Entry.Constant {
+			continue
+		}
+		if budget <= 0 || used+h.Chars <= budget {
 			used += h.Chars
-			if h.Entry.Position == LorePositionTail {
-				result.Tail = append(result.Tail, h)
-			} else {
-				result.Front = append(result.Front, h)
-			}
+			appendHit(h)
 		} else {
 			result.Dropped = append(result.Dropped, h)
+		}
+	}
+	for _, h := range hits {
+		if h.Entry.Constant {
+			appendHit(h)
 		}
 	}
 	return result

@@ -21,19 +21,19 @@ import (
 
 // 配置键定义。
 const (
-	KeyLLMModel         = "llm_model"
-	KeyNarratorTemp     = "narrator_temp"
-	KeyDirectorTemp     = "director_temp"
-	KeyContextBudget    = "context_budget"
-	KeyLoreBudget       = "lore_budget"
-	KeyLoreScanRounds   = "lore_scan_rounds"
-	KeyLoreRecursion    = "lore_recursion"
-	KeyPlanInterval     = "plan_interval"
-	KeySummaryChunk     = "summary_chunk_size"
-	KeyAIGuidance       = "ai_guidance"
-	KeyLLMAPIKey        = "llm_api_key"
-	KeyLLMBaseURL       = "llm_base_url"
-	KeyWebChatToken     = "web_chat_token"
+	KeyLLMModel       = "llm_model"
+	KeyNarratorTemp   = "narrator_temp"
+	KeyDirectorTemp   = "director_temp"
+	KeyContextBudget  = "context_budget"
+	KeyLoreBudget     = "lore_budget"
+	KeyLoreScanRounds = "lore_scan_rounds"
+	KeyLoreRecursion  = "lore_recursion"
+	KeyPlanInterval   = "plan_interval"
+	KeySummaryChunk   = "summary_chunk_size"
+	KeyAIGuidance     = "ai_guidance"
+	KeyLLMAPIKey      = "llm_api_key"
+	KeyLLMBaseURL     = "llm_base_url"
+	KeyWebChatToken   = "web_chat_token"
 )
 
 // 生效级别（修改后何时生效）。
@@ -64,8 +64,8 @@ var KeyRegistry = []KeyMeta{
 	{Key: KeyLLMBaseURL, Label: "LLM Base URL", Group: "LLM", Type: "string", Scope: ScopeProcessRestart},
 	{Key: KeyNarratorTemp, Label: "Narrator 温度", Group: "LLM", Type: "number", Scope: ScopeProcessRestart},
 	{Key: KeyDirectorTemp, Label: "Planner 温度", Group: "LLM", Type: "number", Scope: ScopeProcessRestart},
-	{Key: KeyContextBudget, Label: "上下文预算·字符（默认45000≈3万token）", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
-	{Key: KeyLoreBudget, Label: "设定库预算·字符", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
+	{Key: KeyContextBudget, Label: "上下文预算·字符（默认60000≈4万token，上限120000）", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
+	{Key: KeyLoreBudget, Label: "设定库预算·字符（中文按字数计）", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
 	{Key: KeyLoreScanRounds, Label: "设定库扫描轮数", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
 	{Key: KeyLoreRecursion, Label: "设定库递归扫描开关", Group: "上下文与记忆", Type: "bool", Scope: ScopeHot},
 	{Key: KeySummaryChunk, Label: "剧情摘要批次·轮（默认6）", Group: "上下文与记忆", Type: "number", Scope: ScopeHot},
@@ -91,13 +91,13 @@ func Registered(key string) bool {
 
 // HotKeys 立即生效的配置键（修改后下个回合即生效）。
 var HotKeys = map[string]bool{
-	KeyContextBudget:   true,
-	KeyPlanInterval:    true,
-	KeySummaryChunk:    true,
-	KeyLoreBudget:      true,
-	KeyLoreScanRounds:  true,
-	KeyLoreRecursion:   true,
-	KeyAIGuidance:      true,
+	KeyContextBudget:  true,
+	KeyPlanInterval:   true,
+	KeySummaryChunk:   true,
+	KeyLoreBudget:     true,
+	KeyLoreScanRounds: true,
+	KeyLoreRecursion:  true,
+	KeyAIGuidance:     true,
 }
 
 // Store 是 SQLite 配置存储。
@@ -248,7 +248,9 @@ func normalizeValue(key, value string) (string, error) {
 	min, max := 1, 1000000
 	switch key {
 	case KeyContextBudget:
-		min, max = 1000, 200000
+		// 上限 120000 字符 ≈ 8 万 token，给 system 提示词/工具声明在 128k
+		// 窗口内留出余量；再往上调会直接把请求顶穿模型上下文窗口。
+		min, max = 1000, 120000
 	case KeyLoreBudget:
 		min, max = 100, 50000
 	case KeyLoreScanRounds:

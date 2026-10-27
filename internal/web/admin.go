@@ -19,6 +19,7 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/assetparse"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/config"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/memory"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/pkg"
@@ -39,7 +40,9 @@ type AdminDeps struct {
 	ConfigStore  ConfigStore // W4 接入，可为 nil
 	// TurnEngine 回合引擎（lore 注入记录可观测性用，可为 nil）。
 	TurnEngine *agent.TurnEngine
-	StartTime  time.Time
+	// Memory 长期记忆存储（玩家侧剧情摘要 CRUD 用，可为 nil：回退 WorldState.Summaries）。
+	Memory    *memory.Store
+	StartTime time.Time
 }
 
 // ConfigStore 运行时配置存储接口（W4 实现，此处定义解耦）。
@@ -250,7 +253,7 @@ func (a *adminAPI) handleWorldPatch(w http.ResponseWriter, r *http.Request) {
 type worldCreateReq struct {
 	WorldID    string          `json:"world_id"` // 可选，缺省自动生成
 	Name       string          `json:"name"`     // 世界显示名（可选）
-	Mode       string          `json:"mode"`     // simrpg / roleplay
+	Mode       string          `json:"mode"`     // 展示标签（可选；所有世界行为统一）
 	Background string          `json:"background"`
 	Scene      string          `json:"scene"`
 	NPCs       []world.NPCSeed `json:"npcs"`
@@ -276,9 +279,9 @@ func (a *adminAPI) handleWorldCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "请求格式错误: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	// mode 不再必填：所有世界行为统一，缺省记为 unified 标签。
 	if req.Mode == "" {
-		http.Error(w, "模式（mode）不能为空", http.StatusBadRequest)
-		return
+		req.Mode = world.ModeUnified
 	}
 	if req.WorldID == "" {
 		req.WorldID = fmt.Sprintf("world_%d_%d", time.Now().UnixNano(), idSeq.Add(1))

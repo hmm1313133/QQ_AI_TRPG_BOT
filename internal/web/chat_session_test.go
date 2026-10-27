@@ -4,12 +4,12 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/core"
+	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/memory"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/persona"
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
@@ -17,11 +17,7 @@ import (
 // newChatSessionTestServer 启动带世界引擎 + 人设存储的玩家侧测试服务。
 func newChatSessionTestServer(t *testing.T) (*httptest.Server, AdminDeps, *core.SessionManager) {
 	t.Helper()
-	db, err := world.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("打开测试库失败: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := openTestDB(t)
 	repo, err := world.NewSQLiteRepository(db)
 	if err != nil {
 		t.Fatalf("创建世界仓库失败: %v", err)
@@ -29,6 +25,10 @@ func newChatSessionTestServer(t *testing.T) (*httptest.Server, AdminDeps, *core.
 	personaStore, err := persona.NewStore(db)
 	if err != nil {
 		t.Fatalf("创建人设存储失败: %v", err)
+	}
+	memStore, err := memory.NewStore(db)
+	if err != nil {
+		t.Fatalf("创建记忆存储失败: %v", err)
 	}
 
 	sessions := core.NewSessionManager()
@@ -38,6 +38,7 @@ func newChatSessionTestServer(t *testing.T) (*httptest.Server, AdminDeps, *core.
 		Sessions:     sessions,
 		WorldEngine:  world.NewEngine(repo),
 		PersonaStore: personaStore,
+		Memory:       memStore,
 		StartTime:    time.Now(),
 	}
 	srv.SetAdmin(deps, "tok")
@@ -257,8 +258,8 @@ func TestChatWorld_EnterLeave(t *testing.T) {
 	// 再次进入同一世界 → 从进度快照恢复（restored=true），快照被消费
 	resp = chatReq(t, "POST", ts.URL+"/api/chat/world/enter?token=t1", `{"world_id":"tpl"}`)
 	var reenter struct {
-		OK       bool   `json:"ok"`
-		Restored bool   `json:"restored"`
+		OK       bool `json:"ok"`
+		Restored bool `json:"restored"`
 	}
 	readJSON(t, resp, &reenter)
 	if !reenter.OK || !reenter.Restored {

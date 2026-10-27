@@ -13,9 +13,9 @@ const trpcServiceName = "trpc.voyage.web.Admin"
 
 // StartTrpc 以 trpc-go 泛 HTTP 标准服务托管 Web 渠道（标准化接入）。
 // 监听地址/端口/超时等由 trpc_go.yaml 的 server.service 段注入
-//（confPath 传入，等价于命令行 -conf flag）。
+// （confPath 传入，等价于命令行 -conf flag）。
 // 底层是标准库 net/http.Server，REST / SPA / WebSocket 全链路可用
-//（链路验证见 trpc_spike_test.go）。
+// （链路验证见 trpc_spike_test.go）。
 func (s *Server) StartTrpc(confPath string) (err error) {
 	// trpc.NewServer 在配置错误时按框架约定 panic，转成 error 避免拖垮整个进程
 	defer func() {

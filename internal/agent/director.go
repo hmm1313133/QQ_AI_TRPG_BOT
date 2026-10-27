@@ -24,9 +24,9 @@ import (
 
 // Director 是导演系统，负责决策层。
 type Director struct {
-	metrics  *MetricsEvaluator
-	agent    *llmagent.LLMAgent
-	runner   runner.Runner
+	metrics *MetricsEvaluator
+	agent   *llmagent.LLMAgent
+	runner  runner.Runner
 }
 
 // NewDirector 创建导演系统。

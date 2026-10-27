@@ -53,6 +53,15 @@ func TestBuildNarratorMessages(t *testing.T) {
 	}
 }
 
+// 空玩家消息（自动推进/开场轮）应兜底，避免空 content 的 user 消息被网关拒绝。
+func TestBuildNarratorMessages_EmptyPlayerFallback(t *testing.T) {
+	msgs := buildNarratorMessages("系统提示词", &NarratorInput{})
+	last := msgs[len(msgs)-1]
+	if last.Role != model.RoleUser || strings.TrimSpace(last.Content) == "" {
+		t.Fatalf("空玩家消息应兜底为占位内容: %+v", last)
+	}
+}
+
 // fakeModel 按队列返回预设响应，记录每次请求的消息列表。
 type fakeModel struct {
 	responses []*model.Response

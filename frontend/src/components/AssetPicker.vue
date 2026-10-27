@@ -55,7 +55,7 @@
             v-for="w in otherWorlds"
             :key="w.id"
             :value="w.id"
-            :label="`${w.name || w.id}（${w.mode}）`"
+            :label="`${w.name || w.id}`"
           />
         </el-select>
         <div v-if="!srcWorld" class="empty">请先选择来源世界</div>

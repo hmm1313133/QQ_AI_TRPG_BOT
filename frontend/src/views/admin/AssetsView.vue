@@ -319,17 +319,11 @@
         <el-form-item label="世界名称">
           <el-input v-model="genWorldDlg.name" placeholder="可选，便于世界列表展示" />
         </el-form-item>
-        <el-form-item label="模式">
-          <el-radio-group v-model="genWorldDlg.mode">
-            <el-radio value="roleplay">roleplay 角色扮演</el-radio>
-            <el-radio value="simrpg">simrpg 开放模拟</el-radio>
-          </el-radio-group>
-        </el-form-item>
         <el-form-item label="素材库">
           <el-checkbox v-model="genWorldDlg.alsoImport">同时将草稿入库素材库（便于其他世界复用）</el-checkbox>
         </el-form-item>
       </el-form>
-      <div class="muted">将用解析弹窗中勾选的 {{ checkedCount }} 条草稿创建新世界；roleplay 模式至少需要一名角色。</div>
+      <div class="muted">将用解析弹窗中勾选的 {{ checkedCount }} 条草稿创建新世界。</div>
       <template #footer>
         <el-button size="small" @click="genWorldDlg.visible = false">取消</el-button>
         <el-button type="primary" size="small" :loading="genWorldDlg.creating" @click="createWorldFromDrafts">生成世界</el-button>
@@ -668,7 +662,7 @@ async function importDrafts() {
 
 // ---------- 草稿直接生成世界 ----------
 
-const genWorldDlg = reactive({ visible: false, name: '', mode: 'roleplay', creating: false, alsoImport: false })
+const genWorldDlg = reactive({ visible: false, name: '', creating: false, alsoImport: false })
 
 function openGenWorld() {
   if (!checkedCount.value) { ElMessage.warning('请至少勾选一条草稿'); return }
@@ -685,7 +679,7 @@ async function createWorldFromDrafts() {
   try {
     const res = await assetApi.createWorldFromDrafts({
       name: genWorldDlg.name.trim(),
-      mode: genWorldDlg.mode,
+      mode: 'unified',
       drafts: chosen.map((d) => ({ kind: d.kind, name: d.name.trim(), payload: d.payload })),
     })
     const errs = res?.errors || []

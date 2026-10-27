@@ -171,6 +171,11 @@ func buildNarratorMessages(systemPrompt string, input *NarratorInput) []model.Me
 	if tail := strings.TrimSpace(input.Tail); tail != "" {
 		final += "\n\n" + input.Tail
 	}
+	// 自动推进/开场轮可能出现空玩家消息；空 content 的 user 消息会被部分
+	// OpenAI 兼容网关直接判 400，这里兜底为一句中性推进指令。
+	if strings.TrimSpace(final) == "" {
+		final = "（继续）"
+	}
 	msgs = append(msgs, model.Message{Role: model.RoleUser, Content: final})
 	return msgs
 }

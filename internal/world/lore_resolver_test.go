@@ -218,7 +218,7 @@ func TestResolve_BudgetTrimAndExempt(t *testing.T) {
 		loreEntry("lor_mid", "中优先", []string{"龙"}, false, "front", 50, strings.Repeat("m", 60)),
 		loreEntry("lor_low", "低优先", []string{"龙"}, false, "front", 10, strings.Repeat("l", 60)),
 	}
-	// budget 100：恒定豁免且不占预算；非恒定按优先级降序，60+60>100，只装下 high
+	// budget 100：恒定免裁且不占预算；非恒定按优先级降序，60+60>100，只装下 high
 	r := Resolve(ws, "龙", 100, false)
 	if findHit(r, "lor_big_const") == nil {
 		t.Fatal("恒定条目应豁免裁剪")
@@ -237,6 +237,37 @@ func TestResolve_BudgetTrimAndExempt(t *testing.T) {
 		t.Fatalf("Dropped 顺序应为优先级降序: %+v", r.Dropped)
 	}
 	// 恒定不计预算：budget 恰好装下 high(60)+mid(60)? 100 不够 -> 仅 high，已验证
+}
+
+// 中文条目按 rune 记账：1200 汉字 = 1200 字符（不是 3600 字节）。
+func TestResolve_ChineseBudgetUsesRunes(t *testing.T) {
+	ws := NewWorldState("w", ModeSimRPG)
+	ws.Lore = []LoreEntry{
+		loreEntry("lor_cn", "中文条目", []string{"龙"}, false, "front", 60, strings.Repeat("龙", 1200)),
+	}
+	r := Resolve(ws, "龙", 1500, false)
+	if findHit(r, "lor_cn") == nil {
+		t.Fatalf("1200 汉字应只占 1200 字符预算，1500 预算应命中: %+v", r.Dropped)
+	}
+	if r.Front[0].Chars != 1200 {
+		t.Fatalf("Chars 应为 rune 数: %d", r.Front[0].Chars)
+	}
+}
+
+// 旧 Background 迁移出的恒定条目（Priority 100、正文很长）不应挤掉关键词命中。
+func TestResolve_LongConstantDoesNotStarveKeywordHits(t *testing.T) {
+	ws := NewWorldState("w", ModeSimRPG)
+	ws.Background = strings.Repeat("背", 5000)
+	MigrateLegacyBackground(ws)
+	ws.Lore = append(ws.Lore, loreEntry("lor_kw", "关键词条目", []string{"龙"}, false, "front", 60, strings.Repeat("关", 200)))
+
+	r := Resolve(ws, "龙", 1000, false)
+	if findHit(r, "lor_kw") == nil {
+		t.Fatalf("关键词命中应先占预算，不被恒定背景挤掉: front=%d dropped=%d", len(r.Front), len(r.Dropped))
+	}
+	if findHit(r, LegacyBackgroundEntryID) == nil {
+		t.Fatal("恒定背景仍应注入（豁免裁剪）")
+	}
 }
 
 func TestResolve_FrontTailSplit(t *testing.T) {

@@ -220,9 +220,9 @@ func (a *adminAPI) handleAssetDelete(w http.ResponseWriter, r *http.Request) {
 // ============================================================
 
 type assetCollectReq struct {
-	Kind    string   `json:"kind"`   // character / location / item / faction / storyline / world
-	Name    string   `json:"name"`   // 实体名（storyline/world 忽略）
-	Tags    []string `json:"tags"`   // 可选
+	Kind    string   `json:"kind"` // character / location / item / faction / storyline / world
+	Name    string   `json:"name"` // 实体名（storyline/world 忽略）
+	Tags    []string `json:"tags"` // 可选
 	Summary string   `json:"summary"`
 }
 
@@ -339,8 +339,8 @@ func extractEntityPayload(ws *world.WorldState, kind, name string) (json.RawMess
 // ============================================================
 
 type assetImportReq struct {
-	Library    []string             `json:"library"` // 素材库条目 ID
-	Copy       []assetImportCopyRef `json:"copy"`    // 跨世界复制
+	Library    []string             `json:"library"`     // 素材库条目 ID
+	Copy       []assetImportCopyRef `json:"copy"`        // 跨世界复制
 	OnConflict string               `json:"on_conflict"` // skip（默认）/ overwrite
 }
 

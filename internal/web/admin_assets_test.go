@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -102,11 +101,7 @@ func TestAdmin_LoreAssetImport(t *testing.T) {
 // newAssetTestServer 启动 SQLite 存储 + 素材库的管理后台测试服务。
 func newAssetTestServer(t *testing.T) (*httptest.Server, AdminDeps) {
 	t.Helper()
-	db, err := world.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("打开测试库失败: %v", err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := openTestDB(t)
 	repo, err := world.NewSQLiteRepository(db)
 	if err != nil {
 		t.Fatalf("创建世界仓库失败: %v", err)

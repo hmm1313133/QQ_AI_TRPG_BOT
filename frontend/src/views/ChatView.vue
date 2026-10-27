@@ -76,7 +76,7 @@
       <div v-else-if="!worldList.length" class="empty">暂无可进入的世界（请先在管理后台创建）</div>
       <el-radio-group v-else v-model="selectedWorldId" class="world-list">
         <el-radio v-for="w in worldList" :key="w.id" :value="w.id" class="world-item">
-          <b>{{ w.name || w.background || w.id }}</b> <span class="muted">[{{ w.mode }}]</span>
+          <b>{{ w.name || w.background || w.id }}</b>
           <el-tag v-if="w.has_progress" size="small" type="success" effect="plain">有进度</el-tag>
           {{ w.background || '（无描述）' }}
           <span class="muted">轮次 {{ w.round_count }} · 角色 {{ w.character_count }}</span>

@@ -145,7 +145,7 @@ func TestBuildNarratorMessage_LengthHint(t *testing.T) {
 		t.Fatal("长度 hint 应位于玩家消息之后")
 	}
 
-// 必需分区豁免裁剪：预算为 1 时可选分区全裁，hint 仍保留
+	// 必需分区豁免裁剪：预算为 1 时可选分区全裁，hint 仍保留
 	tiny := NewContextBuilder(1).BuildNarratorInput(ws, nil, nil, "可选上下文", "", nil, "我推开门", hint, "", "").Flatten()
 	if !strings.Contains(tiny, hint) {
 		t.Fatal("长度 hint 为必需分区，超预算也不应被裁剪")
@@ -231,6 +231,63 @@ func TestBuildNarratorMessage_CoTGuide(t *testing.T) {
 	}
 	if !strings.Contains(msg3, "【输出格式要求】") {
 		t.Fatal("自定义指导也应保留【输出格式要求】头")
+	}
+}
+
+// 叙事指导每轮变化，应放在尾部 Author's Note 位置（保护稳定前缀的缓存命中）。
+func TestBuildNarratorInput_GuidanceInTail(t *testing.T) {
+	ws := world.NewWorldState("w", world.ModeSimRPG)
+	g := &RuleGuidance{Tone: "紧张", Pacing: "fast", Focus: []string{"关注伏击"}}
+	in := NewContextBuilder(6000).BuildNarratorInput(ws, nil, g, "", "", nil, "我推开门", "", "", "")
+
+	if strings.Contains(in.ContextBlock, "【叙事指导") {
+		t.Fatal("叙事指导不应放在设定块开头（会切断前缀缓存）")
+	}
+	if !strings.Contains(in.Tail, "【叙事指导") {
+		t.Fatalf("叙事指导应注入尾部指令区:\n%s", in.Tail)
+	}
+}
+
+// 预算硬约束：超长历史按比例裁剪，保留最新轮次，且总占用不超过预算。
+func TestBuildNarratorInput_HistoryTrimmedToBudget(t *testing.T) {
+	ws := world.NewWorldState("w", world.ModeSimRPG)
+	long := strings.Repeat("叙", 400)
+	turns := make([]world.DialogueTurn, 0, 10)
+	for i := 0; i < 10; i++ {
+		turns = append(turns, world.DialogueTurn{Round: i, Player: "行动", Narrator: long})
+	}
+	in := NewContextBuilder(3000).BuildNarratorInput(ws, nil, nil, "", "", turns, "继续", "", "", "")
+
+	if in.TrimmedHistory == 0 {
+		t.Fatal("超预算的历史应被裁剪")
+	}
+	if len(in.History) == 0 {
+		t.Fatal("至少应保留最近一轮对话")
+	}
+	if last := in.History[len(in.History)-1]; last.Round != 9 {
+		t.Fatalf("应保留最新轮次: %+v", last)
+	}
+	if in.Used > in.Budget {
+		t.Fatalf("裁剪后总占用不应超过预算: used=%d budget=%d", in.Used, in.Budget)
+	}
+}
+
+// lore 逐条装配：预算只够一部分时，放不下的条目单独被裁，不整块消失。
+func TestBuildNarratorInput_LoreTrimmedPerEntry(t *testing.T) {
+	ws := world.NewWorldState("w", world.ModeSimRPG)
+	big := world.LoreHit{Entry: world.LoreEntry{ID: "big", Title: "大条目", Content: strings.Repeat("大", 5000)}}
+	small := world.LoreHit{Entry: world.LoreEntry{ID: "small", Title: "小条目", Content: "小条目正文"}}
+	lore := &world.LoreResult{Front: []world.LoreHit{big, small}}
+
+	in := NewContextBuilder(2500).BuildNarratorInput(ws, lore, nil, "", "", nil, "我看看", "", "", "")
+	if !strings.Contains(in.ContextBlock, "小条目正文") {
+		t.Fatal("预算不足时应保留能放下的条目，而不是整块裁掉")
+	}
+	if strings.Contains(in.ContextBlock, "大条目") {
+		t.Fatal("放不下的超长条目应单独被裁")
+	}
+	if len(in.InjectedLore.Front) != 1 || in.InjectedLore.Front[0].Entry.ID != "small" {
+		t.Fatalf("实际注入清单应只含小条目: %+v", in.InjectedLore)
 	}
 }
 

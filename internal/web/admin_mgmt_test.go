@@ -15,7 +15,7 @@ import (
 // newMgmtTestServer 启动带真实世界引擎（t.TempDir()）的管理后台测试服务。
 func newMgmtTestServer(t *testing.T) (*httptest.Server, AdminDeps) {
 	t.Helper()
-	repo, err := world.NewJSONRepository(t.TempDir())
+	repo, err := world.NewSQLiteRepository(openTestDB(t))
 	if err != nil {
 		t.Fatalf("创建世界仓库失败: %v", err)
 	}
@@ -36,38 +36,46 @@ func TestAdmin_WorldCreate(t *testing.T) {
 	ts, deps := newMgmtTestServer(t)
 	defer ts.Close()
 
-	// 缺 mode → 400
+	// 缺 mode → 默认 unified 标签，创建成功（模式不再影响行为）
 	resp := adminReq(t, "POST", ts.URL+"/api/admin/worlds", `{"world_id":"w0"}`)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("缺 mode 应 400: %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("缺 mode 应默认 unified: %d", resp.StatusCode)
 	}
-	// roleplay 缺 NPC → 400
-	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds", `{"world_id":"w1","mode":"roleplay","background":"x"}`)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("roleplay 缺 NPC 应 400: %d", resp.StatusCode)
-	}
-	// 未知模式 → 400
-	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds", `{"world_id":"w2","mode":"trpg"}`)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("未知模式应 400: %d", resp.StatusCode)
+	if ws := deps.WorldEngine.LoadOrNil("w0"); ws == nil || ws.Mode != world.ModeUnified {
+		t.Fatalf("缺省模式应为 unified: %+v", ws)
 	}
 
-	// simrpg 成功
+	// roleplay 缺 NPC → 允许（角色/场景由素材决定）
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds", `{"world_id":"w1","mode":"roleplay","background":"x"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("mode 不应再影响创建校验: %d", resp.StatusCode)
+	}
+
+	// 未知模式 → 允许并原样保存为标签
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds", `{"world_id":"w2","mode":"trpg"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("未知模式应视为标签: %d", resp.StatusCode)
+	}
+	if ws := deps.WorldEngine.LoadOrNil("w2"); ws == nil || ws.Mode != "trpg" {
+		t.Fatalf("标签应原样保存: %+v", ws)
+	}
+
+	// 显式 simrpg 标签成功
 	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds",
-		`{"world_id":"w2","mode":"simrpg","background":"剑与魔法"}`)
+		`{"world_id":"w3","mode":"simrpg","background":"剑与魔法"}`)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("simrpg 创建应 200: %d", resp.StatusCode)
 	}
-	if ws := deps.WorldEngine.LoadOrNil("w2"); ws == nil || ws.Mode != world.ModeSimRPG {
+	if ws := deps.WorldEngine.LoadOrNil("w3"); ws == nil || ws.Mode != world.ModeSimRPG {
 		t.Fatalf("simrpg 世界应已创建: %+v", ws)
 	}
 
 	// 重复 world_id → 409
-	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds", `{"world_id":"w2","mode":"simrpg"}`)
+	resp = adminReq(t, "POST", ts.URL+"/api/admin/worlds", `{"world_id":"w3","mode":"simrpg"}`)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("重复世界应 409: %d", resp.StatusCode)

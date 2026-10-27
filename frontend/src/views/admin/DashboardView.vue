@@ -18,7 +18,6 @@
             <div v-if="row.world_name" class="mono muted">{{ row.id }}</div>
           </template>
         </el-table-column>
-        <el-table-column prop="mode" label="模式" />
       </el-table>
     </div>
   </div>

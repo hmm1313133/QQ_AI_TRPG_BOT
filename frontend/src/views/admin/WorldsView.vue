@@ -15,7 +15,6 @@
             <div v-if="row.name" class="mono muted">{{ row.id }}</div>
           </template>
         </el-table-column>
-        <el-table-column prop="mode" label="模式" />
         <el-table-column label="当前场景">
           <template #default="{ row }">{{ row.scene || '-' }}</template>
         </el-table-column>
@@ -41,13 +40,6 @@
 
       <!-- ① 基本信息 -->
       <el-form v-show="step === 0" label-width="110px">
-        <el-form-item label="模式">
-          <el-radio-group v-model="form.mode">
-            <el-radio value="simrpg">simrpg 开放模拟</el-radio>
-            <el-radio value="roleplay">roleplay 角色扮演</el-radio>
-          </el-radio-group>
-          <div class="muted mode-desc">{{ MODE_DESC[form.mode] }}</div>
-        </el-form-item>
         <el-form-item label="世界名称">
           <el-input v-model="form.name" placeholder="留空则用世界 ID" style="max-width:320px" />
         </el-form-item>
@@ -58,10 +50,10 @@
 
       <!-- ② 背景故事（含 lore 逐条 / 段落拆分录入） -->
       <el-form v-show="step === 1" label-width="110px">
-        <el-form-item :label="form.mode === 'simrpg' ? '世界设定' : '世界背景'" :required="form.mode === 'simrpg'">
-          <el-input v-model="form.background" type="textarea" :rows="4" placeholder="世界背景设定文本" />
+        <el-form-item label="世界设定">
+          <el-input v-model="form.background" type="textarea" :rows="4" placeholder="世界背景设定文本（可选）" />
         </el-form-item>
-        <el-form-item v-if="form.mode === 'simrpg'" label="初始场景">
+        <el-form-item label="初始场景">
           <el-input v-model="form.scene" type="textarea" :rows="2" placeholder="初始场景描述（可选）" />
         </el-form-item>
 
@@ -240,7 +232,6 @@
       <!-- ⑤ 确认 -->
       <div v-show="step === 4" class="wizard-step">
         <div class="summary-block">
-          <div class="summary-row"><span class="muted">模式</span><b>{{ form.mode }}</b></div>
           <div class="summary-row"><span class="muted">世界名称</span><b>{{ form.name.trim() || '（未命名，用世界 ID）' }}</b></div>
           <div class="summary-row"><span class="muted">世界 ID</span><span class="mono">{{ form.world_id || '（自动生成）' }}</span></div>
           <div class="summary-row"><span class="muted">背景</span><span>{{ form.background ? form.background.slice(0, 60) + (form.background.length > 60 ? '…' : '') : '（未填写）' }}</span></div>
@@ -293,7 +284,6 @@ const pickerVisible = ref(false)
 const openNpcs = ref([])
 
 const form = reactive({
-  mode: 'simrpg',
   world_id: '',
   name: '',
   background: '',
@@ -310,11 +300,6 @@ const form = reactive({
 const splitVisible = ref(false)
 const splitText = ref('')
 const splitDrafts = ref([])
-
-const MODE_DESC = {
-  simrpg: '开放世界模拟：轻量规则，离线后世界继续演化，需填世界设定与初始地点。',
-  roleplay: '纯角色扮演：无规则，以 NPC 互动为核心，至少需要 1 个角色（结构化 NPC / 角色类素材）。',
-}
 
 function newCharacter() {
   return {
@@ -388,18 +373,6 @@ const assetSelEmpty = computed(() =>
   !form.asset_sel.library_rows.length && !form.asset_sel.copy.length
 )
 
-// 角色类素材来源（roleplay 校验与种子镜像用）：素材库角色 / 跨世界角色
-const assetCharacterNames = computed(() => {
-  const names = []
-  for (const r of form.asset_sel.library_rows) {
-    if (r.kind === 'character' && r.name) names.push(r.name)
-  }
-  for (const c of form.asset_sel.copy) {
-    if (c.kind === 'character' && c.name) names.push(c.name)
-  }
-  return names
-})
-
 // 待导入素材摘要（向导素材区与确认步汇总展示）
 const assetSelSummary = computed(() => {
   const parts = []
@@ -415,16 +388,12 @@ const assetSelSummary = computed(() => {
 // ---------- 向导流程 ----------
 
 function nextStep() {
-  if (step.value === 1 && form.mode === 'simrpg' && !form.background.trim()) {
-    ElMessage.warning('simrpg 模式必须填写世界设定')
-    return
-  }
   step.value++
 }
 
 async function openCreate() {
   Object.assign(form, {
-    mode: 'simrpg', world_id: '', name: '', background: '', scene: '',
+    world_id: '', name: '', background: '', scene: '',
     locations: [], npcs: [],
     asset_sel: { library_rows: [], copy: [], on_conflict: 'skip' },
     items: [], factions: [],
@@ -441,11 +410,6 @@ async function openCreate() {
 
 async function createWorld() {
   const f = form
-  if (f.mode === 'simrpg' && !f.background.trim()) { ElMessage.warning('simrpg 模式必须填写世界设定'); return }
-  if (f.mode === 'roleplay' && namedNpcs.value.length === 0 && assetCharacterNames.value.length === 0) {
-    ElMessage.warning('roleplay 模式至少需要 1 个角色（结构化 NPC / 角色类素材）')
-    return
-  }
   // 重名检查
   const npcNames = namedNpcs.value.map((n) => n.name.trim())
   if (new Set(npcNames).size !== npcNames.length) { ElMessage.warning('NPC 名称重复'); return }
@@ -456,30 +420,6 @@ async function createWorld() {
     keys: e.keysText.split(/[,，、;；]+/).map((s) => s.trim()).filter(Boolean),
     constant: e.constant,
   }))
-
-  // roleplay 服务端要求 npcs 非空：把结构化 NPC / 素材角色镜像为简易种子（同名会与结构化角色合并）
-  let npcSeeds = []
-  let mirrored = false // 仅靠素材角色镜像占位种子时置真（导入时强制 overwrite 覆盖占位）
-  if (f.mode === 'roleplay') {
-    npcSeeds = namedNpcs.value.map((n) => ({
-      name: n.name.trim(), kind: n.kind, disposition: n.disposition, personality: n.personality,
-      appearance: n.appearance, backstory: n.backstory, skills: n.skills, card_ref: n.card_ref,
-    }))
-    // 结构化 NPC 为空、只能靠素材角色满足校验时：
-    // 把选中角色类素材的名字镜像为简易占位种子，创建后导入用完整素材覆盖
-    if (!npcSeeds.length && assetCharacterNames.value.length) {
-      for (const name of assetCharacterNames.value) {
-        if (!npcSeeds.some((n) => n.name === name)) {
-          npcSeeds.push({ name, kind: 'npc', disposition: 'neutral' })
-        }
-      }
-      mirrored = true
-    }
-    if (!npcSeeds.length) {
-      ElMessage.warning('roleplay 模式至少需要一个可命名的角色（素材名称未能解析，请改加结构化 NPC）')
-      return
-    }
-  }
 
   const storyline = f.storyline.title.trim()
     ? {
@@ -494,15 +434,16 @@ async function createWorld() {
   const body = {
     world_id: f.world_id.trim(),
     name: f.name.trim(),
-    mode: f.mode,
+    // 世界行为统一：mode 仅作展示标签
+    mode: 'unified',
     background: f.background,
-    scene: f.mode === 'simrpg' ? f.scene : '',
+    scene: f.scene,
     locations: [],
-    location_defs: f.mode === 'simrpg' ? validLocations.value.map((l) => ({
+    location_defs: validLocations.value.map((l) => ({
       name: l.name.trim(), description: l.description, atmosphere: l.atmosphere,
       danger: l.danger, points: l.points || [],
-    })) : [],
-    npcs: npcSeeds,
+    })),
+    npcs: [],
     characters: namedNpcs.value,
     items: validItems.value,
     factions: validFactions.value,
@@ -523,8 +464,7 @@ async function createWorld() {
         const res = await assetApi.import(id, {
           library: f.asset_sel.library_rows.map((r) => r.id),
           copy: f.asset_sel.copy,
-          // 素材角色镜像占位种子时强制覆盖：占位种子无数据，以导入的完整素材为准
-          on_conflict: mirrored ? 'overwrite' : f.asset_sel.on_conflict,
+          on_conflict: f.asset_sel.on_conflict,
         })
         const imported = res?.imported ?? 0
         if (res?.conflicts?.length || res?.errors?.length) {
@@ -587,7 +527,6 @@ onMounted(loadWorlds)
 </script>
 
 <style scoped>
-.mode-desc { margin-top: 6px; line-height: 1.6; }
 .loc-list { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; width: 100%; }
 .loc-row { display: flex; gap: 8px; align-items: center; width: 100%; }
 .npc-card {

@@ -179,8 +179,8 @@ func TestAdmin_LoreTest(t *testing.T) {
 	if result.Front[1].Reason != "恒定" {
 		t.Fatalf("次条应为恒定命中: %+v", result.Front[1])
 	}
-	if result.Front[0].Chars != len(result.Front[0].Entry.Content) {
-		t.Fatalf("预算记账应为正文字符数: %+v", result.Front[0])
+	if result.Front[0].Chars != len([]rune(result.Front[0].Entry.Content)) {
+		t.Fatalf("预算记账应为正文字符数（rune）: %+v", result.Front[0])
 	}
 
 	// 不存在的世界 → 404
@@ -299,7 +299,7 @@ func TestAdmin_LoreInjections(t *testing.T) {
 	sessions := core.NewSessionManager()
 	router := core.NewRouter(core.NewPluginManager(), sessions)
 	srv := NewServer(Config{}, router, sessions)
-	repo, err := world.NewJSONRepository(t.TempDir())
+	repo, err := world.NewSQLiteRepository(openTestDB(t))
 	if err != nil {
 		t.Fatalf("创建世界仓库失败: %v", err)
 	}

@@ -9,14 +9,10 @@ import (
 	"github.com/hmm1313133/QQ_AI_TRPG_BOT/internal/world"
 )
 
-// newSummaryTestEnv 构造世界引擎（JSON 仓库存储）+ 注入假 LLM 的 SummaryService。
+// newSummaryTestEnv 构造世界引擎（内存 SQLite）+ 注入假 LLM 的 SummaryService。
 func newSummaryTestEnv(t *testing.T, complete func(worldID, task, prompt string) (string, error)) (*SummaryService, *world.Engine) {
 	t.Helper()
-	repo, err := world.NewJSONRepository(t.TempDir())
-	if err != nil {
-		t.Fatalf("创建仓库失败: %v", err)
-	}
-	engine := world.NewEngine(repo)
+	engine := newAgentTestEngine(t)
 	s := NewSummaryService(engine, nil, nil)
 	s.complete = complete
 	return s, engine
@@ -146,6 +142,63 @@ func TestMaybeSummarize_LegacyMigration(t *testing.T) {
 	}
 	if len(ws.Summaries) != 2 || ws.Summaries[0].Text != "旧滚动摘要。" || ws.Summaries[1].Text != "新阶段摘要。" {
 		t.Fatalf("旧摘要应迁移为首条: %+v", ws.Summaries)
+	}
+}
+
+// 摘要 LLM 期间回合继续推进（Revision 变化）不应丢弃结果——旧实现用整份
+// 状态 Revision 相等校验，高频会话里摘要会长期失败并反复重试。
+func TestMaybeSummarize_SucceedsWhenWorldAdvanced(t *testing.T) {
+	var eng *world.Engine
+	s, engine := newSummaryTestEnv(t, func(worldID, task, prompt string) (string, error) {
+		ws := eng.LoadOrNil(worldID)
+		if ws == nil {
+			return "", fmt.Errorf("世界不存在")
+		}
+		ws.RoundCount += 3 // 模拟摘要期间有新回合落库
+		if err := eng.Save(ws); err != nil {
+			return "", err
+		}
+		return "世界推进后仍应落库的摘要。", nil
+	})
+	eng = engine
+	seedPendingWorld(t, engine, "w1", DefaultSummaryChunk)
+
+	s.MaybeSummarize("w1")
+
+	ws := engine.LoadOrNil("w1")
+	if len(ws.Summaries) != 1 || ws.Summaries[0].Text != "世界推进后仍应落库的摘要。" {
+		t.Fatalf("回合推进不应使摘要结果失效: %+v", ws.Summaries)
+	}
+	if len(ws.PendingSummaryTurns) != 0 {
+		t.Fatalf("本批次应被消费: %d", len(ws.PendingSummaryTurns))
+	}
+}
+
+// 待总结队列前缀变化（如溢出丢最旧）时应丢弃结果，避免消费错位。
+func TestMaybeSummarize_DiscardsWhenPendingChanged(t *testing.T) {
+	var eng *world.Engine
+	s, engine := newSummaryTestEnv(t, func(worldID, task, prompt string) (string, error) {
+		ws := eng.LoadOrNil(worldID)
+		if ws == nil {
+			return "", fmt.Errorf("世界不存在")
+		}
+		ws.PendingSummaryTurns = ws.PendingSummaryTurns[1:]
+		if err := eng.Save(ws); err != nil {
+			return "", err
+		}
+		return "不应落库的摘要。", nil
+	})
+	eng = engine
+	seedPendingWorld(t, engine, "w1", DefaultSummaryChunk)
+
+	s.MaybeSummarize("w1")
+
+	ws := engine.LoadOrNil("w1")
+	if len(ws.Summaries) != 0 {
+		t.Fatalf("队列已变化时不应追加摘要: %+v", ws.Summaries)
+	}
+	if len(ws.PendingSummaryTurns) != DefaultSummaryChunk-1 {
+		t.Fatalf("待总结队列不应被消费: %d", len(ws.PendingSummaryTurns))
 	}
 }
 

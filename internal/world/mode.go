@@ -1,5 +1,4 @@
-// 游戏模式配置（设计文档第九章）：模式 = 子系统开关的组合。
-// 两种业务模式共享同一引擎内核，差异仅为配置。
+// 世界创建与播种（2026-10 起模式统一：不再有子系统开关组合）。
 package world
 
 import (
@@ -8,44 +7,16 @@ import (
 	"strings"
 )
 
-// GameMode 游戏模式配置。
-type GameMode struct {
-	Name          string // simrpg / roleplay
-	Ruleset       string // lite / none
-	EnableRules   bool   // 规则层（检定/成长）
-	EnableScript  bool   // 剧本/时间轴
-	EnablePlanner bool   // 低频场景规划
-	EnableMemory  bool   // 滚动剧情摘要（RecentTurns 淘汰轮并入 CampaignSummary）
-	EnableMood    bool   // 情绪/关系模拟
-	EnableClock   bool   // 世界时钟与定时事件
-	EnableOffline bool   // 离线演化 fastForward
-}
+// ModeUnified 统一世界行为：不再按 simrpg/roleplay 开关子系统，所有世界共用
+// 同一套流程（AI 指导 + 低频规划 + 长期记忆 + 情绪/关系 + 时钟 + 离线演化）。
+// WorldState.Mode 仅作展示与旧数据兼容标签保留，不参与任何行为分支。
+const ModeUnified = "unified"
 
-var modePresets = map[string]GameMode{
-	ModeSimRPG: {
-		Name: ModeSimRPG, Ruleset: "lite",
-		EnableRules: true, EnableScript: false, EnablePlanner: true,
-		EnableMemory: true, EnableMood: true, EnableClock: true,
-		EnableOffline: true, // 开放世界，回归时结算世界变迁
-	},
-	ModeRoleplay: {
-		Name: ModeRoleplay, Ruleset: "none",
-		EnableRules: false, EnableScript: false, EnablePlanner: false,
-		EnableMemory: true, EnableMood: true, EnableClock: true,
-		EnableOffline: false,
-	},
-}
-
-// GetMode 获取模式配置（未知模式回退为 simrpg）。
-func GetMode(name string) GameMode {
-	if m, ok := modePresets[name]; ok {
-		return m
-	}
-	return modePresets[ModeSimRPG]
-}
-
-// CreateWorld 创建指定模式的空世界（RPG 模拟/角色扮演的入口）。
+// CreateWorld 创建空世界（mode 仅作为标签存储，空值归一为 unified）。
 func (e *Engine) CreateWorld(worldID, mode string) (*WorldState, error) {
+	if mode == "" {
+		mode = ModeUnified
+	}
 	ws := NewWorldState(worldID, mode)
 	if err := e.repo.Save(ws); err != nil {
 		return nil, err
@@ -55,10 +26,10 @@ func (e *Engine) CreateWorld(worldID, mode string) (*WorldState, error) {
 
 // NPCSeed 手动创建世界时的 NPC 种子数据（见《管理后台扩展设计.md》2.5）。
 type NPCSeed struct {
-	Name        string   `json:"name"`        // 必填
-	Kind        string   `json:"kind"`        // npc / pc，默认 npc
-	Disposition string   `json:"disposition"` // friendly / neutral / suspicious / hostile，默认 neutral
-	Personality string   `json:"personality"` // 性格/目标描述，映射为 NPC 的 Goals
+	Name        string `json:"name"`        // 必填
+	Kind        string `json:"kind"`        // npc / pc，默认 npc
+	Disposition string `json:"disposition"` // friendly / neutral / suspicious / hostile，默认 neutral
+	Personality string `json:"personality"` // 性格/目标描述，映射为 NPC 的 Goals
 	// 创作字段（《世界编辑器与素材联动设计.md》§3.1）
 	Appearance string   `json:"appearance,omitempty"`
 	Backstory  string   `json:"backstory,omitempty"`
@@ -68,7 +39,7 @@ type NPCSeed struct {
 
 // SeedSpec 手动创建世界时的播种规格。
 type SeedSpec struct {
-	Mode       string    `json:"mode"`       // simrpg / roleplay
+	Mode       string    `json:"mode"`       // 展示标签（可选，空值=unified；不影响行为）
 	Name       string    `json:"name"`       // 世界显示名（可选）
 	Background string    `json:"background"` // 世界设定文本
 	Scene      string    `json:"scene"`      // 初始场景描述（可选）
@@ -89,11 +60,10 @@ func (e *Engine) SeedWorld(worldID string, spec SeedSpec) (*WorldState, error) {
 	if worldID == "" {
 		return nil, fmt.Errorf("世界 ID 不能为空")
 	}
-	if _, ok := modePresets[spec.Mode]; !ok {
-		return nil, fmt.Errorf("未知游戏模式: %s", spec.Mode)
-	}
-	if spec.Mode == ModeRoleplay && len(spec.NPCs)+len(spec.Characters) == 0 {
-		return nil, fmt.Errorf("roleplay 模式至少需要 1 个 NPC")
+	// 模式统一：不再校验模式白名单，也不再要求 roleplay 必须有 NPC
+	// （所有世界共用一套流程，内容由素材决定）。
+	if spec.Mode == "" {
+		spec.Mode = ModeUnified
 	}
 	for _, n := range spec.NPCs {
 		if n.Name == "" {

@@ -80,11 +80,11 @@ type wsMessage struct {
 // NewServer 创建 Web 渠道服务器。
 func NewServer(cfg Config, router *core.Router, sessions *core.SessionManager) *Server {
 	return &Server{
-		cfg:        cfg,
-		router:     router,
-		sess:       sessions,
-		conns:      make(map[string]*wsConn),
-		turnLocks:  make(map[string]*sync.Mutex),
+		cfg:       cfg,
+		router:    router,
+		sess:      sessions,
+		conns:     make(map[string]*wsConn),
+		turnLocks: make(map[string]*sync.Mutex),
 	}
 }
 

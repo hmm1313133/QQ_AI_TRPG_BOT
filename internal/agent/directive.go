@@ -44,7 +44,7 @@ type DirectorAction struct {
 // StateUpdate 是要求应用的状态变更。
 // Target 支持 NPC 名称 / HiddenItem ID 或线索描述 / PendingEvent ID 或事件描述 / Objective 描述。
 type StateUpdate struct {
-	Type  string `json:"type"` // npc_disposition / hidden_discovered / event_triggered / objective_completed
+	Type   string `json:"type"` // npc_disposition / hidden_discovered / event_triggered / objective_completed
 	Target string `json:"target"`
-	Value string `json:"value"`
+	Value  string `json:"value"`
 }

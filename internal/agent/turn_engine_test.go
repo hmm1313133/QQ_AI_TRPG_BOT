@@ -10,11 +10,7 @@ import (
 
 func newResolveStateEnv(t *testing.T, withWorld bool) (*TurnEngine, *core.Session) {
 	t.Helper()
-	repo, err := world.NewJSONRepository(t.TempDir())
-	if err != nil {
-		t.Fatalf("创建仓库失败: %v", err)
-	}
-	engine := world.NewEngine(repo)
+	engine := newAgentTestEngine(t)
 	if withWorld {
 		if _, err := engine.CreateWorld("s1", world.ModeSimRPG); err != nil {
 			t.Fatalf("创建世界失败: %v", err)

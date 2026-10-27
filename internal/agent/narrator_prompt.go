@@ -17,7 +17,7 @@ import (
 // （当前场景、NPC 态度、目标、隐藏信息与待触发事件）。
 //
 // 《世界设定库与按需加载设计.md》§4.3 改造：
-//   - 背景全文不再注入（由 lore 分区按需取代）；CampaignSummary 保留。
+//   - 背景全文不再注入（由 lore 分区按需取代）；阶段摘要改由长期记忆承载。
 //   - NPC 从"全量"改为"当前场景在场 + lore 命中的角色条目"，
 //     无 lore 且无地点信息的旧世界经 PresentNPCNames 退化为全量，行为等价。
 func buildGameStateSummary(state *world.WorldState, lore *world.LoreResult) string {
